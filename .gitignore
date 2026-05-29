@@ -1,0 +1,23 @@
+# Build output
+/bin/
+bin/
+/dist/
+dist/
+
+# Test & coverage artifacts
+*.out
+*.test
+coverage*
+
+# Go workspace sums (kept local; not committed)
+go.work.sum
+
+# Fuzzing corpus seeds discovered at runtime
+**/testdata/fuzz/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+
+# Git worktrees
+.worktrees/
