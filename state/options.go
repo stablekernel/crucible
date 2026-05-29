@@ -1,0 +1,82 @@
+package state
+
+// This file declares the functional-option types for every public constructor
+// and operation, per the kernel's functional-options convention. Each is an
+// opaque type so new knobs arrive as new options, never as signature changes.
+//
+// The option constructors here are part of the v1 surface; their internal
+// effect is applied by the (not-yet-implemented) kernel.
+
+// ForgeOption configures Forge.
+type ForgeOption func(*forgeConfig)
+
+type forgeConfig struct{}
+
+// QuenchOption configures Quench.
+type QuenchOption func(*quenchConfig)
+
+type quenchConfig struct{ strict bool }
+
+// Strict makes Quench reject any lint warning, not just hard errors.
+func Strict() QuenchOption { return func(c *quenchConfig) { c.strict = true } }
+
+// CastOption configures Cast.
+type CastOption[S comparable] func(*castConfig[S])
+
+type castConfig[S comparable] struct {
+	initial    S
+	hasInitial bool
+}
+
+// WithInitialState supplies the instance's starting state explicitly. Use it
+// when the machine declares no CurrentStateFn (i.e. the current state cannot be
+// derived from the entity). When both are present, the explicit initial state
+// takes precedence over CurrentStateFn.
+func WithInitialState[S comparable](s S) CastOption[S] {
+	return func(c *castConfig[S]) {
+		c.initial = s
+		c.hasInitial = true
+	}
+}
+
+// FireOption configures Fire / FireSeq / FireEach.
+type FireOption func(*fireConfig)
+
+type fireConfig struct{ collectAll bool }
+
+// CollectAll makes a batch fire run every step and gather all errors instead of
+// stopping at the first.
+func CollectAll() FireOption { return func(c *fireConfig) { c.collectAll = true } }
+
+// AssayOption configures Assay.
+type AssayOption func(*assayConfig)
+
+type assayConfig struct{ aggregate bool }
+
+// WithAggregate makes Assay collect all failing requirements in one pass.
+func WithAggregate() AssayOption { return func(c *assayConfig) { c.aggregate = true } }
+
+// PlanOption configures PlanPath.
+type PlanOption func(*planConfig)
+
+type planConfig struct{}
+
+// LoadOption configures LoadFromJSON.
+type LoadOption func(*loadConfig)
+
+type loadConfig struct{}
+
+// ProvideOption configures Provide.
+type ProvideOption func(*provideConfig)
+
+type provideConfig struct{}
+
+// ToJSONOption configures ToJSON.
+type ToJSONOption func(*toJSONConfig)
+
+type toJSONConfig struct{}
+
+// TemperOption configures Temper.
+type TemperOption func(*temperConfig)
+
+type temperConfig struct{}
