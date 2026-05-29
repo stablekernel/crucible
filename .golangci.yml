@@ -1,0 +1,65 @@
+# Shared golangci-lint configuration for the Crucible suite.
+#
+# golangci-lint v2 schema. Every module is linted with this one config (the
+# magefile passes it via --config). Reasonable, not draconian: we enable the
+# high-signal linters and keep revive's rule set sensible.
+#
+# NOTE: govulncheck is NOT run here — it is a vulnerability scanner, not a
+# linter. It runs separately in CI (the `vuln` job) and via `mage vuln`.
+version: "2"
+
+linters:
+  # Start from a clean slate and enable an explicit, curated set.
+  default: none
+  enable:
+    - govet        # vet's static checks
+    - staticcheck  # the staticcheck suite (subsumes gosimple + stylecheck in v2)
+    - errcheck     # unchecked errors
+    - ineffassign  # ineffectual assignments
+    - unused       # unused code
+    - misspell     # common misspellings in comments/strings
+    - revive       # golint successor — reasonable style rules
+
+  settings:
+    govet:
+      enable-all: true
+    misspell:
+      locale: US
+    revive:
+      # Reasonable defaults — flag genuine issues, not stylistic nitpicks.
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+  exclusions:
+    generated: lenient
+    rules:
+      # Test files may be looser about error checks and exported docs.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - revive
+
+formatters:
+  # gofumpt is the formatter (stricter superset of gofmt).
+  enable:
+    - gofumpt
