@@ -23,7 +23,7 @@ stability label.
 
 | Module    | What it is                                                                 | Status      |
 | --------- | -------------------------------------------------------------------------- | ----------- |
-| `state`   | Pure, abstract, domain-agnostic state machine kernel. Stdlib-only, no IO.  | scaffolding |
+| `state`   | Pure, abstract, domain-agnostic state machine kernel. Stdlib-only, no IO.  | experimental |
 | `broker`  | Message broker seam — publish/subscribe transport with injected adapters.  | planned     |
 | `store`   | Durable state/event store seam with graceful lifecycle.                    | planned     |
 | `sink`    | Effect dispatch / egress seam for emitted effects.                         | planned     |
@@ -34,9 +34,11 @@ carry those effects to real transports, stores, and sinks — each
 
 ## Status
 
-This repository is in early scaffolding. The `state` module is a buildable,
-empty placeholder; Phase 1 (Kernel Core + serializable IR + host registry) is
-pending per the roadmap. The other modules are planned and not yet present.
+Early and evolving. The `state` kernel is implemented — the builder and
+transition engine, guards and actions, validation, path planning, batch
+helpers, and JSON (de)serialization — with test coverage; treat its API as
+experimental until a tagged release. The `broker`, `store`, and `sink` modules
+are planned.
 
 ## Design & discussions
 

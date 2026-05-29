@@ -83,6 +83,10 @@
 //
 // # Status
 //
-// Scaffolding: this package is an empty, buildable placeholder. Phase 1 (Kernel
-// Core + serializable IR + host registry) is pending per the roadmap.
+// The flat kernel is implemented: the Forge/Temper/Quench build path,
+// Cast/Fire pure step semantics with guards, actions, typed errors and an
+// always-recorded Trace, Assay/Requirements, PlanPath (BFS), FireSeq/FireEach
+// batch helpers, and lossless ToJSON/LoadFromJSON/Provide round-trip.
+// Hierarchical (HSM) nesting, invoked services, the actor model, and the
+// after-scheduler runtime are reserved-but-inert and not yet implemented.
 package state

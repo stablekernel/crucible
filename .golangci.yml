@@ -23,6 +23,13 @@ linters:
   settings:
     govet:
       enable-all: true
+      # fieldalignment optimizes struct memory layout by reordering fields. The
+      # kernel's structs are small, allocated rarely, and several (the IR types)
+      # have a deliberate, documented field order that mirrors the serialized
+      # JSON and the design spec — readability and contract clarity outweigh a
+      # handful of pointer bytes here. Every other govet analyzer stays on.
+      disable:
+        - fieldalignment
     misspell:
       locale: US
     revive:
@@ -58,6 +65,14 @@ linters:
         linters:
           - errcheck
           - revive
+      # The example machine sets Document.ReviewerID purely so the registered
+      # `hasReviewer` guard can read it at fire time. govet's unusedwrite cannot
+      # trace through a guard resolved by name via the registry, so it flags the
+      # write as unused — a false positive. Scope the suppression to test files.
+      - path: _test\.go
+        linters:
+          - govet
+        text: unusedwrite
 
 formatters:
   # gofumpt is the formatter (stricter superset of gofmt).
