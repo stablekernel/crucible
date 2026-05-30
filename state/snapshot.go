@@ -1,0 +1,419 @@
+package state
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// This file defines deep persistence for a running Instance: capturing its full
+// runtime state into a serializable Snapshot and restoring an Instance that
+// resumes from exactly that point. It is the instance-runtime analog of the IR's
+// ToJSON / LoadFromJSON, which persist the MACHINE DEFINITION; a Snapshot
+// persists the INSTANCE's runtime state — its active configuration, context,
+// recorded history, status, and the metadata needed to re-arm its pending timers,
+// invoked services, and spawned actors.
+//
+// The model mirrors xstate v5 persistence (actor.getPersistedSnapshot /
+// createActor(logic, { snapshot })): a restored instance resumes at its persisted
+// configuration WITHOUT re-running entry actions (resume, not re-enter), and the
+// host re-establishes the instance's pending invoked/spawned children and timers
+// by absorbing the re-arm effects ResumeEffects emits — the same StartService /
+// SpawnActor / ScheduleAfter effects the host already drives for Fire and the
+// initial StartEffects. Fire stays pure: Snapshot is a read and Restore rebuilds
+// the instance without firing.
+
+// Status classifies a snapshotted instance's lifecycle, mirroring xstate v5's
+// actor status. StatusRunning is an instance still advancing; StatusDone is an
+// instance whose active configuration is entirely final (every active leaf is a
+// final state); StatusError is an instance the host settled as failed, carrying
+// the error message on the snapshot.
+type Status int
+
+// Instance lifecycle statuses recorded on a Snapshot.
+const (
+	// StatusRunning is the default: the instance has not reached completion.
+	StatusRunning Status = iota
+	// StatusDone marks an instance whose whole active configuration is final.
+	StatusDone
+	// StatusError marks an instance the host explicitly failed; Snapshot.Error
+	// carries the message.
+	StatusError
+)
+
+// String renders a Status for diagnostics and stable JSON.
+func (s Status) String() string {
+	switch s {
+	case StatusDone:
+		return "done"
+	case StatusError:
+		return "error"
+	default:
+		return "running"
+	}
+}
+
+// Snapshot is the serializable, deep runtime state of one Instance at a point in
+// time. It captures the active configuration (all active leaves, in declaration
+// order, plus the primary leaf), the recorded per-compound history (shallow and
+// deep), the instance context, the lifecycle status and optional output/error,
+// and the metadata of the pending timers, invoked services, and spawned actors so
+// a host can re-arm them on restore. Child-actor snapshots are carried under
+// Actors when an ActorSystem snapshots the instance's spawned children
+// recursively.
+//
+// A Snapshot round-trips losslessly through JSON when the context type C is
+// JSON-marshalable (the default requirement) or a context codec is supplied via
+// WithContextCodec. The machine definition is NOT carried here — restore binds the
+// snapshot back to a live Machine, exactly as Cast binds an entity — so a snapshot
+// stays small and a definition change is detected at restore rather than silently
+// absorbed.
+type Snapshot[S comparable, E comparable, C any] struct {
+	// Machine names the machine the snapshot was taken from. Restore rejects a
+	// snapshot whose Machine does not match the target machine with a typed
+	// *SnapshotError, so a snapshot is never restored against the wrong definition.
+	Machine string `json:"machine"`
+
+	// Current is the primary (first) active leaf — the back-compatible
+	// "what state am I in?" answer, equal to Configuration[0].
+	Current S `json:"current"`
+	// Configuration is every currently-active leaf, in declaration order: length 1
+	// for a flat or single-spine instance, length N when N parallel regions are
+	// active. Restore activates exactly this configuration without re-entering it.
+	Configuration []S `json:"configuration"`
+
+	// Context is the instance's bound entity C at snapshot time. With the default
+	// codec it must be JSON-marshalable; with WithContextCodec the supplied codec
+	// owns its encoding. In JSON it is held as a raw message so the snapshot
+	// envelope marshals once and the context decodes through the chosen codec.
+	Context C `json:"-"`
+	// ContextRaw is the JSON (or codec-encoded) form of Context, populated when the
+	// snapshot is marshaled and consumed when it is unmarshaled. It is the wire
+	// form of Context; callers read Context, not ContextRaw.
+	ContextRaw json.RawMessage `json:"context,omitempty"`
+
+	// HistoryShallow records each compound's last-active direct child, and
+	// HistoryDeep each compound's last-active leaf configuration, for history
+	// pseudo-state restoration. Both are restored verbatim so a history-targeted
+	// transition after restore behaves identically to before the snapshot.
+	HistoryShallow map[S]S   `json:"historyShallow,omitempty"`
+	HistoryDeep    map[S][]S `json:"historyDeep,omitempty"`
+
+	// Traces is the instance's recorded Fire history, preserved so History()
+	// reports the same ordered traces after restore.
+	Traces []Trace `json:"traces,omitempty"`
+
+	// Status is the instance's lifecycle status at snapshot time. Output carries an
+	// instance's completion output (when StatusDone) and Error a settled instance's
+	// failure message (when StatusError); both are optional and host-supplied.
+	Status Status          `json:"status"`
+	Output json.RawMessage `json:"output,omitempty"`
+	Error  string          `json:"error,omitempty"`
+
+	// Pending records the IDs/metadata of the timers, invoked services, and spawned
+	// actors that were live for the active configuration, so a host can confirm
+	// what ResumeEffects re-arms. It is descriptive: the authoritative re-arm is the
+	// effect slice ResumeEffects returns, derived from the same configuration.
+	Pending PendingRefs `json:"pending,omitempty"`
+
+	// Actors carries the recursively-captured snapshots of the instance's spawned
+	// child actors, keyed by actor id, when an ActorSystem snapshots the instance.
+	// Each entry is an opaque per-child snapshot envelope a matching ActorSystem
+	// restores. It is empty for an instance with no spawned children, or when only
+	// the instance core (not the actor tree) is snapshotted.
+	Actors map[string]json.RawMessage `json:"actors,omitempty"`
+}
+
+// PendingRefs is the descriptive inventory of an instance's live timers, invoked
+// services, and spawned actors at snapshot time, by stable ID. It mirrors what
+// ResumeEffects re-arms; a host can assert on it or display it without replaying
+// effects.
+type PendingRefs struct {
+	// Timers are the schedule IDs of the pending delayed (`after`) transitions
+	// armed for the active configuration.
+	Timers []string `json:"timers,omitempty"`
+	// Services are the IDs of the invoked services running for the active
+	// configuration.
+	Services []string `json:"services,omitempty"`
+	// Actors are the IDs of the child-machine actors invoked for the active
+	// configuration.
+	Actors []string `json:"actors,omitempty"`
+}
+
+// ContextCodec encodes and decodes an instance context C to and from bytes for a
+// Snapshot, for a context type that is not directly JSON-marshalable (or needs a
+// custom wire form). Encode is called by Snapshot.MarshalJSON; Decode by
+// Snapshot.UnmarshalJSON. When no codec is supplied, the default codec marshals C
+// with encoding/json, so C must be JSON-marshalable by default.
+type ContextCodec[C any] interface {
+	Encode(C) ([]byte, error)
+	Decode([]byte) (C, error)
+}
+
+// jsonCodec is the default ContextCodec: it marshals and unmarshals C with
+// encoding/json. It is used whenever no WithContextCodec is supplied, so the
+// documented default requirement is that C is JSON-marshalable.
+type jsonCodec[C any] struct{}
+
+func (jsonCodec[C]) Encode(c C) ([]byte, error) { return json.Marshal(c) }
+
+func (jsonCodec[C]) Decode(b []byte) (C, error) {
+	var c C
+	if len(b) == 0 {
+		return c, nil
+	}
+	err := json.Unmarshal(b, &c)
+	return c, err
+}
+
+// Snapshot captures the instance's full runtime state into a serializable
+// Snapshot: the active configuration, recorded history, context, lifecycle
+// status, and the IDs of the pending timers / services / actors armed for the
+// active configuration. It is a pure read — it never fires, mutates the instance,
+// or consults a clock — so Fire stays pure and a snapshot may be taken at any
+// quiescent point between Fires.
+//
+// The returned Snapshot's Context holds the live entity value; serialize the
+// whole snapshot with MarshalSnapshot (or json.Marshal once the default codec
+// suffices) to obtain the wire form. Status is derived from the active
+// configuration (StatusDone when the whole configuration is final, else
+// StatusRunning); a host that tracks an explicit failure sets StatusError and
+// Error on the returned snapshot before persisting.
+func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
+	cfg := i.Configuration()
+	snap := Snapshot[S, E, C]{
+		Machine:        i.machine.name,
+		Current:        i.current,
+		Configuration:  cfg,
+		Context:        i.entity,
+		HistoryShallow: copyMap(i.historyShallow),
+		HistoryDeep:    copyLeafMap(i.historyDeep),
+		Traces:         i.History(),
+		Status:         StatusRunning,
+	}
+	if i.InFinal() {
+		snap.Status = StatusDone
+	}
+	snap.Pending = i.pendingRefs(cfg)
+	return snap
+}
+
+// pendingRefs inventories the stable IDs of the timers, services, and actors
+// armed for the configuration cfg, mirroring what ResumeEffects re-arms. It is a
+// pure read of the machine definition against the active configuration.
+func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
+	var p PendingRefs
+	m := i.machine
+	for _, s := range cfg {
+		n, ok := m.resolveNode(s)
+		if !ok {
+			continue
+		}
+		for ti := range n.state.Transitions {
+			if n.state.Transitions[ti].After != nil {
+				p.Timers = append(p.Timers, scheduleID(m.name, s, ti))
+			}
+		}
+		for ix := range n.state.Invoke {
+			inv := &n.state.Invoke[ix]
+			if inv.Kind == ActorKindMachine {
+				p.Actors = append(p.Actors, actorInvocationID(m.name, s, ix, inv))
+			} else {
+				p.Services = append(p.Services, invocationID(m.name, s, ix, inv))
+			}
+		}
+	}
+	return p
+}
+
+// ResumeEffects returns the re-arm effects a host absorbs after Restore to
+// re-establish the instance's pending timers, invoked services, and spawned
+// actors for its restored configuration: a ScheduleAfter per pending delayed
+// transition, a StartService per invoked service, and a SpawnActor per
+// child-machine actor invocation active in the configuration. It is the restore
+// twin of StartEffects (which arms an initial Cast configuration) extended with
+// the delayed-timer effects, and realizes xstate v5's "a restored actor
+// re-establishes its invoked/spawned children". Like StartEffects it is a pure
+// read of the configuration and emits no IO; route the effects through the same
+// Scheduler / ServiceRunner / ActorSystem the host drives for Fire.
+//
+// Entry actions are NOT re-run: ResumeEffects emits only the lifecycle re-arm
+// effects, never the states' OnEntry actions, so a restored instance resumes
+// rather than re-enters (matching xstate).
+func (i *Instance[S, E, C]) ResumeEffects() []Effect {
+	var tr Trace
+	cfg := i.Configuration()
+	out := i.afterEffectsOnEntry(cfg, &tr)
+	out = append(out, i.invokeEffectsOnEntry(cfg, &tr)...)
+	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	return out
+}
+
+// Restore rebuilds a running Instance from snap, resuming at the snapshot's
+// configuration, context, and recorded history WITHOUT re-running any entry
+// actions (resume, not re-enter — matching xstate v5 createActor with a restored
+// snapshot). The snapshot's Machine must match m's name, every configuration leaf
+// must be a declared state, and the configuration must be non-empty; a violation
+// returns a typed *SnapshotError. The restored instance is wired to the supplied
+// clock (WithRestoreClock) or SystemClock by default, exactly as Cast wires it.
+//
+// After Restore, a host that drove timers/services/actors re-arms them by
+// absorbing the instance's ResumeEffects through the same drivers it uses for
+// Fire — Restore itself fires nothing and performs no IO, so Fire stays pure.
+func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption[S]) (*Instance[S, E, C], error) {
+	if snap.Machine != m.name {
+		return nil, &SnapshotError{
+			Op:     "restore",
+			Reason: fmt.Sprintf("snapshot machine %q does not match target machine %q", snap.Machine, m.name),
+		}
+	}
+	cfg := snap.Configuration
+	if len(cfg) == 0 {
+		if _, ok := m.resolveNode(snap.Current); !ok {
+			return nil, &SnapshotError{Op: "restore", Reason: "snapshot has empty configuration and unknown current state"}
+		}
+		cfg = []S{snap.Current}
+	}
+	for _, leaf := range cfg {
+		if _, ok := m.resolveNode(leaf); !ok {
+			return nil, &SnapshotError{
+				Op:     "restore",
+				State:  fmtState(leaf),
+				Reason: fmt.Sprintf("configuration leaf %q is not a declared state of machine %q", fmtState(leaf), m.name),
+			}
+		}
+	}
+
+	rcfg := restoreConfig[S]{}
+	for _, o := range opts {
+		o(&rcfg)
+	}
+	clock := rcfg.clock
+	if clock == nil {
+		clock = systemClock{}
+	}
+
+	current := snap.Current
+	if _, ok := m.resolveNode(current); !ok {
+		current = cfg[0]
+	}
+
+	inst := &Instance[S, E, C]{
+		machine:        m,
+		entity:         snap.Context,
+		current:        current,
+		config:         append([]S(nil), cfg...),
+		history:        append([]Trace(nil), snap.Traces...),
+		historyShallow: copyMap(snap.HistoryShallow),
+		historyDeep:    copyLeafMap(snap.HistoryDeep),
+		clock:          clock,
+	}
+	return inst, nil
+}
+
+// MarshalSnapshot serializes snap to JSON, encoding its context through codec (or
+// the default JSON codec when codec is nil). It is the explicit serialization
+// entry point when a non-JSON-marshalable context needs a custom codec; for a
+// JSON-marshalable context, json.Marshal(snap) works directly via the snapshot's
+// own MarshalJSON.
+func MarshalSnapshot[S comparable, E comparable, C any](snap Snapshot[S, E, C], opts ...SnapshotCodecOption[C]) ([]byte, error) {
+	codec := resolveCodec(opts...)
+	raw, err := codec.Encode(snap.Context)
+	if err != nil {
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+	}
+	snap.ContextRaw = raw
+	return json.Marshal(snapshotWire[S, E, C](snap))
+}
+
+// UnmarshalSnapshot deserializes a snapshot from JSON, decoding its context
+// through codec (or the default JSON codec when codec is nil). It is the inverse
+// of MarshalSnapshot; for a JSON-marshalable context, json.Unmarshal into a
+// Snapshot works directly via the snapshot's own UnmarshalJSON.
+func UnmarshalSnapshot[S comparable, E comparable, C any](b []byte, opts ...SnapshotCodecOption[C]) (Snapshot[S, E, C], error) {
+	codec := resolveCodec(opts...)
+	var wire snapshotWire[S, E, C]
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+	}
+	snap := Snapshot[S, E, C](wire)
+	ctx, err := codec.Decode(snap.ContextRaw)
+	if err != nil {
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+	}
+	snap.Context = ctx
+	return snap, nil
+}
+
+// snapshotWire is Snapshot without the custom JSON methods, so MarshalSnapshot /
+// UnmarshalSnapshot serialize the envelope (including the already-encoded
+// ContextRaw) without re-entering the context codec through MarshalJSON.
+type snapshotWire[S comparable, E comparable, C any] Snapshot[S, E, C]
+
+// MarshalJSON serializes the snapshot, encoding its context with the default JSON
+// codec. It is the convenient path for a JSON-marshalable context; a context that
+// needs a custom codec is serialized with MarshalSnapshot(snap, WithContextCodec).
+func (snap Snapshot[S, E, C]) MarshalJSON() ([]byte, error) {
+	raw, err := json.Marshal(snap.Context)
+	if err != nil {
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+	}
+	snap.ContextRaw = raw
+	return json.Marshal(snapshotWire[S, E, C](snap))
+}
+
+// UnmarshalJSON deserializes the snapshot, decoding its context with the default
+// JSON codec. The inverse of MarshalJSON.
+func (snap *Snapshot[S, E, C]) UnmarshalJSON(b []byte) error {
+	var wire snapshotWire[S, E, C]
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+	}
+	*snap = Snapshot[S, E, C](wire)
+	if len(snap.ContextRaw) == 0 {
+		return nil
+	}
+	var ctx C
+	if err := json.Unmarshal(snap.ContextRaw, &ctx); err != nil {
+		return &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+	}
+	snap.Context = ctx
+	return nil
+}
+
+// resolveCodec returns the supplied context codec or the default JSON codec.
+func resolveCodec[C any](opts ...SnapshotCodecOption[C]) ContextCodec[C] {
+	cfg := snapshotCodecConfig[C]{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.codec != nil {
+		return cfg.codec
+	}
+	return jsonCodec[C]{}
+}
+
+// copyMap returns a shallow copy of a state->state map, or nil for an empty
+// source, so a snapshot never aliases the instance's live history maps.
+func copyMap[S comparable](in map[S]S) map[S]S {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[S]S, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// copyLeafMap returns a deep copy of a state->[]state map, cloning each leaf
+// slice so a snapshot never aliases the instance's live deep-history slices.
+func copyLeafMap[S comparable](in map[S][]S) map[S][]S {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[S][]S, len(in))
+	for k, v := range in {
+		out[k] = append([]S(nil), v...)
+	}
+	return out
+}
