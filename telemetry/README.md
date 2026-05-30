@@ -108,11 +108,11 @@ optional sub-modules so the core never imports a vendor SDK.
 
 | Adapter                | Status   | Deps |
 | ---------------------- | -------- | ---- |
-| `telemetry/slogadapter` | shipped  | stdlib `log/slog` only — emits spans/metrics as structured logs |
-| `telemetry/otel`       | deferred | OpenTelemetry SDK (in its own `go.mod`) |
-| `telemetry/datadog`    | deferred | `dd-trace-go` / `datadog-go` (in their own `go.mod`) |
+| [`telemetry/slogadapter`](slogadapter/README.md) | shipped  | stdlib `log/slog` only — emits spans/metrics as structured logs |
+| [`telemetry/otel`](otel/README.md) | shipped  | OpenTelemetry SDK (in its own `go.mod`) |
+| [`telemetry/datadog`](datadog/README.md) | shipped  | `dd-trace-go` / `datadog-go` (in their own `go.mod`) |
 
-A deferred adapter implements the same interfaces and is wired by a consumer via
+Each adapter implements the same interfaces and is wired by a consumer via
 `WithTracer`/`WithMeter` exactly like `slogadapter`. `Span.SetStatus` maps to the
 otel status code / Datadog error flag; `ResolveInstrument` exposes the
 unit/description an adapter needs to construct its backend instrument. Attributes
