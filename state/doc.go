@@ -97,6 +97,11 @@
 // all-regions-final join for parallel states. The hierarchy serializes, so a
 // nested machine round-trips through JSON losslessly.
 //
-// Invoked services, the actor model, history states, and the after-scheduler
-// runtime are reserved-but-inert and not yet implemented.
+// History pseudo-states (shallow and deep) let a transition re-enter a compound
+// state's last active configuration rather than its initial child; the
+// pseudo-states serialize while the recorded per-instance configuration is
+// runtime state threaded through the pure Fire step.
+//
+// Invoked services, the actor model, and the after-scheduler runtime are
+// reserved-but-inert and not yet implemented.
 package state

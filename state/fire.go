@@ -196,10 +196,32 @@ func (i *Instance[S, E, C]) commit(
 
 	to := t.To
 
+	// A history pseudo-state target re-enters the remembered configuration of its
+	// owning compound (or the declared default / the compound's initial when no
+	// history is recorded yet). Resolve it to the concrete leaves and target the
+	// owning compound for the cascade; restoreLeaves is non-nil for a history
+	// target and pins the configuration after entry.
+	var restoreLeaves []S
+	if leaves, owner, isHist := i.resolveHistory(to); isHist {
+		restoreLeaves = leaves
+		to = owner
+	}
+
 	// Compute the exit/entry cascade across the hierarchy.
 	exits, entries := m.cascade(from, to)
+	if restoreLeaves != nil {
+		// Replace the compound's default descent with the remembered descent: the
+		// entry chain up to and including the compound is kept, then the recorded
+		// leaves (and their interior spine) are entered instead of InitialChild.
+		entries = m.entryChainTo(from, to)
+		entries = append(entries, m.restoreInterior(to, restoreLeaves)...)
+	}
 
 	var effects []Effect
+
+	// Record the history of every compound being exited before the configuration
+	// advances, so a later history-targeted entry can restore it.
+	i.recordHistory(exits, i.config)
 
 	// Exit actions: innermost -> outermost.
 	for _, s := range exits {
@@ -219,13 +241,20 @@ func (i *Instance[S, E, C]) commit(
 		}
 	}
 
-	// Advance the configuration before transition/entry actions run.
-	i.current = to
-	i.config = m.descendToLeaves(to)
-	if len(i.config) > 0 {
+	// Advance the configuration before transition/entry actions run. A history
+	// restore pins the configuration to the remembered leaves; otherwise descend
+	// into the target's initial children.
+	if restoreLeaves != nil {
+		i.config = append([]S(nil), restoreLeaves...)
 		i.current = i.config[0]
 	} else {
-		i.config = []S{to}
+		i.current = to
+		i.config = m.descendToLeaves(to)
+		if len(i.config) > 0 {
+			i.current = i.config[0]
+		} else {
+			i.config = []S{to}
+		}
 	}
 
 	// Transition effects.

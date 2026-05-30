@@ -87,6 +87,53 @@ func (b *Builder[S, E, C]) EndRegion() *Builder[S, E, C] {
 	return b
 }
 
+// History declares a history pseudo-state inside the current SuperState block.
+// The pseudo-state remembers the owning compound's last active configuration:
+// HistoryShallow restores the compound's last active direct child, HistoryDeep
+// restores its full nested leaf configuration. Transition to it (by name) to
+// re-enter the remembered configuration instead of the compound's Initial. Use
+// DefaultTo to declare the target entered when no history has been recorded yet;
+// without it the resolver falls back to the compound's Initial.
+//
+// A history pseudo-state is structure, not a leaf: it never appears in the
+// active configuration and is not eligible as a compound's Initial. Declaring
+// one outside a SuperState block is a Quench lint.
+func (b *Builder[S, E, C]) History(name S, kind HistoryType) *Builder[S, E, C] {
+	if kind == HistoryNone {
+		kind = HistoryShallow
+	}
+	if len(b.blocks) == 0 || b.blocks[len(b.blocks)-1].kind != blockSuper {
+		b.recordHSMDiag("History called outside a SuperState block")
+	}
+	b.declareState(name)
+	if b.curState != nil {
+		b.curState.state.HistoryType = kind
+		b.curState.isHistory = true
+	}
+	// A history pseudo-state is not a real substate: do not count it toward the
+	// block's child count, so it cannot satisfy the "has substates but no
+	// Initial" requirement nor become eligible as the compound's Initial.
+	if len(b.blocks) > 0 {
+		b.blocks[len(b.blocks)-1].childCount--
+	}
+	b.curTransition = nil
+	return b
+}
+
+// DefaultTo sets the fallback target of the most-recent history pseudo-state,
+// entered when its owning compound has no recorded history yet. It is a no-op
+// (recorded as a lint at Quench) when the most-recent state is not a history
+// pseudo-state.
+func (b *Builder[S, E, C]) DefaultTo(target S) *Builder[S, E, C] {
+	if b.curState == nil || b.curState.state.HistoryType == HistoryNone {
+		b.recordHSMDiag("DefaultTo called on a non-history state")
+		return b
+	}
+	t := target
+	b.curState.state.HistoryDefault = &t
+	return b
+}
+
 // Final marks the most-recent state as terminal.
 func (b *Builder[S, E, C]) Final() *Builder[S, E, C] {
 	if b.curState != nil {
