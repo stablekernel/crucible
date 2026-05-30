@@ -38,6 +38,7 @@ Run `mage -l` to list everything. Each target iterates the suite's modules.
 | `lint`     | `golangci-lint run` with the shared config per module |
 | `cover`    | tests with a coverage profile per module              |
 | `bench`    | benchmarks per module                                 |
+| `benchCompare` | benches the working tree vs a base ref (the CI gate, locally) |
 | `fuzz`     | a short fuzzing pass per module                       |
 | `tidy`     | `go mod tidy` per module                              |
 | `vuln`     | `govulncheck ./...` per module                        |
@@ -48,6 +49,34 @@ Run `mage -l` to list everything. Each target iterates the suite's modules.
 Before you push, **tests, lint, vet, and `govulncheck` must all pass.** The
 quickest way to verify locally is `mage check`. CI runs the same gates across a
 Go-version × OS matrix on every PR.
+
+## Performance
+
+Performance regressions fail the build. On every pull request, CI runs the
+`state` benchmarks on **both your branch head and the PR base, on the same
+runner**, then `benchstat`-diffs the two. Running both refs on one machine
+cancels machine-to-machine variance, so a genuine regression stands apart from
+runner jitter. The comparison table is written to the job's step summary.
+
+The gate fails if any benchmark's **time/op (`sec/op`) or `allocs/op`** regresses
+past a head/base ratio of **1.20 (a 20% slowdown)**. That threshold is
+deliberately generous to absorb shared-runner noise on micro-benchmarks; it is a
+single, clearly-commented constant in `.github/workflows/ci.yml`
+(`BENCH_THRESHOLD`) and `.github/scripts/bench-gate.awk`, easy to tighten as the
+benchmark history on CI stabilizes. `B/op` is reported for context but not gated.
+New benchmarks (with no counterpart on the base) and removed ones never fail the
+gate.
+
+Reproduce the exact comparison locally before you push:
+
+```sh
+mage benchCompare            # working tree vs origin/main
+mage benchCompare v0.1.0     # working tree vs an explicit ref (tag/branch/SHA)
+```
+
+It benches the base ref in a throwaway git worktree (your working tree is left
+untouched), prints the `benchstat` table, and exits non-zero on a regression —
+the same verdict CI produces.
 
 ## Commits
 

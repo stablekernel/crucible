@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/magefile/mage/mg"
@@ -33,7 +34,18 @@ var modules = []string{"state"}
 const (
 	golangciLint = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
 	govulncheck  = "golang.org/x/vuln/cmd/govulncheck@v1.3.0"
+	// benchstat ships only pseudo-versions from golang.org/x/perf; pinned so
+	// local BenchCompare runs match the CI benchmark gate exactly.
+	benchstat = "golang.org/x/perf/cmd/benchstat@v0.0.0-20260512194132-3cf34090a3db"
 )
+
+// benchCompareCount is the per-benchmark sample count used by BenchCompare. It
+// mirrors BENCH_COUNT in the CI bench gate so local results line up with CI.
+const benchCompareCount = "8"
+
+// benchCompareThreshold is the maximum allowed head/base ratio before
+// BenchCompare reports a regression. It mirrors BENCH_THRESHOLD in CI.
+const benchCompareThreshold = "1.20"
 
 // repoRoot returns the suite root (the parent of the magefiles module dir).
 func repoRoot() (string, error) {
@@ -175,6 +187,133 @@ func Bench() error {
 	return forEachModule("bench", func(string) error {
 		return goCmd("test", "-run", "^$", "-bench", ".", "-benchmem", "./...")
 	})
+}
+
+// BenchCompare reproduces the CI benchmark regression gate locally. It benches
+// the current working tree against a base ref on this one machine, then
+// benchstat-diffs them — the same same-runner comparison the CI gate performs.
+//
+// Usage:
+//
+//	mage benchCompare        # compares the working tree against origin/main
+//	mage benchCompare v0.1.0 # compares against an explicit ref (tag/branch/SHA)
+//
+// The base ref is checked out into a throwaway git worktree so the current
+// working tree is never disturbed. It prints the benchstat table and a verdict,
+// and exits non-zero if any gated metric (sec/op, allocs/op) regresses past
+// benchCompareThreshold. New or removed benchmarks are skipped, never failed.
+func BenchCompare(baseRef string) error {
+	if baseRef == "" {
+		baseRef = "origin/main"
+	}
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.MkdirTemp("", "crucible-benchcompare-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+
+	headTxt := filepath.Join(tmp, "head.txt")
+	baseTxt := filepath.Join(tmp, "base.txt")
+
+	// Bench the working tree (HEAD).
+	fmt.Printf("==> benchCompare: benchmarking working tree (state)\n")
+	headOut, err := sh.Output("go", "test", "-C", filepath.Join(root, "state"),
+		"-run=^$", "-bench=.", "-benchmem", "-count="+benchCompareCount, "./...")
+	if err != nil {
+		return fmt.Errorf("benchmarking head: %w", err)
+	}
+	if err := os.WriteFile(headTxt, []byte(headOut), 0o644); err != nil {
+		return err
+	}
+
+	// Check the base ref out into a throwaway worktree and bench it there.
+	baseWT := filepath.Join(tmp, "base")
+	fmt.Printf("==> benchCompare: benchmarking base ref %q (state)\n", baseRef)
+	if err := sh.RunV("git", "-C", root, "worktree", "add", "--detach", baseWT, baseRef); err != nil {
+		return fmt.Errorf("creating base worktree at %q: %w", baseRef, err)
+	}
+	defer func() { _ = sh.RunV("git", "-C", root, "worktree", "remove", "--force", baseWT) }()
+
+	baseOut, err := sh.Output("go", "test", "-C", filepath.Join(baseWT, "state"),
+		"-run=^$", "-bench=.", "-benchmem", "-count="+benchCompareCount, "./...")
+	if err != nil {
+		return fmt.Errorf("benchmarking base ref %q: %w", baseRef, err)
+	}
+	if err := os.WriteFile(baseTxt, []byte(baseOut), 0o644); err != nil {
+		return err
+	}
+
+	// Render the human-readable comparison.
+	fmt.Printf("\n==> benchCompare: base %q -> working tree\n", baseRef)
+	if err := sh.RunV("go", "run", benchstat, baseTxt, headTxt); err != nil {
+		return err
+	}
+
+	// Apply the same gate CI uses, off the CSV form.
+	csv, err := sh.Output("go", "run", benchstat, "-format", "csv", baseTxt, headTxt)
+	if err != nil {
+		return err
+	}
+	return benchGate(csv, benchCompareThreshold)
+}
+
+// benchGate parses benchstat CSV output and returns an error if any gated metric
+// (sec/op, allocs/op) regresses past threshold (a head/base ratio). It mirrors
+// .github/scripts/bench-gate.awk so local and CI verdicts agree. New or removed
+// benchmarks (a missing base or head value) are skipped, never failed.
+func benchGate(csv, threshold string) error {
+	thr, err := strconv.ParseFloat(threshold, 64)
+	if err != nil {
+		return fmt.Errorf("invalid threshold %q: %w", threshold, err)
+	}
+	var metric string
+	var regressed bool
+	for _, line := range strings.Split(csv, "\n") {
+		cols := strings.Split(line, ",")
+		if len(cols) < 2 {
+			continue
+		}
+		switch cols[1] {
+		case "sec/op", "allocs/op":
+			metric = cols[1]
+			continue
+		case "B/op": // tracked by benchstat but not gated
+			metric = ""
+			continue
+		}
+		if metric == "" || len(cols) < 4 {
+			continue
+		}
+		name := cols[0]
+		if name == "" || name == "geomean" {
+			continue
+		}
+		baseStr, headStr := cols[1], cols[3]
+		if baseStr == "" || headStr == "" {
+			continue // new or removed benchmark
+		}
+		base, err1 := strconv.ParseFloat(baseStr, 64)
+		head, err2 := strconv.ParseFloat(headStr, 64)
+		if err1 != nil || err2 != nil || base <= 0 {
+			continue
+		}
+		ratio := head / base
+		if ratio > thr {
+			fmt.Printf("REGRESSION  %-28s %-10s %+7.1f%%  (ratio %.3f > %.2f)\n",
+				name, metric, (ratio-1)*100, ratio, thr)
+			regressed = true
+		}
+	}
+	if regressed {
+		return fmt.Errorf("benchmark gate failed: a metric regressed past ratio %.2f", thr)
+	}
+	fmt.Printf("benchmark gate passed: no metric regressed past ratio %.2f\n", thr)
+	return nil
 }
 
 // Fuzz runs a short fuzzing pass for every module (CI uses a longer fuzztime).
