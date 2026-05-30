@@ -1,0 +1,28 @@
+digraph "nested" {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+    __start [shape=point];
+    __start -> "L0";
+    "L0";
+    subgraph cluster_0 {
+        label="A";
+        "AHist";
+        subgraph cluster_1 {
+            label="B";
+            subgraph cluster_2 {
+                label="C";
+                "C1";
+                "C2";
+                "CFinal" [peripheries=2];
+            }
+        }
+    }
+    "ASib";
+    "Parked";
+    "A" -> "ASib" [label="CrossA"];
+    "A" -> "Parked" [label="Park"];
+    "C1" -> "C2" [label="Step"];
+    "C2" -> "CFinal" [label="FinishC"];
+    "L0" -> "A" [label="Enter"];
+    "Parked" -> "AHist" [label="Resume"];
+}

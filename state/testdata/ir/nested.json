@@ -1,0 +1,192 @@
+{
+  "name": "nested",
+  "states": [
+    {
+      "name": 0,
+      "transitions": [
+        {
+          "from": 0,
+          "to": 1,
+          "on": 0
+        }
+      ]
+    },
+    {
+      "name": 1,
+      "transitions": [
+        {
+          "from": 1,
+          "to": 7,
+          "on": 3
+        },
+        {
+          "from": 1,
+          "to": 9,
+          "on": 4
+        }
+      ],
+      "onEntry": [
+        {
+          "name": "entry",
+          "params": {
+            "state": "A"
+          }
+        }
+      ],
+      "onExit": [
+        {
+          "name": "exit",
+          "params": {
+            "state": "A"
+          }
+        }
+      ],
+      "onDone": [
+        {
+          "name": "done",
+          "params": {
+            "state": "A"
+          }
+        }
+      ],
+      "children": [
+        {
+          "name": 8,
+          "historyType": 2
+        },
+        {
+          "name": 2,
+          "onEntry": [
+            {
+              "name": "entry",
+              "params": {
+                "state": "B"
+              }
+            }
+          ],
+          "onExit": [
+            {
+              "name": "exit",
+              "params": {
+                "state": "B"
+              }
+            }
+          ],
+          "onDone": [
+            {
+              "name": "done",
+              "params": {
+                "state": "B"
+              }
+            }
+          ],
+          "children": [
+            {
+              "name": 3,
+              "onEntry": [
+                {
+                  "name": "entry",
+                  "params": {
+                    "state": "C"
+                  }
+                }
+              ],
+              "onExit": [
+                {
+                  "name": "exit",
+                  "params": {
+                    "state": "C"
+                  }
+                }
+              ],
+              "onDone": [
+                {
+                  "name": "done",
+                  "params": {
+                    "state": "C"
+                  }
+                }
+              ],
+              "children": [
+                {
+                  "name": 4,
+                  "transitions": [
+                    {
+                      "from": 4,
+                      "to": 5,
+                      "on": 1
+                    }
+                  ],
+                  "onEntry": [
+                    {
+                      "name": "entry",
+                      "params": {
+                        "state": "C1"
+                      }
+                    }
+                  ],
+                  "onExit": [
+                    {
+                      "name": "exit",
+                      "params": {
+                        "state": "C1"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": 5,
+                  "transitions": [
+                    {
+                      "from": 5,
+                      "to": 6,
+                      "on": 2
+                    }
+                  ],
+                  "onEntry": [
+                    {
+                      "name": "entry",
+                      "params": {
+                        "state": "C2"
+                      }
+                    }
+                  ],
+                  "onExit": [
+                    {
+                      "name": "exit",
+                      "params": {
+                        "state": "C2"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": 6,
+                  "isFinal": true
+                }
+              ],
+              "initialChild": 4
+            }
+          ],
+          "initialChild": 3
+        }
+      ],
+      "initialChild": 2
+    },
+    {
+      "name": 7
+    },
+    {
+      "name": 9,
+      "transitions": [
+        {
+          "from": 9,
+          "to": 8,
+          "on": 5
+        }
+      ]
+    }
+  ],
+  "initial": 0,
+  "hasInitial": true
+}

@@ -10,11 +10,10 @@ package state
 // Initial inside the block names the child entered when the superstate is
 // entered.
 func (b *Builder[S, E, C]) SuperState(name S) *Builder[S, E, C] {
-	// A superstate nested inside another block is a v1 lint (one level of
-	// hierarchy); the structs support deeper nesting and the gate lifts later.
-	if len(b.blocks) > 0 {
-		b.recordHSMDiag("nested superstates are not supported in v1")
-	}
+	// A superstate may be nested inside another SuperState block — or inside a
+	// Region's substate list — to arbitrary depth. The block stack and the flat
+	// stateDef registry already carry parent/region placement at any level, and
+	// assembleHierarchy folds the registry into the nested State tree depth-first.
 	b.declareState(name)
 	file, line := callerSite()
 	blk := &block[S, E, C]{kind: blockSuper, owner: b.curState, srcFile: file, srcLine: line}
@@ -212,38 +211,61 @@ func (b *Builder[S, E, C]) assembleHierarchy() []State[S, E, C] {
 		byName[sd.state.Name] = sd
 	}
 
-	// Group children by parent, preserving declaration order.
+	// Index direct children of each parent in declaration order. A child placed
+	// in a region is recorded separately so it lands in the region's States slice
+	// rather than the parent's Children. Building this index first lets us
+	// assemble the tree depth-first, so a nested compound is fully populated
+	// before it is copied into its own parent (value copies otherwise drop
+	// grandchildren added after the parent was copied).
 	for _, sd := range b.states {
 		if !sd.hasParent {
 			continue
 		}
 		parent := byName[sd.parent]
-		if parent == nil {
-			continue
+		if parent != nil {
+			parent.childDefs = append(parent.childDefs, sd)
 		}
-		if sd.region != "" {
-			placeInRegion(parent, sd.region, sd.state)
-			continue
-		}
-		parent.state.Children = append(parent.state.Children, sd.state)
 	}
 
-	// Emit top-level states in declaration order.
+	// Emit top-level states in declaration order, recursing into each so the
+	// full nested structure (any depth) is materialized before the value copy.
 	var out []State[S, E, C]
 	for _, sd := range b.states {
 		if sd.hasParent {
 			continue
 		}
-		out = append(out, sd.state)
+		out = append(out, b.materialize(sd))
 	}
 	return out
 }
 
-// placeInRegion appends a substate into the named region's States slice.
-func placeInRegion[S comparable, E comparable, C any](parent *stateDef[S, E, C], region string, s State[S, E, C]) {
-	for ri := range parent.state.Regions {
-		if parent.state.Regions[ri].Name == region {
-			parent.state.Regions[ri].States = append(parent.state.Regions[ri].States, s)
+// materialize returns sd.state with its Children and Region States fully
+// assembled, recursing to arbitrary depth so nested compounds carry their
+// complete subtree before the value is copied into a parent.
+func (b *Builder[S, E, C]) materialize(sd *stateDef[S, E, C]) State[S, E, C] {
+	s := sd.state
+	// Reset slices we are about to rebuild so repeated calls stay idempotent.
+	s.Children = nil
+	for ri := range s.Regions {
+		s.Regions[ri].States = nil
+	}
+	for _, child := range sd.childDefs {
+		cs := b.materialize(child)
+		if child.region != "" {
+			placeInRegionState(&s, child.region, cs)
+			continue
+		}
+		s.Children = append(s.Children, cs)
+	}
+	return s
+}
+
+// placeInRegionState appends a fully-materialized substate into the named
+// region's States slice on the value-copied parent state.
+func placeInRegionState[S comparable, E comparable, C any](parent *State[S, E, C], region string, s State[S, E, C]) {
+	for ri := range parent.Regions {
+		if parent.Regions[ri].Name == region {
+			parent.Regions[ri].States = append(parent.Regions[ri].States, s)
 			return
 		}
 	}

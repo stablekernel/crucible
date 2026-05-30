@@ -254,6 +254,11 @@ type stateDef[S comparable, E comparable, C any] struct {
 	region    string // region name when nested directly in a Region block
 	order     int    // declaration order among siblings
 	isHistory bool   // true for a history pseudo-state (not a real substate/leaf)
+
+	// childDefs holds this state's direct child stateDefs in declaration order,
+	// populated by assembleHierarchy so the nested State tree can be built
+	// depth-first to arbitrary depth.
+	childDefs []*stateDef[S, E, C]
 }
 
 // blockKind tags an open builder block.

@@ -1,0 +1,22 @@
+stateDiagram-v2
+    [*] --> L0
+    state A {
+        [*] --> A__B
+        A__AHist
+        state A__B {
+            [*] --> A__B__C
+            state A__B__C {
+                [*] --> A__B__C__C1
+                A__B__C__C1
+                A__B__C__C2
+                A__B__C__CFinal
+                A__B__C__CFinal --> [*]
+                A__B__C__C1 --> A__B__C__C2: Step
+                A__B__C__C2 --> A__B__C__CFinal: FinishC
+            }
+        }
+    }
+    A --> ASib: CrossA
+    A --> Parked: Park
+    L0 --> A: Enter
+    Parked --> A__AHist: Resume
