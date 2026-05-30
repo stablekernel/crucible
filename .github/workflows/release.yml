@@ -18,6 +18,13 @@ env:
   GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
   GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
+# Run every step under bash on all runners, including Windows. Windows runners
+# default to PowerShell, where `$GOVULNCHECK` / `$GOLANGCI_LINT` expand to empty
+# and the go-run steps fail; bash makes interpolation consistent across the OS matrix.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Resolve which module directory the tag targets, and the tag string itself,
   # from the trusted github context (never from user-controlled input).
