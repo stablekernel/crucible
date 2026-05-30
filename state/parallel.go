@@ -135,6 +135,16 @@ func (i *Instance[S, E, C]) fireRegion(
 					break
 				}
 			}
+			if pass && t.GuardExpr != nil {
+				res := i.evalGuardExpr(t.GuardExpr, entity, tr)
+				if res.err != nil {
+					return true, nil, res.err
+				}
+				if !res.ok {
+					pass = false
+					err = &ErrGuardFailed{GuardName: joinLeafs(res.failedLeafs), Reason: "composite guard failed"}
+				}
+			}
 			if pass {
 				eff := i.applyRegionTransition(r, leaf, t, entity, tr)
 				return true, eff, nil
@@ -255,6 +265,16 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 				if !okg {
 					pass = false
 					break
+				}
+			}
+			if pass && t.GuardExpr != nil {
+				res := i.evalGuardExpr(t.GuardExpr, entity, &tr)
+				if res.err != nil {
+					tr.Outcome = OutcomeGuardPanic
+					return FireResult[S]{NewState: from, Trace: tr, Err: res.err}
+				}
+				if !res.ok {
+					pass = false
 				}
 			}
 			if pass {

@@ -326,7 +326,7 @@ func flatten[S comparable, E comparable, C any](g *graph, s *state.State[S, E, C
 			on:        fmt.Sprint(t.On),
 			eventLess: t.EventLess,
 			internal:  t.Internal,
-			guarded:   len(t.Guards) > 0,
+			guarded:   len(t.Guards) > 0 || t.GuardExpr != nil,
 		}
 		g.edges = append(g.edges, e)
 		g.outgoing[name] = append(g.outgoing[name], e)

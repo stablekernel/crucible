@@ -102,6 +102,15 @@ type Transition[S comparable, E comparable, C any] struct {
 	Effects  []Ref    `json:"effects,omitempty"`
 	WaitMode WaitMode `json:"waitMode,omitempty"`
 
+	// GuardExpr is an optional composite guard: a serializable boolean
+	// expression tree over named-ref leaves, the stateIn built-in, and the
+	// and/or/not combinators (xstate v5 parity). When set it is evaluated in
+	// addition to every Ref in Guards — the transition is enabled only when both
+	// the plain guards and the expression pass — so the common single-guard case
+	// stays the plain Guards slice and composition is purely additive. The tree
+	// serializes and round-trips losslessly through JSON.
+	GuardExpr *GuardNode[S] `json:"guardExpr,omitempty"`
+
 	Internal  bool           `json:"internal,omitempty"`
 	EventLess bool           `json:"eventLess,omitempty"`
 	After     *time.Duration `json:"after,omitempty"`
@@ -610,6 +619,20 @@ func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
 func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Guards = append(b.curTransition.Guards, Ref{Name: guardName, Params: firstParams(params)})
+	}
+	return b
+}
+
+// WhenExpr attaches a composite guard expression to the most-recent transition:
+// a boolean tree over named-ref leaves (Guard), the stateIn built-in (StateIn),
+// and the And/Or/Not combinators, with xstate v5 short-circuit semantics. It is
+// evaluated alongside any When guards — the transition is enabled only when both
+// pass. Use When for the common single-guard case and WhenExpr when a transition
+// needs composition or stateIn.
+func (b *Builder[S, E, C]) WhenExpr(expr GuardNode[S]) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		e := expr
+		b.curTransition.GuardExpr = &e
 	}
 	return b
 }

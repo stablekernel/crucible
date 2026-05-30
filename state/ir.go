@@ -51,6 +51,9 @@ func deepCopyStates[S comparable, E comparable, C any](in []State[S, E, C]) []St
 	for i := range in {
 		out[i] = in[i]
 		out[i].Transitions = append([]Transition[S, E, C](nil), in[i].Transitions...)
+		for ti := range out[i].Transitions {
+			out[i].Transitions[ti].GuardExpr = cloneGuardNode(in[i].Transitions[ti].GuardExpr)
+		}
 		out[i].Children = deepCopyStates(in[i].Children)
 		if in[i].Regions != nil {
 			out[i].Regions = make([]Region[S, E, C], len(in[i].Regions))

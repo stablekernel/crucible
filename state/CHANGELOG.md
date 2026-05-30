@@ -13,6 +13,30 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Guard combinators and the `stateIn` built-in, for xstate v5 guard parity.
+  - **Combinators.** `And(...)`, `Or(...)`, and `Not(...)` compose guards into a
+    serializable boolean expression tree whose leaves are named-ref guards
+    (`Guard(name, params...)`) or the `stateIn` built-in, nested to any depth
+    (e.g. `And(Or(g1, g2), Not(g3))`). Evaluation short-circuits exactly like a
+    plain multi-guard transition: `And` stops at the first false, `Or` at the
+    first true. A failing composite reports the failing leaf(s) when cheap, else
+    the composite, preserving the typed `ErrGuardFailed`; a leaf panic still
+    surfaces as `ErrGuardPanic`.
+  - **`stateIn(state)`.** A first-class, config-aware built-in guard, true when
+    the instance's active configuration includes the named state — its active
+    leaves and their ancestor spine — so it is correct for atomic, compound, and
+    parallel configurations. It needs no registration; the kernel evaluates it
+    directly against the live configuration at Fire time.
+  - **IR.** A transition carries an optional `GuardExpr *GuardNode[S]` alongside
+    the plain `Guards` slice; the two are AND-composed (both must pass). The
+    expression tree serializes and round-trips losslessly through JSON, leaf
+    refs bind through `Provide` against the host registry exactly like plain
+    guards, and a malformed tree or an unbound leaf fails at `Quench` with the
+    same typed errors. The common single-named-guard case stays the plain
+    `Guards` slice. Authored via the DSL `WhenExpr(expr)`. The `evolution` differ
+    classifies composite-guard leaves (including `stateIn` targets) as guard
+    requirements, and the `analysis` and visualization passes treat a transition
+    with a `GuardExpr` as guarded.
 - Transition-semantics parity with xstate v5: wildcard, forbidden, `reenter`, and
   `raise`.
   - **Wildcard catch-all.** `Transition.Wildcard` (DSL `OnAny()`) matches any event

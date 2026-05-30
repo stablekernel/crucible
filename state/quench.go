@@ -136,7 +136,7 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 			// A forbidden transition is a pure block: it declares no target, guards,
 			// or effects, so the remaining target/ref checks do not apply.
 			if t.Forbidden {
-				if t.Reenter || len(t.Guards) > 0 || len(t.Effects) > 0 || len(t.Raise) > 0 {
+				if t.Reenter || len(t.Guards) > 0 || t.GuardExpr != nil || len(t.Effects) > 0 || len(t.Raise) > 0 {
 					diags = append(diags, diagnostic{Diagnostic: Diagnostic{
 						Severity: diagError,
 						Message:  fmt.Sprintf("forbidden transition from %v must not declare a target, guards, effects, or raise", t.From),
@@ -161,8 +161,10 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 
 			// Ambiguity check. Wildcard catch-alls are counted separately: more than
 			// one guardless wildcard at a state is ambiguous, but a wildcard never
-			// conflicts with a specific-event transition (specific outranks it).
-			if len(t.Guards) == 0 {
+			// conflicts with a specific-event transition (specific outranks it). A
+			// composite guard expression makes a transition guarded, so it is exempt
+			// from the guardless-ambiguity check just like a plain guard.
+			if len(t.Guards) == 0 && t.GuardExpr == nil {
 				switch {
 				case t.Wildcard:
 					if guardlessWildcard >= 1 {
@@ -190,6 +192,21 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 			// Unresolved guard/action refs.
 			b.checkRefs(&diags, "guard", t.Guards, "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
 			b.checkRefs(&diags, "action", t.Effects, "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
+
+			// A composite guard expression must be structurally well-formed, and
+			// every named-ref leaf must bind against the registry. The stateIn
+			// built-in carries no ref and needs no binding.
+			if t.GuardExpr != nil {
+				if err := t.GuardExpr.validate(); err != nil {
+					diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  fmt.Sprintf("malformed guard expression on transition from %v: %v", t.From, err),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					}})
+				}
+				b.checkRefs(&diags, "guard", t.GuardExpr.leafRefs(), "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
+			}
 		}
 	}
 

@@ -354,7 +354,10 @@ func (d *differ[S, E, C]) diffTransition(tpath string, ot, nt state.Transition[S
 		})
 	}
 
-	d.diffRefs(tpath, "guard", ot.Guards, nt.Guards, KindGuardAdded, KindGuardRemoved)
+	// A composite guard expression's named-ref and stateIn leaves count as guard
+	// requirements for evolution classification: adding one tightens the
+	// transition (flagged-additive), removing one loosens it.
+	d.diffRefs(tpath, "guard", guardRefs(ot), guardRefs(nt), KindGuardAdded, KindGuardRemoved)
 	d.diffRefs(tpath, "effect", ot.Effects, nt.Effects, KindEffectAdded, KindEffectRemoved)
 }
 
@@ -396,6 +399,21 @@ func indexStates[S comparable, E comparable, C any](states []state.State[S, E, C
 		m[str(s.Name)] = s
 	}
 	return m
+}
+
+// guardRefs returns every guard requirement of a transition: its plain guard
+// refs plus the named-ref and stateIn leaves of any composite guard expression.
+// stateIn leaves are rendered as synthetic "stateIn(<state>)" ref names so they
+// participate in add/remove classification like any other guard.
+func guardRefs[S comparable, E comparable, C any](t state.Transition[S, E, C]) []state.Ref {
+	refs := append([]state.Ref(nil), t.Guards...)
+	if t.GuardExpr != nil {
+		refs = append(refs, t.GuardExpr.LeafRefs()...)
+		for _, in := range t.GuardExpr.StateInTargets() {
+			refs = append(refs, state.Ref{Name: fmt.Sprintf("stateIn(%v)", in)})
+		}
+	}
+	return refs
 }
 
 func indexTransitions[S comparable, E comparable, C any](trs []state.Transition[S, E, C]) map[transitionKey]state.Transition[S, E, C] {
