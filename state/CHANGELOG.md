@@ -11,12 +11,13 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-30
+
 ### Added
 
-- Inspection API: a live observer sink for an instance's runtime activity (xstate
-  v5 `createActor(logic, { inspect })` parity). An `Inspector` (or the
-  `InspectorFunc` closure adapter) receives `InspectionEvent`s tagged by
-  `InspectKind` — an event received, a transition taken (carrying the live `Trace`),
+- Inspection API: a live observer sink for an instance's runtime activity. An
+  `Inspector` (or the `InspectorFunc` closure adapter) receives
+  `InspectionEvent`s tagged by `InspectKind` — an event received, a transition taken (carrying the live `Trace`),
   a snapshot update, an actor spawned/stopped, and a message sent/delivered between
   actors. Registered with **`WithInspector`** at `Cast` for the kernel-owned
   event/transition/snapshot stream, and **`ActorSystem.WithActorInspector`** for the
@@ -26,7 +27,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   registered inspector, never IO).
 - **`WaitFor(ctx, inst, predicate, ...opts)`**: a host-side helper that drives an
   instance until a predicate over its `Snapshot` holds, or the context/`timeout`
-  budget elapses (xstate v5 `waitFor(actor, predicate, { timeout })` parity). It
+  budget elapses. It
   checks the predicate immediately, then advances a host driver one step at a time —
   **`WithWaitScheduler`** ticks a `Scheduler` over a `FakeClock` so `after`-driven
   machines progress deterministically, or **`WithWaitStepFunc`** supplies a bespoke
@@ -34,7 +35,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   whole wait is deterministic with no real sleeping. Returns the matching snapshot,
   or the typed **`*WaitTimeoutError`** on budget exhaustion. Helpers
   **`WaitInState`** and **`WaitDone`** cover the common predicates.
-- Path enumeration in `state/analysis` (the `@xstate/graph` analog):
+- Path enumeration in `state/analysis`:
   **`ShortestPaths(m)`** returns the shortest event sequence from the initial state
   to every reachable state — the multi-target generalization of the kernel's
   `PlanPath` — and **`SimplePaths(m)`** enumerates every acyclic (simple) path to
@@ -45,8 +46,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   structural scenario set a conformance harness draws coverage from. Paths expose
   `Events()`, `States(initial)`, and ordered `Step`s.
 - Deep persistence / snapshots: capture a running `Instance`'s full runtime state
-  and restore it to resume from exactly that point (xstate v5
-  `getPersistedSnapshot` / `createActor(logic, { snapshot })` parity). The IR's
+  and restore it to resume from exactly that point. The IR's
   `ToJSON` / `LoadFromJSON` persist the machine DEFINITION; a snapshot persists the
   INSTANCE runtime state — a different thing.
   - **`Instance.Snapshot()`** returns a serializable `Snapshot[S, E, C]` capturing
@@ -59,7 +59,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
     mutates, or consults a clock — so `Fire` stays pure.
   - **`Machine.Restore(snap, ...)`** rebuilds an `Instance` resuming at the
     snapshot's configuration, context, and history WITHOUT re-running entry actions
-    (resume, not re-enter — matching xstate). It validates the snapshot's machine
+    (resume, not re-enter). It validates the snapshot's machine
     name and every configuration leaf, returning the typed `*SnapshotError` on a
     mismatch, unknown leaf, or empty configuration. Wire a clock with
     `WithRestoreClock`.
@@ -90,8 +90,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `onError` routing, host-driven so `Fire` stays pure.
   - **Start/stop effects.** Entering a state that declares an `invoke` emits a
     `StartService{ID, Src, Input, OnDone, OnError, State}` effect; exiting it
-    before the service completes emits a `StopService{ID}` effect (xstate v5
-    auto-stop-on-exit). The kernel never runs a service, never starts a goroutine,
+    before the service completes emits a `StopService{ID}` effect
+    (auto-stop-on-exit). The kernel never runs a service, never starts a goroutine,
     and performs no IO — it emits these as data alongside the transition's other
     effects, and a host runtime runs the service and feeds the result back through
     `Fire`. Invoke IDs are stable per `(machine, owning state, invoke index)` or
@@ -114,7 +114,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   - **Trace & IR.** Service start/stop record microsteps; the `invoke` block (id,
     src ref + params, input, onDone/onError) round-trips losslessly through JSON.
 - Actor model: child-machine actors, an actor system, mailboxes, delivery, and
-  lifecycle, for xstate v5 actor parity — host-driven so `Fire` stays pure and the
+  lifecycle, host-driven so `Fire` stays pure and the
   kernel stays stdlib-only.
   - **Spawn/stop effects.** Entering a state that invokes a child `Machine`
     (`InvokeActor`) emits a `SpawnActor{ID, Src, Input, OnDone, OnError, State,
@@ -152,7 +152,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
     through JSON, and a dynamic `Spawn` built-in's params survive too; actor refs are
     runtime and intentionally absent from the IR.
 - Actor communication actions: the action-level send/stop sugar on top of the
-  actor runtime, for xstate v5 parity — built-in actions that emit data effects the
+  actor runtime — built-in actions that emit data effects the
   `ActorSystem` routes, so `Fire` stays pure.
   - **Send/stop built-in actions.** `SendTo(targetID, event, ...)` emits a
     `SendTo{TargetID, SystemID, Event}` effect the system delivers to the addressed
@@ -179,8 +179,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   declarative `after` representation drivable, while keeping `Fire` pure.
   - **Schedule/cancel effects.** Entering a state that declares an `after`
     transition emits a `ScheduleAfter{ID, Delay, Event, State}` effect; exiting it
-    before the delay elapses emits a `CancelScheduled{ID}` effect (xstate v5
-    auto-cancel-on-exit). The kernel never reads a clock and never sleeps — it
+    before the delay elapses emits a `CancelScheduled{ID}` effect
+    (auto-cancel-on-exit). The kernel never reads a clock and never sleeps — it
     emits these as data alongside the transition's other effects, and a host
     runtime owns the real timer and feeds the delayed event back through `Fire`.
     Schedule IDs are stable per `(machine, source state, delayed edge)`; derive
@@ -197,7 +197,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   - **Trace & IR.** Schedule, cancel, and delayed fires record microsteps; the
     `after` delay + target round-trip losslessly through JSON, and visualization
     annotates a delayed edge with its delay.
-- Guard combinators and the `stateIn` built-in, for xstate v5 guard parity.
+- Guard combinators and the `stateIn` built-in.
   - **Combinators.** `And(...)`, `Or(...)`, and `Not(...)` compose guards into a
     serializable boolean expression tree whose leaves are named-ref guards
     (`Guard(name, params...)`) or the `stateIn` built-in, nested to any depth
@@ -221,7 +221,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
     classifies composite-guard leaves (including `stateIn` targets) as guard
     requirements, and the `analysis` and visualization passes treat a transition
     with a `GuardExpr` as guarded.
-- Transition-semantics parity with xstate v5: wildcard, forbidden, `reenter`, and
+- Transition semantics: wildcard, forbidden, `reenter`, and
   `raise`.
   - **Wildcard catch-all.** `Transition.Wildcard` (DSL `OnAny()`) matches any event
     no specific `On`-keyed transition of the state handles. It is the lowest-priority
@@ -231,8 +231,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
     `ForbidAny()`) blocks an event at a state: the event is consumed and ignored and,
     unlike an unhandled event, does NOT bubble to ancestors.
   - **`reenter` / internal-by-default.** A self- or ancestor-targeted transition is
-    now internal by default (its effects run with no exit/re-entry of the source),
-    matching v5. `Transition.Reenter` (DSL `Reenter()`) forces the external form,
+    now internal by default (its effects run with no exit/re-entry of the source).
+    `Transition.Reenter` (DSL `Reenter()`) forces the external form,
     running the target's exit then entry. Existing transitions are unaffected:
     ordinary transitions to a distinct target keep their full cascade.
   - **`raise`.** `Transition.Raise` (DSL `Raise(events...)`) enqueues internal events
@@ -299,5 +299,6 @@ Initial release of the pure state-machine kernel.
   clock/ID seams for determinism.
 - Reusable conformance harness with golden scenarios.
 
-[Unreleased]: https://github.com/stablekernel/crucible/compare/state/v0.1.0...HEAD
+[Unreleased]: https://github.com/stablekernel/crucible/compare/state/v0.2.0...HEAD
+[0.2.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.2.0
 [0.1.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.1.0
