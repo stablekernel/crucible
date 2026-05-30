@@ -369,6 +369,14 @@ type Registry[C any] struct {
 	actions  map[string]ActionFn[C]
 	services map[string]ServiceFn[C]
 
+	// bindings holds the per-kind binding interface recorded for every guard,
+	// action, and service registration, in PARALLEL with the bare-func maps above.
+	// The func maps stay the in-process fast path the pure Fire step, Quench, and
+	// the palette consult unchanged; the bindings map is the seam a future
+	// out-of-process binding registers under, keyed by the same name. Actors bind at
+	// the host ActorSystem, not here, so they record a descriptor only.
+	bindings map[string]boundBehavior[C]
+
 	// descriptors holds the optional palette metadata attached at registration via
 	// the DescribeOption tail, keyed by kind+name (descriptorKey). A registration
 	// with no descriptor has no entry here and yields a minimal Descriptor from
@@ -385,6 +393,7 @@ func NewRegistry[C any]() *Registry[C] {
 		guards:      map[string]GuardFn[C]{},
 		actions:     map[string]ActionFn[C]{},
 		services:    map[string]ServiceFn[C]{},
+		bindings:    map[string]boundBehavior[C]{},
 		descriptors: map[string]Descriptor{},
 	}
 }
@@ -402,6 +411,7 @@ func (r *Registry[C]) describe(kind DescriptorKind, name string, opts []Describe
 // without one still works and yields a minimal palette descriptor.
 func (r *Registry[C]) Guard(name string, fn GuardFn[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = fn
+	r.bindGuard(name, inProcessGuard(fn))
 	r.describe(KindGuard, name, opts)
 	return r
 }
@@ -411,6 +421,7 @@ func (r *Registry[C]) Guard(name string, fn GuardFn[C], opts ...DescribeOption) 
 // palette descriptor.
 func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption) *Registry[C] {
 	r.actions[name] = fn
+	r.bindAction(name, inProcessAction(fn))
 	r.describe(KindAction, name, opts)
 	return r
 }
@@ -423,6 +434,7 @@ func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption
 // still works and yields a minimal palette descriptor.
 func (r *Registry[C]) Service(name string, fn ServiceFn[C], opts ...DescribeOption) *Registry[C] {
 	r.services[name] = fn
+	r.bindService(name, inProcessService(fn))
 	r.describe(KindService, name, opts)
 	return r
 }

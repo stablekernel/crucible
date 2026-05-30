@@ -1,6 +1,9 @@
 package state
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // This file ships the registry palette — the discovery surface a visual builder
 // reads to enumerate the host's registered behavior. The registry binds
@@ -86,6 +89,79 @@ type Descriptor struct {
 	// implementation reads from or writes to, for a UI that surfaces data flow.
 	Reads  []string `json:"reads,omitempty"`
 	Writes []string `json:"writes,omitempty"`
+	// Binding is the reserved descriptor of how this named behavior is backed. It
+	// is optional and absent by default; an absent binding means the behavior
+	// resolves to the in-process Go registry entry (BindingTransportOf reads that
+	// default). Reserving the slot now keeps a future out-of-process binding
+	// (a sandboxed component, a remote service) an additive descriptor field rather
+	// than a breaking change. The kernel never dispatches on it at v1.
+	Binding *BindingSpec `json:"binding,omitempty"`
+}
+
+// TransportInProcess is the v1 default binding transport: the behavior is a Go
+// func held in the host registry and called in-process. It is the only transport
+// the kernel dispatches at v1; every other transport is reserved.
+const TransportInProcess = "in-process"
+
+// BindingSpec describes how a named behavior is backed. Transport names the
+// invocation transport, defaulting to in-process when empty. Meta is a reserved
+// per-binding extension namespace (e.g. a sandbox fuel budget, an endpoint).
+//
+// Transport follows the closed-enum extension policy: a transport this build does
+// not recognize is preserved verbatim on round-trip (so a newer producer's binding
+// survives an older client) and would be rejected only at dispatch — and no
+// non-in-process dispatch path exists at v1. Unknown top-level keys are likewise
+// preserved through extra.
+type BindingSpec struct {
+	Transport string         `json:"transport,omitempty"`
+	Meta      map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// bindingSpecKnownKeys is the set of JSON keys BindingSpec models; anything else
+// is captured into extra and preserved verbatim on round-trip.
+var bindingSpecKnownKeys = map[string]struct{}{"transport": {}, "meta": {}}
+
+// MarshalJSON encodes a BindingSpec, merging its preserved unknown keys back in
+// with stable key ordering.
+func (s BindingSpec) MarshalJSON() ([]byte, error) {
+	type alias BindingSpec
+	return marshalWithExtra(alias(s), s.extra)
+}
+
+// UnmarshalJSON decodes a BindingSpec and captures any unknown keys into extra so
+// they survive re-serialization.
+func (s *BindingSpec) UnmarshalJSON(data []byte) error {
+	type alias BindingSpec
+	var a alias
+	extra, err := captureExtra(data, &a, bindingSpecKnownKeys)
+	if err != nil {
+		return err
+	}
+	*s = BindingSpec(a)
+	s.extra = extra
+	return nil
+}
+
+// transport returns the spec's transport, defaulting to in-process when unset.
+func (s BindingSpec) transport() string {
+	if s.Transport == "" {
+		return TransportInProcess
+	}
+	return s.Transport
+}
+
+// BindingTransportOf returns the binding transport a descriptor declares,
+// defaulting to in-process when the descriptor has no Binding (the common case) or
+// an empty transport. It is the canonical reader of the reserved binding default.
+func BindingTransportOf(d Descriptor) string {
+	if d.Binding == nil {
+		return TransportInProcess
+	}
+	return d.Binding.transport()
 }
 
 // describeSpec is the accumulated descriptor metadata built by Describe and its
