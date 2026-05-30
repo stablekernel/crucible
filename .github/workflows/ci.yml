@@ -34,8 +34,8 @@ jobs:
       - name: golangci-lint (telemetry)
         working-directory: telemetry
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
-      - name: golangci-lint (telemetry/slogadapter)
-        working-directory: telemetry/slogadapter
+      - name: golangci-lint (telemetry/slog)
+        working-directory: telemetry/slog
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
       - name: golangci-lint (telemetry/otel)
         working-directory: telemetry/otel
@@ -44,34 +44,14 @@ jobs:
         working-directory: telemetry/datadog
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
 
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        go: ["1.25.x", "1.26.x"]
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go }}
-          cache-dependency-path: "**/go.sum"
-      - name: test -race (state)
-        working-directory: state
-        run: go test -race ./...
-      - name: test -race (telemetry)
-        working-directory: telemetry
-        run: go test -race ./...
-      - name: test -race (telemetry/slogadapter)
-        working-directory: telemetry/slogadapter
-        run: go test -race ./...
-      - name: test -race (telemetry/otel)
-        working-directory: telemetry/otel
-        run: go test -race ./...
-      - name: test -race (telemetry/datadog)
-        working-directory: telemetry/datadog
-        run: go test -race ./...
+  # The race-test matrix lives in a reusable workflow so its legs render as a
+  # single collapsible tree in the checks UI ("tests / test (1.25.x, …)") rather
+  # than as flat top-level checks. Keep the module list in sync with the lint,
+  # vuln, and coverage jobs below.
+  tests:
+    uses: ./.github/workflows/test.yml
+    with:
+      modules: "state telemetry telemetry/slog telemetry/otel telemetry/datadog"
 
   vuln:
     runs-on: ubuntu-latest
@@ -87,8 +67,8 @@ jobs:
       - name: govulncheck (telemetry)
         working-directory: telemetry
         run: go run "$GOVULNCHECK" ./...
-      - name: govulncheck (telemetry/slogadapter)
-        working-directory: telemetry/slogadapter
+      - name: govulncheck (telemetry/slog)
+        working-directory: telemetry/slog
         run: go run "$GOVULNCHECK" ./...
       - name: govulncheck (telemetry/otel)
         working-directory: telemetry/otel
@@ -123,8 +103,8 @@ jobs:
           echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
-      - name: coverage gate (telemetry/slogadapter)
-        working-directory: telemetry/slogadapter
+      - name: coverage gate (telemetry/slog)
+        working-directory: telemetry/slog
         run: |
           go test -covermode=atomic -coverprofile=coverage.out ./...
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
