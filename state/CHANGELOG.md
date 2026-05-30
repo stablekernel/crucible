@@ -13,6 +13,37 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Inspection API: a live observer sink for an instance's runtime activity (xstate
+  v5 `createActor(logic, { inspect })` parity). An `Inspector` (or the
+  `InspectorFunc` closure adapter) receives `InspectionEvent`s tagged by
+  `InspectKind` — an event received, a transition taken (carrying the live `Trace`),
+  a snapshot update, an actor spawned/stopped, and a message sent/delivered between
+  actors. Registered with **`WithInspector`** at `Cast` for the kernel-owned
+  event/transition/snapshot stream, and **`ActorSystem.WithActorInspector`** for the
+  host-owned actor-lifecycle and inter-actor message stream. It is off by default —
+  a nil inspector is never called, so an un-inspected instance pays nothing and
+  `Fire` stays pure (the notification is an in-memory observer call gated on a
+  registered inspector, never IO).
+- **`WaitFor(ctx, inst, predicate, ...opts)`**: a host-side helper that drives an
+  instance until a predicate over its `Snapshot` holds, or the context/`timeout`
+  budget elapses (xstate v5 `waitFor(actor, predicate, { timeout })` parity). It
+  checks the predicate immediately, then advances a host driver one step at a time —
+  **`WithWaitScheduler`** ticks a `Scheduler` over a `FakeClock` so `after`-driven
+  machines progress deterministically, or **`WithWaitStepFunc`** supplies a bespoke
+  driver. Time is measured on the instance's clock (a `FakeClock` in tests), so the
+  whole wait is deterministic with no real sleeping. Returns the matching snapshot,
+  or the typed **`*WaitTimeoutError`** on budget exhaustion. Helpers
+  **`WaitInState`** and **`WaitDone`** cover the common predicates.
+- Path enumeration in `state/analysis` (the `@xstate/graph` analog):
+  **`ShortestPaths(m)`** returns the shortest event sequence from the initial state
+  to every reachable state — the multi-target generalization of the kernel's
+  `PlanPath` — and **`SimplePaths(m)`** enumerates every acyclic (simple) path to
+  each state, terminating even on machines with cycles by refusing to re-enter a
+  state already on the current path. Both walk the same flattened IR graph the
+  reachability checks use and are guard-agnostic (a static pass cannot evaluate host
+  guards, and a guard only ever prunes an edge at run time), so they report the full
+  structural scenario set a conformance harness draws coverage from. Paths expose
+  `Events()`, `States(initial)`, and ordered `Step`s.
 - Deep persistence / snapshots: capture a running `Instance`'s full runtime state
   and restore it to resume from exactly that point (xstate v5
   `getPersistedSnapshot` / `createActor(logic, { snapshot })` parity). The IR's

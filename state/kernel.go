@@ -1083,7 +1083,7 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	if clock == nil {
 		clock = systemClock{}
 	}
-	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock}
+	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock, inspector: cfg.inspector}
 	// If the starting state is itself compound or parallel, the active
 	// configuration is the set of leaves reached by descending into its initial
 	// children. The primary leaf becomes Current().
@@ -1124,6 +1124,12 @@ type Instance[S comparable, E comparable, C any] struct {
 	// Scheduler/host driver wired to this instance — so Fire stays clock-free.
 	// Defaults to SystemClock() when no WithClock is supplied at Cast.
 	clock Clock
+	// inspector is the optional live observer sink fed inspection events as the
+	// instance advances (xstate v5 `inspect`). It is nil by default — an
+	// un-inspected instance never calls it, so inspection is zero-overhead off and
+	// the pure Fire step performs no IO when one is absent. Wired with
+	// WithInspector at Cast.
+	inspector Inspector
 	// The actor model's per-instance mailbox lives on the host ActorSystem, which
 	// runs this instance as a child actor and routes events into its mailbox; the
 	// pure Fire step neither owns a mailbox nor sends messages. InFinal reports when
