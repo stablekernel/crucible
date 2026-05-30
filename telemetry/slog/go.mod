@@ -1,4 +1,4 @@
-module github.com/stablekernel/crucible/telemetry/slogadapter
+module github.com/stablekernel/crucible/telemetry/slog
 
 go 1.25
 

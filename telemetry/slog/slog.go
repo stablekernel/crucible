@@ -1,9 +1,9 @@
-// Package slogadapter implements the Crucible telemetry interfaces on top of the
+// Package slog implements the Crucible telemetry interfaces on top of the
 // standard library's log/slog. It proves the telemetry seam end to end using
 // zero external dependencies: spans and metric instruments are emitted as
 // structured log records.
 //
-// Import path: github.com/stablekernel/crucible/telemetry/slogadapter
+// Import path: github.com/stablekernel/crucible/telemetry/slog
 //
 // It is intended for development, tests, and environments where structured logs
 // are the only observability sink. For production tracing/metrics backends, use
@@ -22,11 +22,11 @@
 //
 // All durations are sourced from an injectable clock so emission is
 // deterministic in tests.
-package slogadapter
+package slog
 
 import (
 	"context"
-	"log/slog"
+	sl "log/slog"
 	"sync/atomic"
 	"time"
 
@@ -35,7 +35,7 @@ import (
 
 // config holds resolved Option state.
 type config struct {
-	logger *slog.Logger
+	logger *sl.Logger
 	now    func() time.Time
 	nextID func() uint64
 }
@@ -46,7 +46,7 @@ type Option func(*config)
 // WithLogger sets the slog.Logger the adapter emits to. The default discards all
 // records (slog.New(slog.DiscardHandler)), keeping the adapter silent until a
 // real logger is supplied.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(l *sl.Logger) Option {
 	return func(c *config) {
 		if l != nil {
 			c.logger = l
@@ -78,7 +78,7 @@ func WithIDFn(next func() uint64) Option {
 func resolve(opts ...Option) config {
 	ctr := new(atomic.Uint64)
 	c := config{
-		logger: slog.New(slog.DiscardHandler),
+		logger: sl.New(sl.DiscardHandler),
 		now:    time.Now,
 		nextID: func() uint64 { return ctr.Add(1) },
 	}
@@ -105,12 +105,12 @@ func (t *Tracer) Start(ctx context.Context, name string, attrs ...telemetry.Attr
 	id := t.cfg.nextID()
 	parent, hasParent := ctx.Value(spanIDKey{}).(uint64)
 
-	logAttrs := []any{slog.String("name", name), slog.Uint64("id", id)}
+	logAttrs := []any{sl.String("name", name), sl.Uint64("id", id)}
 	if hasParent {
-		logAttrs = append(logAttrs, slog.Uint64("parent", parent))
+		logAttrs = append(logAttrs, sl.Uint64("parent", parent))
 	}
 	logAttrs = append(logAttrs, attrArgs(attrs)...)
-	t.cfg.logger.LogAttrs(ctx, slog.LevelDebug, "span.start", slog.Group("span", logAttrs...))
+	t.cfg.logger.LogAttrs(ctx, sl.LevelDebug, "span.start", sl.Group("span", logAttrs...))
 
 	s := &span{
 		cfg:   t.cfg,
@@ -136,19 +136,19 @@ func (s *span) SetAttributes(attrs ...telemetry.Attr) {
 	if s.ended {
 		return
 	}
-	args := append([]any{slog.String("name", s.name), slog.Uint64("id", s.id)}, attrArgs(attrs)...)
-	s.cfg.logger.LogAttrs(context.Background(), slog.LevelDebug, "span.attributes", slog.Group("span", args...))
+	args := append([]any{sl.String("name", s.name), sl.Uint64("id", s.id)}, attrArgs(attrs)...)
+	s.cfg.logger.LogAttrs(context.Background(), sl.LevelDebug, "span.attributes", sl.Group("span", args...))
 }
 
 func (s *span) RecordError(err error) {
 	if s.ended || err == nil {
 		return
 	}
-	s.cfg.logger.LogAttrs(context.Background(), slog.LevelError, "span.error",
-		slog.Group("span",
-			slog.String("name", s.name),
-			slog.Uint64("id", s.id),
-			slog.String("error", err.Error()),
+	s.cfg.logger.LogAttrs(context.Background(), sl.LevelError, "span.error",
+		sl.Group("span",
+			sl.String("name", s.name),
+			sl.Uint64("id", s.id),
+			sl.String("error", err.Error()),
 		),
 	)
 }
@@ -167,20 +167,20 @@ func (s *span) End() {
 	}
 	s.ended = true
 	args := []any{
-		slog.String("name", s.name),
-		slog.Uint64("id", s.id),
-		slog.String("status", statusString(s.status)),
-		slog.Duration("elapsed", s.cfg.now().Sub(s.start)),
+		sl.String("name", s.name),
+		sl.Uint64("id", s.id),
+		sl.String("status", statusString(s.status)),
+		sl.Duration("elapsed", s.cfg.now().Sub(s.start)),
 	}
 	if s.statusMsg != "" {
-		args = append(args, slog.String("status_msg", s.statusMsg))
+		args = append(args, sl.String("status_msg", s.statusMsg))
 	}
-	s.cfg.logger.LogAttrs(context.Background(), slog.LevelDebug, "span.end", slog.Group("span", args...))
+	s.cfg.logger.LogAttrs(context.Background(), sl.LevelDebug, "span.end", sl.Group("span", args...))
 }
 
 // Meter is a telemetry.Meter backed by slog.
 type Meter struct {
-	logger *slog.Logger
+	logger *sl.Logger
 }
 
 // NewMeter returns a slog-backed Meter.
@@ -203,30 +203,30 @@ func (m *Meter) Gauge(name string, opts ...telemetry.InstrumentOption) telemetry
 
 // instrument backs Counter, Histogram, and Gauge: each logs a "metric" record.
 type instrument struct {
-	logger *slog.Logger
+	logger *sl.Logger
 	name   string
 	kind   string
 	cfg    telemetry.InstrumentConfig
 }
 
 func (i *instrument) Add(ctx context.Context, n int64, attrs ...telemetry.Attr) {
-	i.emit(ctx, slog.Int64("value", n), attrs)
+	i.emit(ctx, sl.Int64("value", n), attrs)
 }
 
 func (i *instrument) Record(ctx context.Context, v float64, attrs ...telemetry.Attr) {
-	i.emit(ctx, slog.Float64("value", v), attrs)
+	i.emit(ctx, sl.Float64("value", v), attrs)
 }
 
-func (i *instrument) emit(ctx context.Context, value slog.Attr, attrs []telemetry.Attr) {
-	args := []any{slog.String("name", i.name), slog.String("kind", i.kind), value}
+func (i *instrument) emit(ctx context.Context, value sl.Attr, attrs []telemetry.Attr) {
+	args := []any{sl.String("name", i.name), sl.String("kind", i.kind), value}
 	if i.cfg.Unit != "" {
-		args = append(args, slog.String("unit", i.cfg.Unit))
+		args = append(args, sl.String("unit", i.cfg.Unit))
 	}
 	if i.cfg.Description != "" {
-		args = append(args, slog.String("description", i.cfg.Description))
+		args = append(args, sl.String("description", i.cfg.Description))
 	}
 	args = append(args, attrArgs(attrs)...)
-	i.logger.LogAttrs(ctx, slog.LevelDebug, "metric", slog.Group("metric", args...))
+	i.logger.LogAttrs(ctx, sl.LevelDebug, "metric", sl.Group("metric", args...))
 }
 
 // attrArgs nests the telemetry attributes under a single "attrs" group so their
@@ -241,7 +241,7 @@ func attrArgs(attrs []telemetry.Attr) []any {
 	for i, a := range attrs {
 		inner[i] = a
 	}
-	return []any{slog.Group("attrs", inner...)}
+	return []any{sl.Group("attrs", inner...)}
 }
 
 func statusString(c telemetry.StatusCode) string {

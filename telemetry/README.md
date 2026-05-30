@@ -108,17 +108,17 @@ optional sub-modules so the core never imports a vendor SDK.
 
 | Adapter                | Status   | Deps |
 | ---------------------- | -------- | ---- |
-| [`telemetry/slogadapter`](slogadapter/README.md) | shipped  | stdlib `log/slog` only — emits spans/metrics as structured logs |
+| [`telemetry/slog`](slog/README.md) | shipped  | stdlib `log/slog` only — emits spans/metrics as structured logs |
 | [`telemetry/otel`](otel/README.md) | shipped  | OpenTelemetry SDK (in its own `go.mod`) |
 | [`telemetry/datadog`](datadog/README.md) | shipped  | `dd-trace-go` / `datadog-go` (in their own `go.mod`) |
 
 Each adapter implements the same interfaces and is wired by a consumer via
-`WithTracer`/`WithMeter` exactly like `slogadapter`. `Span.SetStatus` maps to the
+`WithTracer`/`WithMeter` exactly like the `slog` adapter. `Span.SetStatus` maps to the
 otel status code / Datadog error flag; `ResolveInstrument` exposes the
 unit/description an adapter needs to construct its backend instrument. Attributes
 are converted with a `switch` over `attr.Value.Kind()` (the `slog.Value` kind),
 reading the typed accessor for each scalar kind and `Value.Any()` only for the
-`KindAny` escape hatch. The `slogadapter` is conversion-free because `Attr` is
+`KindAny` escape hatch. The `slog` adapter is conversion-free because `Attr` is
 already `slog.Attr`.
 
 ## Stability
