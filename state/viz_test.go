@@ -106,18 +106,18 @@ func TestToMermaid_StartAndFinalMarkers(t *testing.T) {
 
 // TestToMermaid_GuardAnnotations asserts guards render as a bracketed suffix on
 // the event label and that WithoutGuards drops them. The document machine's
-// state/event types render numerically (they declare no String method), so the
-// guarded Approve edge is "1 -> 2" labeled "1 [hasReviewer]".
+// state/event types implement String, so the guarded Approve edge is
+// "Submitted --> Approved" labeled "Approve [hasReviewer]".
 func TestToMermaid_GuardAnnotations(t *testing.T) {
 	with := buildDocMachine().ToMermaid()
-	if !strings.Contains(with, "1 [hasReviewer]") {
+	if !strings.Contains(with, "Approve [hasReviewer]") {
 		t.Errorf("expected guarded edge label, got:\n%s", with)
 	}
 	without := buildDocMachine().ToMermaid(state.WithoutGuards())
 	if strings.Contains(without, "[hasReviewer]") {
 		t.Errorf("WithoutGuards should drop guard label, got:\n%s", without)
 	}
-	if !strings.Contains(without, "1 --> 2: 1") {
+	if !strings.Contains(without, "Submitted --> Approved: Approve") {
 		t.Errorf("WithoutGuards should keep the event label, got:\n%s", without)
 	}
 }

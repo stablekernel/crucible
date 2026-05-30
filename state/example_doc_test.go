@@ -22,6 +22,24 @@ const (
 	Archived
 )
 
+// String renders a DocState by name so diagrams and traces read symbolically.
+func (s DocState) String() string {
+	switch s {
+	case Draft:
+		return "Draft"
+	case Submitted:
+		return "Submitted"
+	case Approved:
+		return "Approved"
+	case Published:
+		return "Published"
+	case Archived:
+		return "Archived"
+	default:
+		return "DocState?"
+	}
+}
+
 // DocEvent is the example event type.
 type DocEvent int
 
@@ -32,6 +50,24 @@ const (
 	Publish
 	Archive
 )
+
+// String renders a DocEvent by name so diagrams and traces read symbolically.
+func (e DocEvent) String() string {
+	switch e {
+	case Submit:
+		return "Submit"
+	case Approve:
+		return "Approve"
+	case RequestChanges:
+		return "RequestChanges"
+	case Publish:
+		return "Publish"
+	case Archive:
+		return "Archive"
+	default:
+		return "DocEvent?"
+	}
+}
 
 // Document is the example entity (context) type.
 type Document struct {
