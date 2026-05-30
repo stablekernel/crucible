@@ -12,7 +12,7 @@ import (
 // a FakeClock and the reusable Scheduler host-driver. The kernel stays pure:
 // entering "pending" emits a ScheduleAfter effect, the Scheduler arms a timer,
 // and advancing the fake clock past the delay fires the delayed event back
-// through Fire — mirroring xstate v5 `after`, with no real waiting.
+// through Fire — driving a delayed (after) transition with no real waiting.
 func ExampleScheduler() {
 	type cart struct{}
 	m := state.Forge[string, string, cart]("checkout").

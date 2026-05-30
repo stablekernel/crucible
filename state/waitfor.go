@@ -6,7 +6,7 @@ import (
 )
 
 // This file ships WaitFor — the host-side helper that drives an instance until a
-// predicate over its observable state holds, mirroring xstate v5's
+// predicate over its observable state holds. It is the
 // `waitFor(actor, predicate, { timeout })`. The pure Fire step never blocks or
 // waits; WaitFor is the driver-side convenience that repeatedly advances a host
 // driver (a Scheduler ticking `after` timers, or any caller-supplied step) and
@@ -111,7 +111,7 @@ func WaitFor[S comparable, E comparable, C any](
 
 // WaitInState returns a WaitPredicate that holds when the instance's primary
 // active leaf equals target — the common "wait until it reaches state X" case
-// (xstate's `waitFor(actor, (s) => s.matches('X'))`).
+// (waiting until the instance's snapshot satisfies a predicate).
 func WaitInState[S comparable, E comparable, C any](target S) WaitPredicate[S, E, C] {
 	return func(snap Snapshot[S, E, C]) bool { return snap.Current == target }
 }
@@ -124,7 +124,7 @@ func WaitDone[S comparable, E comparable, C any]() WaitPredicate[S, E, C] {
 }
 
 // defaultWaitTimeout bounds a WaitFor that supplies no WithWaitTimeout, measured
-// on the instance's clock. It mirrors xstate's default infinite wait being
+// on the instance's clock. The default infinite wait is
 // bounded in practice; here it is a finite, deterministic budget so a test never
 // hangs.
 const defaultWaitTimeout = 10 * time.Second

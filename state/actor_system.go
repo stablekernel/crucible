@@ -43,7 +43,7 @@ import (
 // absorbs a SpawnActor effect for that src. The returned ActorInstance erases the
 // child's own (S, E, C) generic parameters behind the ActorInstance interface, so
 // a parent of any type can host children of any type. The input is the SpawnActor
-// Input (xstate v5 `input`); a behavior typically Casts its child machine with a
+// Input is the actor input; a behavior typically Casts its child machine with a
 // WithInitialState derived from input.
 type ActorBehavior func(input map[string]any) (ActorInstance, error)
 
@@ -151,8 +151,8 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 
 // WithActorInspector wires a live observer sink fed the ActorSystem's
 // actor-lifecycle and inter-actor message inspection events — actor spawned /
-// stopped (xstate `@xstate.actor`) and message sent / delivered (the actor-to-actor
-// flavor of `@xstate.event`). Pass the same Inspector also wired to the parent
+// stopped, and message sent / delivered (the actor-to-actor
+// flavor of an event). Pass the same Inspector also wired to the parent
 // instance (WithInspector) to observe the whole system on one sink. It is off by
 // default; an un-inspected system pays nothing.
 func (s *ActorSystem[S, E, C]) WithActorInspector(insp Inspector) *ActorSystem[S, E, C] {
@@ -374,7 +374,7 @@ func (s *ActorSystem[S, E, C]) Ref(id string) (ActorRef, bool) {
 }
 
 // RefBySystemID returns the ActorRef for the actor registered under the given
-// xstate v5 `systemId`, and whether one is running. It lets a sibling address an
+// its systemId, and whether one is running. It lets a sibling address an
 // actor by its well-known system name rather than by spawn id.
 func (s *ActorSystem[S, E, C]) RefBySystemID(systemID string) (ActorRef, bool) {
 	s.mu.Lock()
@@ -521,7 +521,7 @@ func (s *ActorSystem[S, E, C]) routeComm(ctx context.Context, selfID string, cur
 		}
 	case SendParent:
 		// The parent instance has no parent of its own: its sendParent is a no-op,
-		// mirroring a top-level machine in xstate.
+		// mirroring a top-level machine.
 		if selfID == parentActorID {
 			return
 		}

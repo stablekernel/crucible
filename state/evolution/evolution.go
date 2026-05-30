@@ -197,8 +197,8 @@ func (r *Report) add(c Change) { r.Changes = append(r.Changes, c) }
 // diffStates compares two sibling state slices under the given dotted path
 // prefix, recursing into children and regions.
 func (d *differ[S, E, C]) diffStates(prefix string, oldStates, newStates []state.State[S, E, C]) {
-	oldByName := indexStates(oldStates)
-	newByName := indexStates(newStates)
+	oldByName := statesByName(oldStates)
+	newByName := statesByName(newStates)
 
 	for name, os := range oldByName {
 		path := join(prefix, name)
@@ -393,7 +393,7 @@ func (d *differ[S, E, C]) diffRefs(tpath, kind string, oldRefs, newRefs []state.
 
 // --- helpers -------------------------------------------------------------
 
-func indexStates[S comparable, E comparable, C any](states []state.State[S, E, C]) map[string]state.State[S, E, C] {
+func statesByName[S comparable, E comparable, C any](states []state.State[S, E, C]) map[string]state.State[S, E, C] {
 	m := make(map[string]state.State[S, E, C], len(states))
 	for _, s := range states {
 		m[str(s.Name)] = s

@@ -3,7 +3,7 @@ package state
 // This file adds the actor-communication action sugar on top of the actor
 // runtime (actor.go, actor_system.go): the built-in send/stop actions a machine
 // uses to message other actors — sendTo, sendParent, respond, forwardTo, and
-// stopChild (xstate v5 parity). They follow the same shape as the spawn / stop /
+// stopChild. They follow the same shape as the spawn / stop /
 // cancel built-ins: the kernel handles each ref directly at Fire time and emits a
 // DATA effect (SendTo / SendParent / RespondToSender / ForwardEvent / StopActor)
 // alongside the transition's other effects. The kernel never delivers a message,
@@ -26,17 +26,17 @@ package state
 // recorded origin. The kernel emits RespondToSender as data with no target — the
 // host fills the target from its routing context. If there is no identifiable
 // sender (e.g. the event was injected directly with no origin), respond is a
-// no-op, mirroring xstate's behavior when there is no actor to reply to.
+// no-op when there is no actor to reply to.
 
 // SendTo is the effect the kernel emits for the sendTo built-in: deliver Event to
 // the actor addressed by TargetID (or SystemID when TargetID is empty). The
 // host's ActorSystem routes it into that actor's mailbox; addressing an unknown
-// actor is a no-op. This realizes xstate v5 `sendTo(target, event)`.
+// actor is a no-op. It delivers an event to a named actor.
 type SendTo struct {
 	// TargetID is the registry id of the actor to deliver Event to. Empty when the
 	// target is addressed by SystemID instead.
 	TargetID string
-	// SystemID is the system-scoped name of the target actor (xstate v5 `systemId`),
+	// SystemID is the system-scoped name of the target actor (its systemId),
 	// used when TargetID is empty so a sibling can be addressed by a well-known name.
 	SystemID string
 	// Event is the serializable event delivered to the target actor's mailbox,
@@ -47,7 +47,7 @@ type SendTo struct {
 // SendParent is the effect the kernel emits for the sendParent built-in: a child
 // actor sends Event to its parent. The host's ActorSystem routes it to the parent
 // instance (the one driving the system). Emitted by a top-level machine with no
-// parent it is a host-side no-op. This realizes xstate v5 `sendParent(event)`.
+// parent it is a host-side no-op. It routes an event to the actor's parent.
 type SendParent struct {
 	// Event is the serializable event delivered to the parent, type-erased for the
 	// abstract effect surface; an ActorSystem keeps it typed.
@@ -60,7 +60,7 @@ type SendParent struct {
 // effect with only the reply Event; the host's ActorSystem resolves the target
 // from the routing context it recorded when it delivered the current event. When
 // there is no identifiable sender the host treats it as a no-op. This realizes the
-// xstate "reply to the event's origin" semantic (`respond` / `sendBack`).
+// reply-to-the-event's-origin semantic.
 type RespondToSender struct {
 	// Event is the serializable reply delivered to the current event's sender,
 	// type-erased for the abstract effect surface; an ActorSystem keeps it typed.
@@ -73,7 +73,7 @@ type RespondToSender struct {
 // event — the host already has it as the event it just delivered — so this effect
 // carries only the target. The host's ActorSystem routes the current event into
 // the target's mailbox; addressing an unknown actor is a no-op. This realizes
-// xstate v5 `forwardTo(target)`.
+// forwards the current event verbatim to another actor.
 type ForwardEvent struct {
 	// TargetID is the registry id of the actor to forward the current event to.
 	// Empty when the target is addressed by SystemID instead.

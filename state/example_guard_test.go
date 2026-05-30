@@ -14,7 +14,7 @@ type access struct {
 }
 
 // ExampleAnd composes named-ref guards and the stateIn built-in into a single
-// boolean guard expression on a transition with And/Or/Not, mirroring xstate v5
+// boolean guard expression on a transition with And/Or/Not, exercising the
 // guard combinators. The transition fires only when the composite passes; And
 // short-circuits at the first false and Or at the first true.
 func ExampleAnd() {

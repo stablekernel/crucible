@@ -3,11 +3,11 @@ package state
 // This file defines the invoked-services (`invoke`) contract: the declarative
 // shape an invoked service takes on a state, the effects the kernel emits so a
 // host runtime can run the service, and the entry/exit effect emission that
-// realizes xstate v5 semantics. The kernel itself never runs a service, never
+// drives invoked services. The kernel itself never runs a service, never
 // starts a goroutine, and never performs IO — Fire stays pure. Entering a state
 // that declares an `invoke` emits a StartService effect per invocation; exiting
 // that state before the service completes emits a StopService effect per
-// invocation (xstate v5 auto-stop-on-exit). A host's ServiceRunner consumes
+// invocation (auto-stop-on-exit). A host's ServiceRunner consumes
 // these effects, runs the registered service, and feeds its result back through
 // the state's onDone / onError transitions via Fire.
 //
@@ -20,7 +20,7 @@ package state
 // logic creators (promise one-shot, streaming callback) are host-side wrappers
 // over ServiceFn.
 
-// Invocation is a declarative invoked service on a state (xstate v5 `invoke`).
+// Invocation is a declarative invoked service on a state.
 // On entering the owning state the kernel emits a StartService effect carrying
 // Src and Input; the host runs the bound service and re-fires OnDone with the
 // result or OnError with the error back through Fire. On exiting the state
@@ -40,7 +40,7 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// the typed *ErrUnboundRef (Kind "service").
 	Src Ref `json:"src"`
 	// Input is the serializable input passed to the service when it starts,
-	// surfaced on the StartService effect (xstate v5 `input`). It is data only;
+	// surfaced on the StartService effect as input. It is data only;
 	// the kernel never inspects it.
 	Input map[string]any `json:"input,omitempty"`
 	// OnDone is the event the host re-fires through Fire when the service
@@ -63,7 +63,7 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// losslessly through JSON.
 	Kind ActorKind `json:"kind,omitempty"`
 	// SystemID is the optional system-scoped name a child-machine actor registers
-	// under in the ActorSystem (xstate v5 `systemId`), so a sibling can address it
+	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name. It is meaningful only for an ActorKindMachine
 	// invocation and serializes for lossless round-trip.
 	SystemID string `json:"systemId,omitempty"`
@@ -101,7 +101,7 @@ type StartService struct {
 
 // StopService is the effect the kernel emits when an instance exits a state that
 // had an in-flight invoked service. The host stops the service registered under
-// ID; stopping an unknown ID is a no-op. This realizes xstate v5 semantics: a
+// ID; stopping an unknown ID is a no-op. A
 // state's invoked services are auto-stopped when the state is exited before they
 // complete.
 type StopService struct {
@@ -162,7 +162,7 @@ func (i *Instance[S, E, C]) invokeEffectsOnEntry(entries []S, tr *Trace) []Effec
 // invokeEffectsOnExit returns the StopService effects for every invoked service
 // declared on the exited states, in exit order. Emitting a stop for a service
 // that may already have completed is safe: the host treats an unknown ID as a
-// no-op, and this is exactly xstate's auto-stop-on-exit.
+// no-op; this is auto-stop-on-exit.
 func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 	var out []Effect
 	m := i.machine

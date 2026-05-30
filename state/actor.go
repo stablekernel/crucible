@@ -5,12 +5,12 @@ import "context"
 // This file defines the actor-model contract: the declarative shape an actor
 // invocation takes on a state, the effects the kernel emits so a host runtime
 // can run child-machine actors, the runtime actor reference a machine stores in
-// its context, and the entry/exit effect emission that realizes xstate v5 actor
+// its context, and the entry/exit effect emission that drives the actor
 // semantics. The kernel itself never runs an actor, never starts a goroutine,
 // never owns a mailbox, and never routes a message — Fire stays pure. Entering a
 // state that invokes a child MACHINE emits a SpawnActor effect; exiting that
 // state before the child reaches its final state emits a StopActor effect
-// (xstate v5 auto-stop-on-exit). A built-in `spawn` action emits a SpawnActor
+// (auto-stop-on-exit). A built-in `spawn` action emits a SpawnActor
 // effect at transition time so a machine can create an actor dynamically. A
 // host's ActorSystem consumes these effects, runs the child machine as an actor
 // with its own mailbox, routes delivered events into that mailbox, steps the
@@ -59,8 +59,8 @@ type SpawnActor struct {
 	// Src is the actor ref (name + params) the host resolves against its actor
 	// palette to obtain the child machine to run.
 	Src Ref
-	// Input is the serializable input passed to the child actor at spawn (xstate
-	// v5 `input`). It is data only; the kernel never inspects it.
+	// Input is the serializable input passed to the child actor at spawn. It
+	// is data only; the kernel never inspects it.
 	Input map[string]any
 	// OnDone is the event the host re-fires through the PARENT's Fire (carrying the
 	// child's output) when the child actor reaches its final state, type-erased for
@@ -74,7 +74,7 @@ type SpawnActor struct {
 	// and host bookkeeping. Empty for a dynamic spawn emitted from a transition.
 	State string
 	// SystemID is the optional, stable system-scoped identifier the actor registers
-	// under in the ActorSystem (xstate v5 `systemId`), so a sibling can address it
+	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name rather than by ref. Empty when unset.
 	SystemID string
 }
@@ -83,7 +83,7 @@ type SpawnActor struct {
 // had a running child-machine actor (auto-stop-on-exit), or when the built-in
 // stop action runs. The host's ActorSystem stops the actor registered under ID
 // (and, transitively, that actor's own children); stopping an unknown ID is a
-// no-op. This realizes xstate v5 semantics: a state's invoked actors are
+// no-op. A state's invoked actors are
 // auto-stopped when the state is exited before they complete.
 type StopActor struct {
 	// ID identifies the actor to stop. It matches the ID of the SpawnActor that
@@ -92,7 +92,7 @@ type StopActor struct {
 }
 
 // ActorRef is the runtime handle a machine stores in its context to address a
-// spawned actor later (xstate v5 actor ref). It is created by the ActorSystem
+// spawned actor later (an actor ref). It is created by the ActorSystem
 // when the actor is spawned and surfaced to the spawning machine through the
 // system's API, never through the IR — refs are runtime, not serializable
 // definition. A ref carries the actor's ID (and optional system-scoped SystemID)
@@ -101,7 +101,7 @@ type ActorRef struct {
 	// ID is the actor's registry key in the ActorSystem.
 	ID string
 	// SystemID is the optional system-scoped name the actor registered under
-	// (xstate v5 `systemId`); empty when the actor was spawned without one.
+	// (its systemId); empty when the actor was spawned without one.
 	SystemID string
 	// Src is the actor ref name the actor was spawned from, for diagnostics.
 	Src string
@@ -225,7 +225,7 @@ func (i *Instance[S, E, C]) actorEffectsOnEntry(entries []S, tr *Trace) []Effect
 // actorEffectsOnExit returns the StopActor effects for every child-machine actor
 // invocation declared on the exited states, in exit order. Emitting a stop for an
 // actor that may already have completed is safe: the host treats an unknown ID as
-// a no-op, and this is exactly xstate's auto-stop-on-exit.
+// a no-op; this is auto-stop-on-exit.
 func (i *Instance[S, E, C]) actorEffectsOnExit(exits []S, tr *Trace) []Effect {
 	var out []Effect
 	m := i.machine
@@ -259,7 +259,7 @@ type actorAdapter[S comparable, E comparable, C any] struct {
 }
 
 // NewActor adapts a Cast child *Instance into an ActorInstance an ActorSystem can
-// run as a child-machine actor. output, when non-nil, extracts the actor's xstate
+// run as a child-machine actor. output, when non-nil, extracts the actor's
 // v5 `output` from the child instance once it reaches its final state (typically
 // reading the child entity); pass nil for an actor whose completion carries no
 // output. The returned ActorInstance is what an ActorBehavior returns. The child's

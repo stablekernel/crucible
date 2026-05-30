@@ -107,7 +107,7 @@ func (e *ErrNoPath) Error() string {
 
 // WaitTimeoutError is returned by WaitFor when its wait budget elapses (measured
 // on the instance's clock) before the predicate ever held — the typed timeout
-// mirroring xstate v5's `waitFor` rejection on its `timeout` option. Machine names
+// returned when a WaitFor budget elapses. Machine names
 // the instance's machine, Timeout the budget that elapsed, and Last the primary
 // active leaf the instance was in when the wait gave up, for diagnostics.
 type WaitTimeoutError struct {

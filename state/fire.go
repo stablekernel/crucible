@@ -72,7 +72,7 @@ func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S]
 // Effects concatenate and microsteps accumulate onto the seed result. A raised
 // event or eventless transition that errors stops the loop and surfaces the
 // error; an unhandled raised event is ignored (it had no enabled transition),
-// matching xstate, rather than failing the macrostep.
+// rather than failing the macrostep.
 func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[S]) FireResult[S] {
 	steps := 0
 	for {
@@ -350,7 +350,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 // event, in priority order: every specific On-keyed match in declaration order
 // first, then every wildcard catch-all in declaration order. Eventless and
 // forbidden transitions are not returned here (forbidden is resolved separately,
-// before candidates are tried). This realizes xstate v5 priority — specific
+// before candidates are tried). Specific
 // events outrank the wildcard — and the wildcard outranks bubbling to an
 // ancestor.
 func matchingTransitions[S comparable, E comparable, C any](s *State[S, E, C], event E) []*Transition[S, E, C] {
@@ -569,7 +569,7 @@ func (i *Instance[S, E, C]) commit(
 // isInternal reports whether transition t executes as an internal transition
 // from source leaf `from`: it runs effects without exiting and re-entering the
 // source. A transition is internal when the explicit Internal flag is set, or —
-// per the xstate v5 default — when Reenter is unset and the target is the source
+// by default — when Reenter is unset and the target is the source
 // itself or one of its ancestors. An external transition (Reenter set, or a
 // target outside the source's own spine) always runs the exit/entry cascade.
 func (i *Instance[S, E, C]) isInternal(t *Transition[S, E, C], from S) bool {

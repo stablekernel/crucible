@@ -1,7 +1,7 @@
 package state
 
 // This file ships the inspection API — a live observer sink for an instance's
-// runtime activity, mirroring xstate v5's `createActor(logic, { inspect })`. The
+// runtime activity. The
 // kernel stays pure: an inspector is an injected observer registered at Cast and
 // off by default (a nil inspector costs nothing), and the notification call reads
 // no clock and performs no IO. Each inspection event is largely a Trace step
@@ -9,24 +9,24 @@ package state
 // the inspector simply receives it as it happens rather than reading History()
 // after the fact.
 //
-// The xstate inspection event taxonomy is mirrored:
-//   - a transition taken (@xstate.microstep, surfaced here as InspectTransition)
-//   - an event received                       (@xstate.event)
-//   - a snapshot update                       (@xstate.snapshot)
-//   - an actor spawned / stopped              (@xstate.actor)
-//   - a message sent / delivered              (@xstate.event between actors)
+// The inspection event taxonomy:
+//   - a transition taken                       (InspectTransition)
+//   - an event received                       (InspectEvent)
+//   - a snapshot update                       (InspectSnapshot)
+//   - an actor spawned / stopped              (InspectActor)
+//   - a message sent / delivered              (between actors)
 //
 // The kernel feeds the event/transition/snapshot stream from Fire (in-memory,
 // pure-path-safe); the host's ActorSystem feeds the actor lifecycle and message
 // stream, since spawning, stopping, and delivery are host concerns the pure Fire
 // step never owns.
 
-// InspectKind names a category of inspection event, mirroring the xstate v5
+// InspectKind names a category of inspection event, covering the
 // inspection event types.
 type InspectKind string
 
 const (
-	// InspectEvent marks an event received by an instance (xstate `@xstate.event`).
+	// InspectEvent marks an event received by an instance.
 	InspectEvent InspectKind = "event"
 	// InspectTransition marks a transition taken — a macrostep that changed (or
 	// re-entered) the configuration, carrying its from/to and the Trace detail
@@ -34,13 +34,13 @@ const (
 	// inspection surface.
 	InspectTransition InspectKind = "transition"
 	// InspectSnapshot marks a snapshot update: the instance's observable state after
-	// an event settled (xstate `@xstate.snapshot`).
+	// an event settled.
 	InspectSnapshot InspectKind = "snapshot"
 	// InspectActor marks an actor lifecycle change — spawned or stopped
-	// (xstate `@xstate.actor`).
+	// — an actor lifecycle change.
 	InspectActor InspectKind = "actor"
 	// InspectMessage marks a message sent from one actor to another and/or delivered
-	// to its target (the actor-to-actor flavor of xstate `@xstate.event`).
+	// to its target (the actor-to-actor flavor of an event).
 	InspectMessage InspectKind = "message"
 )
 
@@ -68,7 +68,7 @@ const (
 )
 
 // InspectionEvent is one live observation of an instance's runtime activity. It
-// is the Go analog of an xstate inspection event: a tagged record whose populated
+// is an inspection event: a tagged record whose populated
 // fields depend on Kind. A field that does not apply to a Kind is left zero.
 //
 // The event is read-only; an Inspector must not retain references to mutable
@@ -140,7 +140,7 @@ type Inspector interface {
 }
 
 // InspectorFunc adapts a plain function to the Inspector interface, for the common
-// case of a single closure sink (mirroring xstate's `inspect: (ev) => {...}`).
+// case of a single closure sink.
 type InspectorFunc func(ev InspectionEvent)
 
 // Inspect calls the underlying function.

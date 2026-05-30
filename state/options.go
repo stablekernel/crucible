@@ -31,7 +31,7 @@ type invokeConfig struct {
 }
 
 // WithInput sets the serializable input passed to an invoked service when it
-// starts (xstate v5 `input`), surfaced on the StartService effect.
+// starts, surfaced as input on the StartService effect.
 func WithInput(input map[string]any) InvokeOption {
 	return func(c *invokeConfig) { c.input = input }
 }
@@ -51,7 +51,7 @@ func WithInvokeID(id string) InvokeOption {
 }
 
 // WithSystemID sets the system-scoped name a child-machine actor (InvokeActor)
-// registers under in the ActorSystem (xstate v5 `systemId`), so a sibling can
+// registers under in the ActorSystem (its systemId), so a sibling can
 // address it by a well-known name rather than by ref. It is meaningful only for
 // InvokeActor; on a plain service Invoke it is ignored.
 func WithSystemID(id string) InvokeOption {
@@ -69,13 +69,13 @@ type spawnConfig struct {
 }
 
 // WithSpawnInput sets the serializable input passed to a dynamically spawned
-// actor when it is created (xstate v5 `input`), surfaced on the SpawnActor effect.
+// actor when it is created, surfaced as input on the SpawnActor effect.
 func WithSpawnInput(input map[string]any) SpawnOption {
 	return func(c *spawnConfig) { c.input = input }
 }
 
 // WithSpawnSystemID sets the system-scoped name a dynamically spawned actor
-// registers under in the ActorSystem (xstate v5 `systemId`).
+// registers under in the ActorSystem (its systemId).
 func WithSpawnSystemID(id string) SpawnOption {
 	return func(c *spawnConfig) { c.systemID = id }
 }
@@ -103,7 +103,7 @@ type sendConfig struct {
 	systemID string
 }
 
-// WithSendToSystemID addresses the send target by its system-scoped id (xstate v5
+// WithSendToSystemID addresses the send target by its system-scoped id (the
 // `systemId`) instead of its registry id, so a sibling actor is addressed by a
 // well-known name. When set it takes precedence over the positional target id.
 func WithSendToSystemID(id string) SendOption {
@@ -132,7 +132,7 @@ func WithClock[S comparable](c Clock) CastOption[S] {
 
 // WithInspector registers a live observer sink fed inspection events as the
 // instance advances — event received, transition taken, snapshot update — mirroring
-// xstate v5's `createActor(logic, { inspect })`. It is off by default: with no
+// the live inspection stream. It is off by default: with no
 // inspector the instance never calls one, so inspection adds zero overhead and the
 // pure Fire step performs no IO. The same inspector can be wired to an ActorSystem
 // (WithActorInspector) so actor lifecycle and inter-actor messages are observed on

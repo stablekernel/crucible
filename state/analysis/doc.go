@@ -14,7 +14,7 @@
 //
 // This is the analysis a code-first state-machine library cannot offer: because
 // Crucible's canonical machine is a serializable IR rather than a tangle of
-// closures, the whole transition graph is inspectable as data. xstate's machine
+// closures, the whole transition graph is inspectable as data. The machine
 // config is similarly serializable, but it ships no equivalent static
 // model-checker; here the checks fall out almost for free from the IR plus the
 // breadth-first reachability the kernel already uses for path planning.
