@@ -16,16 +16,12 @@
                 "event": "submitted"
               }
             }
-          ],
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 74
+          ]
         },
         {
           "from": 0,
           "to": 4,
-          "on": 4,
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 83
+          "on": 4
         }
       ]
     },
@@ -49,23 +45,17 @@
                 "event": "approved"
               }
             }
-          ],
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 77
+          ]
         },
         {
           "from": 1,
           "to": 0,
-          "on": 2,
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 80
+          "on": 2
         },
         {
           "from": 1,
           "to": 4,
-          "on": 4,
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 84
+          "on": 4
         }
       ]
     },
@@ -84,9 +74,7 @@
                 "event": "published"
               }
             }
-          ],
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_doc_test.go",
-          "srcLine": 81
+          ]
         }
       ]
     },
