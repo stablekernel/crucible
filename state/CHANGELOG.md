@@ -25,6 +25,13 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `Fire` (which stays pure); the pseudo-states themselves serialize, so machines
   with history round-trip losslessly through the IR. A Quench lint flags a
   history state declared outside a compound state.
+- `state/analysis` package: static model-checking over a machine's IR. `Analyze`
+  returns a classified `Report` of `Finding`s covering reachability
+  (unreachable/dead states), dead transitions, guardless nondeterminism,
+  non-final dead ends, and liveness (states that can never reach a final state).
+  Reachability reuses the kernel's breadth-first graph walk; checks are exact
+  where the IR proves them and heuristic where opaque guards limit static
+  certainty. Restrict the pass with the `Only`/`Without` options.
 - `state/evolution` package: classifies the difference between two machine
   definitions as additive or breaking per the Evolution Guide, and maps the
   result onto a semantic-version bump (`Diff`, `DiffJSON`, `DiffMachines`,
