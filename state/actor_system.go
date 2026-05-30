@@ -60,20 +60,30 @@ type ActorInstance interface {
 	// SpawnActor / StopActor effects the child itself emitted, so the system can run
 	// nested actors — those are returned via ChildEffects.
 	DeliverFire(ctx context.Context, event any) (done bool, output any)
-	// ChildEffects returns the SpawnActor / StopActor effects the actor emitted on
-	// its most recent DeliverFire (and on its initial entry), so the ActorSystem can
-	// spawn or stop the actor's own children. It returns a fresh slice each call and
-	// drains the buffer.
+	// ChildEffects returns the actor effects the actor emitted on its most recent
+	// DeliverFire (and on its initial entry): the SpawnActor / StopActor lifecycle
+	// effects so the ActorSystem can spawn or stop the actor's own children, and the
+	// SendTo / SendParent / RespondToSender / ForwardEvent communication effects so
+	// the system can route the actor's outbound messages. It returns a fresh slice
+	// each call and drains the buffer.
 	ChildEffects() []Effect
 	// Output returns the actor's completion output once it has reached its final
 	// state, or nil before then. It lets a host expose a snapshot's output.
 	Output() any
 }
 
+// envelope is a queued message: the event plus the id of the actor that sent it
+// (the sentinel parentActorID for the parent, empty for a host-injected event with
+// no origin). The sender is what a RespondToSender resolves against.
+type envelope struct {
+	event  any
+	sender string
+}
+
 // running is one running child actor tracked by an ActorSystem.
 type runningActor[E comparable] struct {
 	inst     ActorInstance
-	mailbox  []any
+	mailbox  []envelope
 	ref      ActorRef
 	onDone   E
 	onError  E
@@ -82,7 +92,19 @@ type runningActor[E comparable] struct {
 	state    string
 	done     bool // the actor has reached its final state and been settled
 	children []string
+	// sender records the id of the actor whose message this actor is currently
+	// handling (the origin of the event most recently delivered into its mailbox), so
+	// a RespondToSender this actor emits resolves back to that origin. Empty when the
+	// current event was injected with no actor origin (then respond is a no-op). The
+	// sentinel parentActorID identifies the parent instance as the origin.
+	sender string
 }
+
+// parentActorID is the sentinel id the routing layer uses for the parent instance
+// (which has no registry entry of its own). A SendParent routes to it, and it is
+// recorded as the sender when the parent injects a message into a child, so a
+// child's RespondToSender routes back to the parent.
+const parentActorID = "\x00parent"
 
 // ActorSystem is the reusable host-driver that turns the kernel's SpawnActor /
 // StopActor effects into running child-machine actors, owns each actor's mailbox,
@@ -110,6 +132,13 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// under mu immediately before the routing parent Fire and read by the
 	// transition's action through LastOutput / LastError.
 	lastOutcome actorOutcome
+
+	// parentSender records the id of the actor whose message the parent instance is
+	// currently handling, so a RespondToSender the parent emits resolves back to that
+	// actor. Empty when the parent is handling a host-injected event with no actor
+	// origin (then respond is a no-op). It is the parent-side twin of
+	// runningActor.sender.
+	parentSender string
 }
 
 // NewActorSystem returns an ActorSystem driving parent: the instance whose
@@ -149,12 +178,31 @@ func (s *ActorSystem[S, E, C]) Register(src string, behavior ActorBehavior) *Act
 // the parent routes onError rather than hanging, mirroring the ServiceRunner's
 // unbound-service handling.
 func (s *ActorSystem[S, E, C]) Absorb(ctx context.Context, effects []Effect) {
+	s.absorb(ctx, effects, nil)
+}
+
+// AbsorbFor is Absorb for the effects of a host-driven parent Fire(event): it
+// additionally lets a ForwardEvent the parent emits forward event verbatim to a
+// child. Use it (rather than Absorb) when the parent itself runs forwardTo on a
+// host-injected event; Absorb suffices for sendTo / sendParent / respond and all
+// lifecycle effects.
+func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects []Effect) {
+	s.absorb(ctx, effects, event)
+}
+
+// absorb scans effects emitted by the parent instance while handling curEvent,
+// spawning/stopping actors and routing the parent's outbound messages (the parent
+// is the sender). curEvent is nil for the plain Absorb path (a parent ForwardEvent
+// is then a no-op, as there is no event to forward).
+func (s *ActorSystem[S, E, C]) absorb(ctx context.Context, effects []Effect, curEvent any) {
 	for _, eff := range effects {
 		switch e := eff.(type) {
 		case SpawnActor:
 			s.spawn(ctx, e)
 		case StopActor:
 			s.stop(e.ID)
+		case SendTo, SendParent, RespondToSender, ForwardEvent:
+			s.routeComm(ctx, parentActorID, curEvent, eff)
 		}
 	}
 }
@@ -203,8 +251,9 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 	s.mu.Unlock()
 
 	// Run the actor's own initial-entry child effects (nested actors), tracked
-	// under this actor so stopping it cascades to them.
-	s.absorbChildren(ctx, e.ID, inst.ChildEffects())
+	// under this actor so stopping it cascades to them. There is no event in flight
+	// on initial entry, so a ForwardEvent here has nothing to forward.
+	s.absorbChildren(ctx, e.ID, nil, inst.ChildEffects())
 }
 
 // routeError fires the parent's onError for a spawn that could not start.
@@ -294,18 +343,27 @@ func (s *ActorSystem[S, E, C]) IsRunning(id string) bool {
 // Deliver routes event into the mailbox of the actor identified by ref, then
 // drains the actor (Step) so the delivered event is processed and any resulting
 // completion is routed to the parent. It returns whether the actor was found
-// running. This is the delivery mechanism the next build's sendTo / sendParent
-// action sugar will sit on top of; here a host (or a test) calls it directly.
+// running. It is the delivery mechanism the sendTo / sendParent / respond /
+// forwardTo action sugar routes through; a host (or a test) may also call it
+// directly to inject an event into an actor from outside.
 func (s *ActorSystem[S, E, C]) Deliver(ctx context.Context, ref ActorRef, event any) bool {
+	return s.deliver(ctx, ref.ID, event, "")
+}
+
+// deliver enqueues event into the actor under id, tagged with senderID (the origin
+// the actor's RespondToSender resolves against), then drains the actor. It reports
+// whether the actor was found running; delivering to an unknown or settled actor is
+// a no-op returning false.
+func (s *ActorSystem[S, E, C]) deliver(ctx context.Context, id string, event any, senderID string) bool {
 	s.mu.Lock()
-	ra, ok := s.actors[ref.ID]
+	ra, ok := s.actors[id]
 	if !ok || ra.done {
 		s.mu.Unlock()
 		return false
 	}
-	ra.mailbox = append(ra.mailbox, event)
+	ra.mailbox = append(ra.mailbox, envelope{event: event, sender: senderID})
 	s.mu.Unlock()
-	s.Step(ctx, ref.ID)
+	s.Step(ctx, id)
 	return true
 }
 
@@ -332,14 +390,17 @@ func (s *ActorSystem[S, E, C]) Step(ctx context.Context, id string) []FireResult
 			s.mu.Unlock()
 			return out
 		}
-		ev := ra.mailbox[0]
+		env := ra.mailbox[0]
 		ra.mailbox = ra.mailbox[1:]
+		ra.sender = env.sender
 		inst := ra.inst
 		s.mu.Unlock()
 
-		done, output := inst.DeliverFire(ctx, ev)
-		// Spawn/stop the actor's own children from what it emitted.
-		s.absorbChildren(ctx, id, inst.ChildEffects())
+		done, output := inst.DeliverFire(ctx, env.event)
+		// Spawn/stop the actor's own children and route the messages it sent. The
+		// actor is the sender for any message it emits, and the event it is handling
+		// is what a ForwardEvent forwards verbatim.
+		s.absorbChildren(ctx, id, env.event, inst.ChildEffects())
 		if done {
 			if res, ok := s.settle(ctx, id, output, nil); ok {
 				out = append(out, res)
@@ -349,15 +410,18 @@ func (s *ActorSystem[S, E, C]) Step(ctx context.Context, id string) []FireResult
 	}
 }
 
-// absorbChildren spawns/stops a parent actor's nested children, tracking the child
-// ids under the parent so stopping the parent stops them.
-func (s *ActorSystem[S, E, C]) absorbChildren(ctx context.Context, parentID string, effects []Effect) {
+// absorbChildren spawns/stops an actor's nested children (tracking the child ids
+// under the actor so stopping it stops them) and routes the SendTo / SendParent /
+// RespondToSender / ForwardEvent messages the actor emitted while handling
+// curEvent. The emitting actor (selfID) is recorded as the sender of every message
+// it sends; a ForwardEvent forwards curEvent verbatim.
+func (s *ActorSystem[S, E, C]) absorbChildren(ctx context.Context, selfID string, curEvent any, effects []Effect) {
 	for _, eff := range effects {
 		switch e := eff.(type) {
 		case SpawnActor:
 			s.spawn(ctx, e)
 			s.mu.Lock()
-			if ra, ok := s.actors[parentID]; ok {
+			if ra, ok := s.actors[selfID]; ok {
 				if _, live := s.actors[e.ID]; live {
 					ra.children = append(ra.children, e.ID)
 				}
@@ -365,8 +429,106 @@ func (s *ActorSystem[S, E, C]) absorbChildren(ctx context.Context, parentID stri
 			s.mu.Unlock()
 		case StopActor:
 			s.stop(e.ID)
+		case SendTo, SendParent, RespondToSender, ForwardEvent:
+			s.routeComm(ctx, selfID, curEvent, eff)
 		}
 	}
+}
+
+// routeComm delivers one actor-communication effect emitted by the actor selfID
+// while it handled curEvent. SendTo / ForwardEvent address a target by id or
+// systemId; SendParent routes to the parent instance; RespondToSender routes to the
+// origin of curEvent (selfID's recorded sender). The emitting actor is the sender of
+// every message it sends; an unresolved or absent target is a no-op.
+func (s *ActorSystem[S, E, C]) routeComm(ctx context.Context, selfID string, curEvent any, eff Effect) {
+	switch e := eff.(type) {
+	case SendTo:
+		if target, ok := s.resolveTarget(e.TargetID, e.SystemID); ok {
+			s.dispatch(ctx, target, e.Event, selfID)
+		}
+	case ForwardEvent:
+		if target, ok := s.resolveTarget(e.TargetID, e.SystemID); ok {
+			s.dispatch(ctx, target, curEvent, selfID)
+		}
+	case SendParent:
+		// The parent instance has no parent of its own: its sendParent is a no-op,
+		// mirroring a top-level machine in xstate.
+		if selfID == parentActorID {
+			return
+		}
+		s.dispatch(ctx, parentActorID, e.Event, selfID)
+	case RespondToSender:
+		s.mu.Lock()
+		var origin string
+		if selfID == parentActorID {
+			origin = s.parentSender
+		} else if ra, ok := s.actors[selfID]; ok {
+			origin = ra.sender
+		}
+		s.mu.Unlock()
+		if origin != "" {
+			s.dispatch(ctx, origin, e.Event, selfID)
+		}
+	}
+}
+
+// resolveTarget resolves a send target to a concrete actor id: targetID directly,
+// or the actor registered under systemID when targetID is empty. It reports false
+// when neither resolves to a known actor (the send is then a no-op). The parent
+// sentinel addresses the parent instance.
+func (s *ActorSystem[S, E, C]) resolveTarget(targetID, systemID string) (string, bool) {
+	if targetID == parentActorID {
+		return parentActorID, true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if targetID != "" {
+		if _, ok := s.actors[targetID]; ok {
+			return targetID, true
+		}
+		return "", false
+	}
+	if systemID != "" {
+		if id, ok := s.bySystem[systemID]; ok {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// dispatch delivers event to targetID on behalf of senderID. The parent sentinel
+// routes the event into the parent instance's Fire (recording senderID so a parent
+// RespondToSender resolves back); any other id routes into that actor's mailbox and
+// drains it. This is the single path every routed message flows through, so parent
+// and child delivery share their sender bookkeeping.
+func (s *ActorSystem[S, E, C]) dispatch(ctx context.Context, targetID string, event any, senderID string) {
+	if targetID == parentActorID {
+		s.fireParentFrom(ctx, event, senderID)
+		return
+	}
+	s.deliver(ctx, targetID, event, senderID)
+}
+
+// fireParentFrom fires event through the parent instance, recording senderID as the
+// origin so a RespondToSender the parent emits resolves back to it, then absorbs the
+// parent's resulting effects (spawns/stops and any messages the parent sends). The
+// event must be the parent's event type; an event of another type is a no-op.
+func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, senderID string) {
+	ev, ok := event.(E)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	prev := s.parentSender
+	s.parentSender = senderID
+	s.mu.Unlock()
+
+	res := s.parent.Fire(ctx, ev)
+	s.Absorb(ctx, res.Effects)
+
+	s.mu.Lock()
+	s.parentSender = prev
+	s.mu.Unlock()
 }
 
 // settle marks the actor done and routes its completion through the parent: on

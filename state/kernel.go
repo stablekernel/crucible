@@ -569,6 +569,98 @@ func (b *Builder[S, E, C]) StopActor(id string) *Builder[S, E, C] {
 	return b
 }
 
+// SendTo attaches the kernel sendTo built-in to the most-recent transition: when
+// the transition fires, the kernel emits a SendTo effect so the host's ActorSystem
+// delivers event to the actor registered under targetID. Address an actor by its
+// system-scoped id instead with WithSendToSystemID. The built-in needs no host
+// registration, mirroring Spawn / Cancel. This is the DSL form of xstate v5
+// `sendTo(target, event)`.
+func (b *Builder[S, E, C]) SendTo(targetID string, event E, opts ...SendOption) *Builder[S, E, C] {
+	if b.curTransition == nil {
+		return b
+	}
+	cfg := sendConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	params := map[string]any{sendEventParam: event}
+	if cfg.systemID != "" {
+		params[sendToSystemIDParam] = cfg.systemID
+	} else {
+		params[sendToTargetParam] = targetID
+	}
+	b.curTransition.Effects = append(b.curTransition.Effects,
+		Ref{Name: sendToBuiltinName, Params: params})
+	return b
+}
+
+// SendParent attaches the kernel sendParent built-in to the most-recent
+// transition: when the transition fires, the kernel emits a SendParent effect so
+// the host's ActorSystem delivers event to the emitting actor's parent. Emitted by
+// a top-level machine with no parent it is a host-side no-op. The built-in needs no
+// host registration. This is the DSL form of xstate v5 `sendParent(event)`.
+func (b *Builder[S, E, C]) SendParent(event E) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Effects = append(b.curTransition.Effects,
+			Ref{Name: sendParentBuiltinName, Params: map[string]any{sendEventParam: event}})
+	}
+	return b
+}
+
+// Respond attaches the kernel respond built-in to the most-recent transition: when
+// the transition fires, the kernel emits a RespondToSender effect so the host's
+// ActorSystem delivers event back to the sender of the event currently being
+// handled (the actor that sent it via SendTo / ForwardTo). When the current event
+// has no identifiable sender it is a host-side no-op. The built-in needs no host
+// registration. This is the DSL form of replying to an event's origin (xstate v5
+// `respond` / `sendBack`).
+func (b *Builder[S, E, C]) Respond(event E) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Effects = append(b.curTransition.Effects,
+			Ref{Name: respondBuiltinName, Params: map[string]any{sendEventParam: event}})
+	}
+	return b
+}
+
+// ForwardTo attaches the kernel forwardTo built-in to the most-recent transition:
+// when the transition fires, the kernel emits a ForwardEvent effect so the host's
+// ActorSystem forwards the event the emitting actor is currently handling, verbatim,
+// to the actor registered under targetID. Address an actor by its system-scoped id
+// instead with WithSendToSystemID. The built-in needs no host registration. This is
+// the DSL form of xstate v5 `forwardTo(target)`.
+func (b *Builder[S, E, C]) ForwardTo(targetID string, opts ...SendOption) *Builder[S, E, C] {
+	if b.curTransition == nil {
+		return b
+	}
+	cfg := sendConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	params := map[string]any{}
+	if cfg.systemID != "" {
+		params[sendToSystemIDParam] = cfg.systemID
+	} else {
+		params[sendToTargetParam] = targetID
+	}
+	b.curTransition.Effects = append(b.curTransition.Effects,
+		Ref{Name: forwardToBuiltinName, Params: params})
+	return b
+}
+
+// StopChild attaches the kernel stopChild built-in to the most-recent transition:
+// when the transition fires, the kernel emits a StopActor effect for the given
+// actor id, so a machine can explicitly stop a spawned child actor (xstate v5
+// `stopChild`). It is the action-level twin of StopActor and shares its effect;
+// stopping an unknown id is a host-side no-op. The built-in needs no host
+// registration.
+func (b *Builder[S, E, C]) StopChild(id string) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Effects = append(b.curTransition.Effects,
+			Ref{Name: stopChildBuiltinName, Params: map[string]any{stopChildIDParam: id}})
+	}
+	return b
+}
+
 // Initial sets the entry state. At the top level it sets the machine's initial
 // state; inside a SuperState or Region block it sets that block's initial child.
 func (b *Builder[S, E, C]) Initial(name S) *Builder[S, E, C] {

@@ -17,11 +17,11 @@ import "context"
 // actor via Fire, and on the child's done/error re-fires the parent's onDone /
 // onError back through the parent's Fire.
 //
-// Scope: this build ships the actor RUNTIME — child-machine actors, the actor
+// Scope: this file ships the actor RUNTIME — child-machine actors, the actor
 // system, mailboxes, delivery, and lifecycle. The message-SEND action sugar
-// (sendTo / sendParent / respond / forwardTo) is the next build; the underlying
-// mailbox and Deliver mechanism exist here, but the action-level send sugar does
-// not. An actor ref is a runtime value (created when the actor is spawned), so it
+// (sendTo / sendParent / respond / forwardTo / stopChild) lives in actor_comms.go
+// and rides on top of the mailbox and Deliver mechanism defined here.
+// An actor ref is a runtime value (created when the actor is spawned), so it
 // is never part of the IR; the invoke/spawn declarations that produce actors are
 // IR and round-trip losslessly.
 
@@ -268,12 +268,24 @@ type actorAdapter[S comparable, E comparable, C any] struct {
 func NewActor[S comparable, E comparable, C any](inst *Instance[S, E, C], output func(*Instance[S, E, C]) any) ActorInstance {
 	a := &actorAdapter[S, E, C]{inst: inst, output: output}
 	for _, eff := range inst.StartEffects() {
-		switch eff.(type) {
-		case SpawnActor, StopActor:
+		if isActorEffect(eff) {
 			a.pending = append(a.pending, eff)
 		}
 	}
 	return a
+}
+
+// isActorEffect reports whether an effect is one the ActorSystem acts on: a
+// lifecycle effect (SpawnActor / StopActor) or an actor-communication send effect
+// (SendTo / SendParent / RespondToSender / ForwardEvent). Other effects (e.g. a
+// host service effect) are left for the host's own effect dispatch.
+func isActorEffect(eff Effect) bool {
+	switch eff.(type) {
+	case SpawnActor, StopActor, SendTo, SendParent, RespondToSender, ForwardEvent:
+		return true
+	default:
+		return false
+	}
 }
 
 // DeliverFire fires one event through the wrapped child instance. An event that is
@@ -288,8 +300,7 @@ func (a *actorAdapter[S, E, C]) DeliverFire(ctx context.Context, event any) (boo
 	}
 	res := a.inst.Fire(ctx, ev)
 	for _, eff := range res.Effects {
-		switch eff.(type) {
-		case SpawnActor, StopActor:
+		if isActorEffect(eff) {
 			a.pending = append(a.pending, eff)
 		}
 	}
@@ -297,8 +308,10 @@ func (a *actorAdapter[S, E, C]) DeliverFire(ctx context.Context, event any) (boo
 	return done, a.outputIfDone()
 }
 
-// ChildEffects returns and drains the buffered child SpawnActor / StopActor
-// effects.
+// ChildEffects returns and drains the buffered child actor effects — the
+// SpawnActor / StopActor lifecycle effects and the SendTo / SendParent /
+// RespondToSender / ForwardEvent communication effects the child emitted — so the
+// ActorSystem can run nested actors and route the child's outbound messages.
 func (a *actorAdapter[S, E, C]) ChildEffects() []Effect {
 	out := a.pending
 	a.pending = nil

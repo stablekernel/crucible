@@ -78,6 +78,30 @@ counts as an additive (minor) versus breaking (major) change. Use the
     (kind, src ref + params, input, systemId, onDone/onError) round-trips losslessly
     through JSON, and a dynamic `Spawn` built-in's params survive too; actor refs are
     runtime and intentionally absent from the IR.
+- Actor communication actions: the action-level send/stop sugar on top of the
+  actor runtime, for xstate v5 parity — built-in actions that emit data effects the
+  `ActorSystem` routes, so `Fire` stays pure.
+  - **Send/stop built-in actions.** `SendTo(targetID, event, ...)` emits a
+    `SendTo{TargetID, SystemID, Event}` effect the system delivers to the addressed
+    actor; `SendParent(event)` emits a `SendParent{Event}` a child routes to its
+    parent; `Respond(event)` emits a `RespondToSender{Event}` routed back to the
+    sender of the event the actor is currently handling (a no-op when there is no
+    identifiable sender); `ForwardTo(targetID, ...)` emits a
+    `ForwardEvent{TargetID, SystemID}` that forwards the current event verbatim; and
+    `StopChild(id)` emits a `StopActor{ID}` to stop a spawned actor. Address a target
+    by registry id or, with `WithSendToSystemID`, by its system-scoped id. Like the
+    spawn/stop/cancel built-ins, these need no host registration and are exempt from
+    the unbound-ref lint.
+  - **Sender-tracked routing in the `ActorSystem`.** Mailbox messages carry the
+    origin actor; the system records it as the delivered event's sender, so a
+    `RespondToSender` resolves the reply target, and parent/child routing resolves
+    `SendParent` to the parent instance and `SendTo` / `ForwardTo` to the addressed
+    actor. `Deliver` tags host-injected events with no origin; `AbsorbFor` lets a
+    host's own forwardTo forward the event it just fired. The kernel emits the
+    effects as data — it never delivers a message or owns the routing.
+  - **Trace & IR.** Send/forward/stop actions record microsteps and round-trip
+    losslessly through JSON (structural targets and the literal event serialize;
+    refs stay runtime).
 - Delayed-transition (`after`) scheduling: the runtime contract that makes the
   declarative `after` representation drivable, while keeping `Fire` pure.
   - **Schedule/cancel effects.** Entering a state that declares an `after`
