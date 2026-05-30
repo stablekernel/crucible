@@ -4,5 +4,7 @@ use (
 	./magefiles
 	./state
 	./telemetry
+	./telemetry/datadog
+	./telemetry/otel
 	./telemetry/slogadapter
 )
