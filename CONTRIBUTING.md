@@ -97,6 +97,44 @@ Crucible uses trunk-based development.
 4. Open a PR, fill out the template, and link any relevant discussion or issue.
 5. A maintainer (`@stablekernel/crucible-maintainers`) reviews and merges.
 
+## Cutting a module release
+
+Each module versions independently and ships its own `CHANGELOG.md`. A release
+is a tag push; the `Release` workflow does the rest.
+
+1. **Decide the version bump.** Diff the change against the last released
+   definition. For a state machine, the `state/evolution` package classifies the
+   diff per the [Evolution Guide](https://github.com/stablekernel/crucible/discussions/6)
+   and recommends the bump:
+
+   ```go
+   report, _ := evolution.DiffJSON[State, Event, *Entity](goldenBytes, currentBytes)
+   switch report.SemverBump() {
+   case evolution.Major: // a breaking change — follow the deprecation lifecycle first
+   case evolution.Minor: // additive only
+   case evolution.Patch: // no schema change
+   }
+   ```
+
+   Breaking changes (`report.Breaking()`) require the full Deprecated → Removed
+   lifecycle from the Evolution Guide before the old definition is removed.
+
+2. **Update the module's `CHANGELOG.md`.** Move the `Unreleased` entries under a
+   new `vX.Y.Z` heading with the date, and refresh the compare links.
+
+3. **Tag and push.** Module tags are `module/vX.Y.Z` (e.g. `state/v0.2.0`); a
+   bare `vX.Y.Z` tag releases the primary module (`state`).
+
+   ```sh
+   git tag -s state/v0.2.0 -m "state v0.2.0"
+   git push origin state/v0.2.0
+   ```
+
+4. **The workflow takes over.** On the tag push, `Release` re-runs the full
+   validation gate (lint, `-race` tests, `govulncheck`, coverage threshold) for
+   the tagged module across the Go × OS matrix, then publishes a GitHub release
+   with generated notes. A tag never publishes unless the gate is green.
+
 ## Questions & design discussion
 
 Design rationale lives on the
