@@ -27,16 +27,16 @@ type ScheduleAfter struct {
 	// ID identifies the pending timer. It is stable across the schedule/cancel
 	// pair for one source state on one instance, so a host keys its timer table
 	// by ID.
-	ID string
+	ID string `json:"id"`
 	// Delay is the wall-clock duration the host should wait before re-firing.
-	Delay time.Duration
+	Delay time.Duration `json:"delay"`
 	// Event is the delayed event to feed back through Fire when Delay elapses.
 	// It is the transition's On event, type-erased for the abstract effect
 	// surface; a host driver built with NewScheduler keeps it typed.
-	Event any
+	Event any `json:"event,omitempty"`
 	// State names the source state whose entry scheduled this timer, for
 	// diagnostics and host bookkeeping.
-	State string
+	State string `json:"state,omitempty"`
 }
 
 // CancelScheduled is the effect the kernel emits when an instance exits a state
@@ -47,7 +47,7 @@ type ScheduleAfter struct {
 type CancelScheduled struct {
 	// ID identifies the timer to cancel. It matches the ID of the ScheduleAfter
 	// that armed it (auto-cancel-on-exit), or an ID supplied to Cancel.
-	ID string
+	ID string `json:"id"`
 }
 
 // cancelBuiltinName is the reserved action ref name for the Cancel built-in. Like

@@ -55,28 +55,28 @@ type SpawnActor struct {
 	// ID identifies the spawned actor. It is stable across the spawn/stop pair for
 	// one owning state on one instance (static invoke) or supplied explicitly (a
 	// dynamic spawn), so a host keys its actor registry by ID.
-	ID string
+	ID string `json:"id"`
 	// Src is the actor ref (name + params) the host resolves against its actor
 	// palette to obtain the child machine to run.
-	Src Ref
+	Src Ref `json:"src"`
 	// Input is the serializable input passed to the child actor at spawn. It
 	// is data only; the kernel never inspects it.
-	Input map[string]any
+	Input map[string]any `json:"input,omitempty"`
 	// OnDone is the event the host re-fires through the PARENT's Fire (carrying the
 	// child's output) when the child actor reaches its final state, type-erased for
 	// the abstract effect surface; an ActorSystem keeps it typed.
-	OnDone any
+	OnDone any `json:"onDone,omitempty"`
 	// OnError is the event the host re-fires through the PARENT's Fire (carrying the
 	// error) when the child actor fails, type-erased for the abstract effect
 	// surface.
-	OnError any
+	OnError any `json:"onError,omitempty"`
 	// State names the owning state whose entry spawned this actor, for diagnostics
 	// and host bookkeeping. Empty for a dynamic spawn emitted from a transition.
-	State string
+	State string `json:"state,omitempty"`
 	// SystemID is the optional, stable system-scoped identifier the actor registers
 	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name rather than by ref. Empty when unset.
-	SystemID string
+	SystemID string `json:"systemId,omitempty"`
 }
 
 // StopActor is the effect the kernel emits when an instance exits a state that
@@ -88,7 +88,7 @@ type SpawnActor struct {
 type StopActor struct {
 	// ID identifies the actor to stop. It matches the ID of the SpawnActor that
 	// began it (auto-stop-on-exit), or an ID supplied to the stop built-in.
-	ID string
+	ID string `json:"id"`
 }
 
 // ActorRef is the runtime handle a machine stores in its context to address a

@@ -13,6 +13,23 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Typed effect envelope with a kind registry: every kernel-emitted effect now
+  carries a stable, serializable `Kind()` discriminant (the new `KindedEffect`
+  interface, implemented by `SpawnActor`, `StopActor`, `StartService`,
+  `StopService`, `ScheduleAfter`, `CancelScheduled`, `SendTo`, `SendParent`,
+  `RespondToSender`, and `ForwardEvent`), so effects can be journaled, deduped,
+  rendered, and routed across a serialization boundary by kind rather than by Go
+  type assertion. A new serializable `EffectEnvelope` (`kind` + `payload` +
+  optional `meta`, with a reserved-but-not-yet-stable `effectId` slot) is the wire
+  form; `MarshalEffect` produces it and an `EffectRegistry` — built-ins
+  pre-registered, host kinds added through the `RegisterEffect` functional option
+  on `NewEffectRegistry` — decodes it back to a concrete effect. Per the
+  closed-enum extension policy, an unrecognized effect kind is preserved verbatim
+  on load (surfaced as `UnknownEffect`) and rejected only at dispatch
+  (`EffectRegistry.Dispatchable` returns the typed `*ErrUnknownEffectKind`), never
+  silently dropped or applied. Effects remain data the host applies; the kernel
+  does not execute them. The `Effect` alias stays `any`, so bare domain effects
+  are unaffected.
 - Registry descriptors and `Registry.Palette()`: registered guards, actions,
   services, and actor behaviors are now discoverable with metadata and a
   parameter schema, so a builder API or UI can enumerate the host's behavior and
@@ -49,6 +66,17 @@ counts as an additive (minor) versus breaking (major) change. Use the
   schedule + fire cycle, snapshot + restore, invoke start + settle, and
   `analysis.ShortestPaths`/`SimplePaths` over a branchy machine. All report
   allocations and join the existing benchstat gate.
+
+### Changed
+
+- BREAKING (pre-1.0): the built-in effect structs gained JSON field tags so their
+  serialized form is lower-camel and stable (`{"id":…,"src":…}` rather than the
+  Go field names), and a `Trace.EffectsEmitted` label now records an effect's
+  stable `Kind` in place of its Go type name (the `name:…` ref prefix is
+  unchanged, so conformance ref-name assertions are unaffected). A host that
+  serialized a built-in effect struct directly, or that parsed the type-name
+  suffix of an `EffectsEmitted` label, must update; type-switching on the effect
+  structs is unaffected (the structs only gained methods and tags).
 
 ### Fixed
 

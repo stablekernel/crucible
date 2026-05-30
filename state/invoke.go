@@ -81,22 +81,22 @@ type Invocation[S comparable, E comparable, C any] struct {
 type StartService struct {
 	// ID identifies the running service. It is stable across the start/stop pair
 	// for one owning state on one instance, so a host keys its service table by ID.
-	ID string
+	ID string `json:"id"`
 	// Src is the service ref (name + params) the host resolves against its service
 	// registry to obtain the implementation to run.
-	Src Ref
+	Src Ref `json:"src"`
 	// Input is the serializable input passed to the service at start.
-	Input map[string]any
+	Input map[string]any `json:"input,omitempty"`
 	// OnDone is the event the host re-fires (with the service result) when the
 	// service completes successfully, type-erased for the abstract effect surface;
 	// a host driver built with NewServiceRunner keeps it typed.
-	OnDone any
+	OnDone any `json:"onDone,omitempty"`
 	// OnError is the event the host re-fires (with the error) when the service
 	// fails, type-erased for the abstract effect surface.
-	OnError any
+	OnError any `json:"onError,omitempty"`
 	// State names the owning state whose entry started this service, for
 	// diagnostics and host bookkeeping.
-	State string
+	State string `json:"state,omitempty"`
 }
 
 // StopService is the effect the kernel emits when an instance exits a state that
@@ -107,7 +107,7 @@ type StartService struct {
 type StopService struct {
 	// ID identifies the service to stop. It matches the ID of the StartService
 	// that began it (auto-stop-on-exit).
-	ID string
+	ID string `json:"id"`
 }
 
 // invokeID builds the stable per-instance identifier for the invocation at index

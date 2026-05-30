@@ -35,13 +35,13 @@ package state
 type SendTo struct {
 	// TargetID is the registry id of the actor to deliver Event to. Empty when the
 	// target is addressed by SystemID instead.
-	TargetID string
+	TargetID string `json:"targetId,omitempty"`
 	// SystemID is the system-scoped name of the target actor (its systemId),
 	// used when TargetID is empty so a sibling can be addressed by a well-known name.
-	SystemID string
+	SystemID string `json:"systemId,omitempty"`
 	// Event is the serializable event delivered to the target actor's mailbox,
 	// type-erased for the abstract effect surface; an ActorSystem keeps it typed.
-	Event any
+	Event any `json:"event,omitempty"`
 }
 
 // SendParent is the effect the kernel emits for the sendParent built-in: a child
@@ -51,7 +51,7 @@ type SendTo struct {
 type SendParent struct {
 	// Event is the serializable event delivered to the parent, type-erased for the
 	// abstract effect surface; an ActorSystem keeps it typed.
-	Event any
+	Event any `json:"event,omitempty"`
 }
 
 // RespondToSender is the effect the kernel emits for the respond built-in: reply
@@ -64,7 +64,7 @@ type SendParent struct {
 type RespondToSender struct {
 	// Event is the serializable reply delivered to the current event's sender,
 	// type-erased for the abstract effect surface; an ActorSystem keeps it typed.
-	Event any
+	Event any `json:"event,omitempty"`
 }
 
 // ForwardEvent is the effect the kernel emits for the forwardTo built-in: forward
@@ -77,10 +77,10 @@ type RespondToSender struct {
 type ForwardEvent struct {
 	// TargetID is the registry id of the actor to forward the current event to.
 	// Empty when the target is addressed by SystemID instead.
-	TargetID string
+	TargetID string `json:"targetId,omitempty"`
 	// SystemID is the system-scoped name of the target actor, used when TargetID is
 	// empty.
-	SystemID string
+	SystemID string `json:"systemId,omitempty"`
 }
 
 // Reserved action ref names for the actor-communication built-ins. Like the spawn
