@@ -15,6 +15,9 @@ concurrency:
 env:
   GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
   GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.3.0
+  # benchstat lives in golang.org/x/perf, which ships only pseudo-versions.
+  # Pinned to the latest published pseudo-version so every run uses the same tool.
+  BENCHSTAT: golang.org/x/perf/cmd/benchstat@v0.0.0-20260512194132-3cf34090a3db
 
 jobs:
   lint:
@@ -77,15 +80,93 @@ jobs:
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
 
+  # Benchmark regression gate. Runs the state benchmarks on the PR head and on
+  # the PR base on the SAME runner, then benchstat-diffs them. Running both refs
+  # on one machine cancels machine-to-machine variance, so a real regression is
+  # distinguishable from runner jitter. The benchstat table is written to the
+  # job's step summary for visibility, and the job fails if any gated metric
+  # (sec/op, allocs/op) regresses past the threshold below.
   bench:
+    # Only meaningful on PRs, where there is a base to compare against.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      # Maximum allowed head/base ratio before the gate fails (1.20 = +20%).
+      # Deliberately generous to absorb shared-runner and micro-benchmark jitter;
+      # tighten once the benchmark history on CI is shown to be stable.
+      BENCH_THRESHOLD: "1.20"
+      # -count balances stability against wall-clock time. 8 runs per benchmark,
+      # twice (base + head), keeps the job well under a few minutes for state.
+      BENCH_COUNT: "8"
+      # SHAs come from the trusted github context (not from any user-controlled
+      # title/body), and are consumed as env vars rather than interpolated into
+      # the shell, so there is no script-injection surface.
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Need both base and head commits present for the worktree diff.
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: "**/go.sum"
-      - name: benchmarks (state, informational)
+
+      # Skip the (relatively expensive) bench run on docs-only PRs. The gate only
+      # cares about Go sources and module files; anything else can't move the
+      # benchmarks. Keeping this as an in-job guard (rather than a workflow-level
+      # paths-ignore) avoids skipping the lint/test/vuln jobs on the same PR.
+      - name: Detect Go-code changes
+        id: changes
+        run: |
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- '*.go' 'go.mod' 'go.sum'; then
+            echo "go_changed=false" >> "$GITHUB_OUTPUT"
+            echo "No Go-code changes; skipping benchmark gate." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "go_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Benchmark head
+        if: steps.changes.outputs.go_changed == 'true'
         working-directory: state
-        run: go test -run '^$' -bench . -benchmem ./... | tee "$GITHUB_STEP_SUMMARY"
+        run: |
+          go test -run='^$' -bench=. -benchmem -count="$BENCH_COUNT" ./... \
+            | tee "$RUNNER_TEMP/head.txt"
+
+      - name: Benchmark base
+        if: steps.changes.outputs.go_changed == 'true'
+        run: |
+          # Check the base commit out into a sibling worktree and bench it there,
+          # so the head working tree is left untouched.
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          go test -C "$RUNNER_TEMP/base/state" -run='^$' -bench=. -benchmem \
+            -count="$BENCH_COUNT" ./... | tee "$RUNNER_TEMP/base.txt"
+          git worktree remove --force "$RUNNER_TEMP/base"
+
+      - name: Compare (benchstat) and gate
+        if: steps.changes.outputs.go_changed == 'true'
+        run: |
+          # Render the comparison table to the step summary for visibility.
+          {
+            echo '### Benchmark comparison (base → head)'
+            echo
+            echo "Threshold: head/base ratio must stay ≤ ${BENCH_THRESHOLD} for sec/op and allocs/op."
+            echo
+            echo '```'
+            go run "$BENCHSTAT" "$RUNNER_TEMP/base.txt" "$RUNNER_TEMP/head.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Gate on the machine-readable CSV form. New/removed benchmarks are
+          # skipped by the parser, never failed.
+          go run "$BENCHSTAT" -format csv "$RUNNER_TEMP/base.txt" "$RUNNER_TEMP/head.txt" \
+            > "$RUNNER_TEMP/compare.csv"
+
+          # Capture the verdict so it lands in the summary, then propagate the
+          # gate's real exit status (tee would otherwise mask a failure).
+          set -o pipefail
+          awk -v THRESHOLD="$BENCH_THRESHOLD" \
+            -f "$GITHUB_WORKSPACE/.github/scripts/bench-gate.awk" \
+            "$RUNNER_TEMP/compare.csv" | tee -a "$GITHUB_STEP_SUMMARY"
 # As modules land (broker, store, sink), add their dirs to each job.
