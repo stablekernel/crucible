@@ -13,6 +13,26 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Registry descriptors and `Registry.Palette()`: registered guards, actions,
+  services, and actor behaviors are now discoverable with metadata and a
+  parameter schema, so a builder API or UI can enumerate the host's behavior and
+  render a form for each ref. A new serializable `Descriptor`
+  (`Kind`/`Name`/`Description`/`Params`/`Reads`/`Writes`) and `ParamSpec`
+  (`Name`/`Type`/`Required`/`Description`/`Default`/`Enum`) over a minimal
+  `ParamType` set (string, int, float, bool, duration, enum) JSON-serialize
+  cleanly for transport. Registration gains a backward-compatible options tail —
+  `reg.Guard(name, fn, state.Describe("…").Param("min", state.IntParam)…)` — and a
+  new `reg.Actor(name, …)` declares actor behaviors (which bind at the
+  `ActorSystem`) in the palette; registering without a descriptor still works and
+  yields a minimal descriptor with just kind and name. `Palette()` returns every
+  consumer-registered entry sorted deterministically (by kind, then name);
+  `Builder.Palette()` / `Machine.Palette()` surface the same set for a DSL- or
+  `Provide`-built machine, and `Provide` carries descriptors over from the supplied
+  registry. A separate `BuiltinPalette()` lists the language-level built-ins
+  (`spawn`/`stopActor`/`stopChild`/`sendTo`/`sendParent`/`respond`/`forwardTo`/`cancel`
+  actions and the `stateIn` guard), which are intentionally excluded from
+  `Palette()`. Descriptors are metadata only — they never affect binding, lint, or
+  `Fire` semantics.
 - End-to-end exemplar: a realistic connection-lifecycle machine
   (`Disconnected → Connecting → Backoff → Connected{ Live: Heartbeat ‖ Work } →
   Closing → Closed`) that exercises hierarchy, parallel regions, deep-history
