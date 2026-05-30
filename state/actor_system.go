@@ -139,6 +139,71 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// origin (then respond is a no-op). It is the parent-side twin of
 	// runningActor.sender.
 	parentSender string
+
+	// inspector is the optional live observer sink fed actor-lifecycle (spawned /
+	// stopped) and inter-actor message (sent / delivered) inspection events. It is
+	// nil by default — the system never calls one unless WithActorInspector wired it
+	// — so actor inspection is zero-overhead off. It is the host-driver complement to
+	// the per-instance Inspector wired with WithInspector: the ActorSystem owns
+	// spawning, stopping, and message delivery, which the pure Fire step never sees.
+	inspector Inspector
+}
+
+// WithActorInspector wires a live observer sink fed the ActorSystem's
+// actor-lifecycle and inter-actor message inspection events — actor spawned /
+// stopped (xstate `@xstate.actor`) and message sent / delivered (the actor-to-actor
+// flavor of `@xstate.event`). Pass the same Inspector also wired to the parent
+// instance (WithInspector) to observe the whole system on one sink. It is off by
+// default; an un-inspected system pays nothing.
+func (s *ActorSystem[S, E, C]) WithActorInspector(insp Inspector) *ActorSystem[S, E, C] {
+	s.mu.Lock()
+	s.inspector = insp
+	s.mu.Unlock()
+	return s
+}
+
+// inspectActor feeds one actor-lifecycle inspection event to the system's
+// inspector when one is registered. The nil-inspector default short-circuits, so
+// an un-inspected system never allocates or calls. It must be called without the
+// system mutex held, since the inspector is host code that may re-enter the system.
+func (s *ActorSystem[S, E, C]) inspectActor(id, src string, phase ActorPhase) {
+	insp := s.inspectorRef()
+	if insp == nil {
+		return
+	}
+	insp.Inspect(InspectionEvent{
+		Kind:       InspectActor,
+		Machine:    s.parent.machine.name,
+		ActorID:    id,
+		ActorSrc:   src,
+		ActorPhase: phase,
+	})
+}
+
+// inspectMessage feeds one inter-actor message inspection event to the system's
+// inspector when one is registered. Like inspectActor it must be called without the
+// system mutex held.
+func (s *ActorSystem[S, E, C]) inspectMessage(senderID, targetID string, phase MessagePhase, message any) {
+	insp := s.inspectorRef()
+	if insp == nil {
+		return
+	}
+	insp.Inspect(InspectionEvent{
+		Kind:         InspectMessage,
+		Machine:      s.parent.machine.name,
+		SenderID:     senderID,
+		TargetID:     targetID,
+		MessagePhase: phase,
+		Message:      fmtState(message),
+	})
+}
+
+// inspectorRef reads the registered inspector under the system mutex, so a
+// concurrent WithActorInspector is observed safely.
+func (s *ActorSystem[S, E, C]) inspectorRef() Inspector {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inspector
 }
 
 // NewActorSystem returns an ActorSystem driving parent: the instance whose
@@ -250,6 +315,8 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 	}
 	s.mu.Unlock()
 
+	s.inspectActor(e.ID, e.Src.Name, ActorSpawned)
+
 	// Run the actor's own initial-entry child effects (nested actors), tracked
 	// under this actor so stopping it cascades to them. There is no event in flight
 	// on initial entry, so a ForwardEvent here has nothing to forward.
@@ -280,7 +347,9 @@ func (s *ActorSystem[S, E, C]) stop(id string) {
 		delete(s.bySystem, ra.ref.SystemID)
 	}
 	children := append([]string(nil), ra.children...)
+	src := ra.ref.Src
 	s.mu.Unlock()
+	s.inspectActor(id, src, ActorStopped)
 	for _, c := range children {
 		s.stop(c)
 	}
@@ -502,11 +571,15 @@ func (s *ActorSystem[S, E, C]) resolveTarget(targetID, systemID string) (string,
 // drains it. This is the single path every routed message flows through, so parent
 // and child delivery share their sender bookkeeping.
 func (s *ActorSystem[S, E, C]) dispatch(ctx context.Context, targetID string, event any, senderID string) {
+	s.inspectMessage(senderID, targetID, MessageSent, event)
 	if targetID == parentActorID {
 		s.fireParentFrom(ctx, event, senderID)
+		s.inspectMessage(senderID, targetID, MessageDelivered, event)
 		return
 	}
-	s.deliver(ctx, targetID, event, senderID)
+	if s.deliver(ctx, targetID, event, senderID) {
+		s.inspectMessage(senderID, targetID, MessageDelivered, event)
+	}
 }
 
 // fireParentFrom fires event through the parent instance, recording senderID as the

@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ErrInvalidTransition is returned when no transition matched (current, event),
@@ -102,6 +103,21 @@ type ErrNoPath struct {
 
 func (e *ErrNoPath) Error() string {
 	return fmt.Sprintf("crucible/state: no path from %q to %q", e.From, e.To)
+}
+
+// WaitTimeoutError is returned by WaitFor when its wait budget elapses (measured
+// on the instance's clock) before the predicate ever held — the typed timeout
+// mirroring xstate v5's `waitFor` rejection on its `timeout` option. Machine names
+// the instance's machine, Timeout the budget that elapsed, and Last the primary
+// active leaf the instance was in when the wait gave up, for diagnostics.
+type WaitTimeoutError struct {
+	Machine string
+	Timeout time.Duration
+	Last    string
+}
+
+func (e *WaitTimeoutError) Error() string {
+	return fmt.Sprintf("crucible/state: WaitFor on machine %q timed out after %s in state %q", e.Machine, e.Timeout, e.Last)
 }
 
 // ErrNoInitialState is returned/panicked by Cast when neither a CurrentStateFn

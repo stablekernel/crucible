@@ -38,6 +38,10 @@ func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) Fir
 	}
 	res := next(ctx, event)
 	i.history = append(i.history, res.Trace)
+	// Surface the settled result to a registered inspector as event/transition/
+	// snapshot observations. The call is gated on a non-nil inspector inside
+	// emitInspection, so an un-inspected Fire is unchanged and performs no IO.
+	i.emitInspection(res)
 	return res
 }
 

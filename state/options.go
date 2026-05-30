@@ -117,6 +117,7 @@ type castConfig[S comparable] struct {
 	initial    S
 	hasInitial bool
 	clock      Clock
+	inspector  Inspector
 }
 
 // WithClock injects the time seam an instance's delayed-transition driver uses.
@@ -127,6 +128,18 @@ type castConfig[S comparable] struct {
 // SystemClock().
 func WithClock[S comparable](c Clock) CastOption[S] {
 	return func(cfg *castConfig[S]) { cfg.clock = c }
+}
+
+// WithInspector registers a live observer sink fed inspection events as the
+// instance advances — event received, transition taken, snapshot update — mirroring
+// xstate v5's `createActor(logic, { inspect })`. It is off by default: with no
+// inspector the instance never calls one, so inspection adds zero overhead and the
+// pure Fire step performs no IO. The same inspector can be wired to an ActorSystem
+// (WithActorInspector) so actor lifecycle and inter-actor messages are observed on
+// the same sink. The inspector is notified synchronously and must not block or
+// mutate the instance.
+func WithInspector[S comparable](insp Inspector) CastOption[S] {
+	return func(c *castConfig[S]) { c.inspector = insp }
 }
 
 // WithInitialState supplies the instance's starting state explicitly. Use it
