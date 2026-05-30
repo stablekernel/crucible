@@ -634,7 +634,17 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	if !route {
 		return FireResult[S]{}, false
 	}
-	res := s.parent.Fire(ctx, ev)
+	// Deliver the child's output/error to the parent's onDone/onError transition's
+	// Assign through the done-event payload (AssignCtx.Event), not a side channel:
+	// the reducer reads it from AssignCtx.Event. LastOutput/LastError remain for
+	// parent actions that still read the outcome read-only.
+	var payload any
+	if err != nil {
+		payload = err
+	} else {
+		payload = output
+	}
+	res := s.parent.Fire(ctx, ev, WithEventData(payload))
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }

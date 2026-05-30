@@ -39,6 +39,19 @@ func (e *ErrGuardPanic) Error() string {
 	return fmt.Sprintf("crucible/state: guard %q panicked: %v", e.GuardName, e.Recovered)
 }
 
+// ErrAssignPanic is returned when an assign reducer panicked and was recovered,
+// or when an assign ref did not resolve at fire time. An assign is a total reducer,
+// so a panic is a programmer error the kernel surfaces as a typed failure that
+// stops the commit rather than leaving context partly folded.
+type ErrAssignPanic struct {
+	AssignName string
+	Recovered  any
+}
+
+func (e *ErrAssignPanic) Error() string {
+	return fmt.Sprintf("crucible/state: assign %q panicked: %v", e.AssignName, e.Recovered)
+}
+
 // ErrPolicyDenied is returned when a policy returned Deny.
 type ErrPolicyDenied struct {
 	PolicyName string
@@ -61,7 +74,7 @@ func (e *ErrUndeclaredState) Error() string {
 // ErrUnboundRef is returned when a guard/action/effect ref in the IR did not
 // resolve against the registry (raised at Quench / Provide).
 type ErrUnboundRef struct {
-	Kind string // "guard" | "action" | "effect"
+	Kind string // "guard" | "action" | "assign" | "service"
 	Name string
 }
 

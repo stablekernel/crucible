@@ -47,6 +47,15 @@ type ServiceFn[C any] func(ctx context.Context, in ServiceCtx[C]) (any, error)
 
 // ServiceCtx is passed to a bound service at run time. It carries the entity the
 // instance is bound to and the start contract the kernel emitted.
+//
+// Under a value context type, Entity is a point-in-time snapshot taken when the
+// service is invoked: it does not observe context updates that assigns apply on
+// Fires running while the service is in flight. To act on newer context a service
+// returns data, which the runner routes back through the onDone/onError event so a
+// transition assign folds it — Fire, not the service, owns every context change.
+// (Under a pointer context type the snapshot is a copied pointer to the same
+// value, so a long-running service can observe later mutations through the alias;
+// that is the documented escape-hatch tradeoff.)
 type ServiceCtx[C any] struct {
 	Entity C
 	Params map[string]any
@@ -191,12 +200,19 @@ func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result a
 	}
 	r.lastResult.Store(serviceOutcome{result: result, err: err})
 	var ev E
+	var payload any
 	if err != nil {
 		ev = rs.onError
+		payload = err
 	} else {
 		ev = rs.onDone
+		payload = result
 	}
-	res := r.inst.Fire(ctx, ev)
+	// Deliver the service result/error to the onDone/onError transition's Assign
+	// through the done-event payload (AssignCtx.Event), not a side channel: the
+	// reducer reads it from AssignCtx.Event. LastResult/LastError remain for actions
+	// that still read the outcome read-only.
+	res := r.inst.Fire(ctx, ev, WithEventData(payload))
 	r.Absorb(ctx, res.Effects)
 	return res, true
 }

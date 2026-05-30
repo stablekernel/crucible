@@ -70,6 +70,34 @@
 // Operations that favor discoverability over metaphor stay plain: PlanPath,
 // Requirements, Trace, and the To*/LoadFromJSON serializers.
 //
+// # Context: assigns and value semantics
+//
+// Context (the C type) is updated only through an assign — a pure reducer,
+// AssignFn[C], that takes the prior context by value, the triggering event, and
+// the ref's static params and returns the next context. This is the sole
+// context-mutation site (the G1 contract): guards and actions receive context
+// read-only, actions emit effects-as-data and never write context, and the kernel
+// folds the assigns declared on a transition's exit, transition, and entry phases
+// — in that order, declaration order within each phase, each reducer seeing the
+// prior result — committing the folded value to the instance at the end of the
+// step. Wire an assign with the Assign transition verb or the OnEntryAssign /
+// OnExitAssign state verbs; register the reducer with Builder.Reducer (or
+// Registry.Assign). A service result or actor done-data reaches its onDone
+// transition's assign through the re-fired done event's payload (AssignCtx.Event),
+// delivered with the WithEventData fire option — no host side channel.
+//
+// Use a VALUE context type (Machine[S, E, Order], not Machine[S, E, *Order]).
+// Under a value C the kernel's structural guarantees hold: a guard or action that
+// writes the context copy it receives mutates a throwaway, so the instance is
+// untouched (read-only falls out for free), and a service or actor observes a
+// point-in-time snapshot value at invocation rather than an alias that could leak
+// later mutations. A pointer C stays compilable as an ergonomics/performance
+// escape hatch, but it forfeits these guarantees: the copy is a copied pointer to
+// the same value, so a guard/action can mutate through the alias and a service can
+// observe later mutations. With a pointer C the consumer owns that discipline; the
+// structural read-only, clean-replay, and deterministic-analysis contracts hold
+// only for a value C.
+//
 // # Design
 //
 // The public API follows the suite's functional-options convention: every

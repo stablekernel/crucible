@@ -121,9 +121,72 @@ func TestActionBinding_Shadow_JSONMatchesDirect(t *testing.T) {
 	if len(res.Effects) != 1 || res.Effects[0] != direct {
 		t.Fatalf("binding effects=%v, want [%v]", res.Effects, direct)
 	}
-	// ContextDelta is the reserved channel: in-process actions never populate it.
-	if res.ContextDelta != nil {
-		t.Fatalf("ContextDelta = %v, want nil (reserved, unused at v1)", res.ContextDelta)
+}
+
+// TestAssignBinding_Shadow_MatchesDirectReducer asserts the in-process assign
+// binding, evaluated through the serialized ContextView path, returns the same
+// next context as calling the AssignFn directly. It is the write-side gate
+// symmetric to the read-side guard/action shadow tests: AssignResult.Context is
+// the realized channel the action binding formerly reserved.
+func TestAssignBinding_Shadow_MatchesDirectReducer(t *testing.T) {
+	reducer := func(in AssignCtx[bindOrder]) bindOrder {
+		c := in.Entity
+		c.Amount += 10
+		return c
+	}
+	in := bindOrder{Amount: 5}
+	direct := reducer(AssignCtx[bindOrder]{Entity: in})
+
+	binding := inProcessAssign(reducer)
+	raw, err := newInProcessView(in).JSON()
+	if err != nil {
+		t.Fatalf("view JSON: %v", err)
+	}
+	var decoded bindOrder
+	if err = json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	res, err := binding.EvalAssign(context.Background(), AssignRequest[bindOrder]{
+		Name:    "credit",
+		Context: newInProcessView(decoded),
+	})
+	if err != nil {
+		t.Fatalf("EvalAssign: %v", err)
+	}
+	if res.Context != direct {
+		t.Fatalf("binding context = %+v, want %+v (direct reducer)", res.Context, direct)
+	}
+}
+
+// TestRegistry_AssignBindingRecorded asserts Assign registers its in-process
+// AssignBinding alongside the bare reducer, namespaced under KindAssign so it
+// never collides with a same-named action.
+func TestRegistry_AssignBindingRecorded(t *testing.T) {
+	reg := NewRegistry[bindOrder]().
+		Assign("credit", func(in AssignCtx[bindOrder]) bindOrder { return in.Entity })
+	if reg.assignBinding("credit") == nil {
+		t.Fatal("Assign did not record an in-process AssignBinding")
+	}
+	if reg.assignBinding("missing") != nil {
+		t.Fatal("assignBinding returned a binding for an unregistered name")
+	}
+}
+
+// TestEvalAssign_UnboundRefFailsClosed asserts the defensive fire-time guard:
+// an assign ref with no bound reducer surfaces as a typed *ErrAssignPanic and
+// leaves the context unchanged, rather than silently dropping the fold.
+func TestEvalAssign_UnboundRefFailsClosed(t *testing.T) {
+	m := Forge[string, string, bindOrder]("x").State("a").Initial("a").Quench()
+	next, err := m.evalAssign(Ref{Name: "ghost"}, bindOrder{Amount: 3}, nil)
+	if err == nil {
+		t.Fatal("unbound assign ref should fail")
+	}
+	var ap *ErrAssignPanic
+	if !errors.As(err, &ap) || ap.AssignName != "ghost" {
+		t.Fatalf("error = %v, want *ErrAssignPanic{ghost}", err)
+	}
+	if next.Amount != 3 {
+		t.Fatalf("context changed on unbound assign: %+v", next)
 	}
 }
 
