@@ -1,0 +1,41 @@
+name: tests
+
+# Reusable race-test matrix. Runs `go test -race ./...` for every module in the
+# suite across the Go × OS matrix. Called by ci.yml so the matrix legs render as
+# a single collapsible tree in the checks UI (e.g. "tests / test (1.25.x,
+# ubuntu-latest)") instead of cluttering the top-level checks list.
+on:
+  workflow_call:
+    inputs:
+      modules:
+        description: "Space-separated list of module directories to test."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.25.x", "1.26.x"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      MODULES: ${{ inputs.modules }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: "**/go.sum"
+      - name: test -race
+        shell: bash
+        run: |
+          for module in $MODULES; do
+            echo "::group::test -race ($module)"
+            go test -C "$module" -race ./...
+            echo "::endgroup::"
+          done
