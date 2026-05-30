@@ -7,6 +7,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-30
+
 ### Added
 
 - Datadog adapter implementing `telemetry.Tracer` on dd-trace-go and
@@ -20,3 +22,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   attributes to `"key:value"` DogStatsD tags, with a configurable sample rate
   (`WithSampleRate`).
 - Pins `dd-trace-go/v2` v2.8.2 and `datadog-go/v5` v5.8.3.
+
+[Unreleased]: https://github.com/stablekernel/crucible/compare/telemetry/datadog/v0.1.0...HEAD
+[0.1.0]: https://github.com/stablekernel/crucible/releases/tag/telemetry/datadog/v0.1.0

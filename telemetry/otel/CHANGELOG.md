@@ -7,6 +7,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-30
+
 ### Added
 
 - OpenTelemetry adapter implementing `telemetry.Tracer` and `telemetry.Meter` on
@@ -19,3 +21,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   synchronous `Float64Gauge`, honoring `WithUnit`/`WithDescription`. Instrument
   construction falls back to a no-op on SDK error rather than panicking.
 - Pins the OpenTelemetry SDK at v1.44.0.
+
+[Unreleased]: https://github.com/stablekernel/crucible/compare/telemetry/otel/v0.1.0...HEAD
+[0.1.0]: https://github.com/stablekernel/crucible/releases/tag/telemetry/otel/v0.1.0
