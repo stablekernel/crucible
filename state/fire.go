@@ -485,6 +485,10 @@ func (i *Instance[S, E, C]) commit(
 	// emits a StopService effect so the host stops the service.
 	effects = append(effects, i.invokeEffectsOnExit(exits, &tr)...)
 
+	// Auto-stop-on-exit: every exited state running a child-machine actor emits a
+	// StopActor effect so the host's ActorSystem stops the actor (and its children).
+	effects = append(effects, i.actorEffectsOnExit(exits, &tr)...)
+
 	// Advance the configuration before transition/entry actions run. A history
 	// restore pins the configuration to the remembered leaves; otherwise descend
 	// into the target's initial children.
@@ -537,6 +541,10 @@ func (i *Instance[S, E, C]) commit(
 	// Invoked services: every entered state that declares an `invoke` emits a
 	// StartService effect so the host runs the service and routes onDone/onError.
 	effects = append(effects, i.invokeEffectsOnEntry(entries, &tr)...)
+
+	// Child-machine actors: every entered state that invokes a child machine emits
+	// a SpawnActor effect so the host's ActorSystem runs it and routes done/error.
+	effects = append(effects, i.actorEffectsOnEntry(entries, &tr)...)
 
 	// Done-event semantics: entering a final leaf may complete its parent.
 	doneEff, dname, derr := i.settleDone(to, entity, &tr)

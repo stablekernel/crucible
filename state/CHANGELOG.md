@@ -40,8 +40,44 @@ counts as an additive (minor) versus breaking (major) change. Use the
     initial state entered at `Cast`.
   - **Trace & IR.** Service start/stop record microsteps; the `invoke` block (id,
     src ref + params, input, onDone/onError) round-trips losslessly through JSON.
-  - Child-machine actors (invoking another `Machine` as a sub-actor) and the actor
-    model remain reserved; they arrive with the instance mailbox.
+- Actor model: child-machine actors, an actor system, mailboxes, delivery, and
+  lifecycle, for xstate v5 actor parity — host-driven so `Fire` stays pure and the
+  kernel stays stdlib-only.
+  - **Spawn/stop effects.** Entering a state that invokes a child `Machine`
+    (`InvokeActor`) emits a `SpawnActor{ID, Src, Input, OnDone, OnError, State,
+    SystemID}` effect; exiting it before the child reaches its final state emits a
+    `StopActor{ID}` effect (auto-stop-on-exit). A built-in `spawn` action emits a
+    `SpawnActor` from a transition for dynamic, runtime-created actors, and a
+    `stopActor` built-in emits a `StopActor`. The kernel never runs an actor, owns a
+    mailbox, or routes a message — it emits these as data, and a host `ActorSystem`
+    runs the child machine and routes its done/error back through the parent's
+    `Fire`. Actor IDs are stable per `(machine, owning state, actor index)` or set
+    explicitly; derive one with `ActorID`. The spawn/stop built-ins need no host
+    registration, mirroring the `Cancel` built-in.
+  - **Declarative actor invoke + runtime refs.** An `Invocation` gains a `Kind`
+    (`ActorKindService` default vs `ActorKindMachine`) and a `SystemID`; the
+    `InvokeActor(src, onDone, onError, ...)` DSL (with `WithInput`, `WithInvokeID`,
+    `WithSystemID`) declares a child-machine actor whose `src` binds at the
+    `ActorSystem` actor palette, not the service registry. Dynamic `Spawn(src, id,
+    ...)` takes `WithSpawnInput`, `WithSpawnSystemID`, `WithSpawnOnDone`,
+    `WithSpawnOnError`. An `ActorRef` (id + optional systemId) is a runtime handle a
+    machine stores in its context to address an actor; refs are runtime, never IR.
+  - **Host-driver harness.** A reusable, exported `ActorSystem` driver consumes the
+    spawn/stop effects, runs each child machine as an actor with its own mailbox via
+    `NewActor`, and re-fires the parent's `onDone` (carrying the child's `output`) or
+    `onError` when the child completes or fails. `Register` binds child behaviors;
+    `Absorb` spawns/stops from effects; `Deliver` / `DeliverByID` route an event into
+    an actor's mailbox and `Step` drains it; `Ref` / `RefBySystemID` resolve refs;
+    `Stop` / `SettleError` tear down or fail an actor; stopping a parent stops its
+    children recursively. `LastOutput` / `LastError` let an `onDone` / `onError`
+    action read the routed payload. The driver is synchronous and deterministic, so
+    actor machines are fully testable without real concurrency. `InFinal` reports a
+    child's completion. The message-send action sugar (`sendTo` / `sendParent` /
+    `respond` / `forwardTo`) builds on this delivery mechanism and arrives next.
+  - **Trace & IR.** Actor spawn/stop record microsteps; an `InvokeActor` block
+    (kind, src ref + params, input, systemId, onDone/onError) round-trips losslessly
+    through JSON, and a dynamic `Spawn` built-in's params survive too; actor refs are
+    runtime and intentionally absent from the IR.
 - Delayed-transition (`after`) scheduling: the runtime contract that makes the
   declarative `after` representation drivable, while keeping `Fire` pure.
   - **Schedule/cancel effects.** Entering a state that declares an `after`

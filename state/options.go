@@ -24,9 +24,10 @@ func Strict() QuenchOption { return func(c *quenchConfig) { c.strict = true } }
 type InvokeOption func(*invokeConfig)
 
 type invokeConfig struct {
-	id     string
-	params map[string]any
-	input  map[string]any
+	id       string
+	params   map[string]any
+	input    map[string]any
+	systemID string
 }
 
 // WithInput sets the serializable input passed to an invoked service when it
@@ -47,6 +48,51 @@ func WithServiceParams(params map[string]any) InvokeOption {
 // known id independent of the invocation's declaration order.
 func WithInvokeID(id string) InvokeOption {
 	return func(c *invokeConfig) { c.id = id }
+}
+
+// WithSystemID sets the system-scoped name a child-machine actor (InvokeActor)
+// registers under in the ActorSystem (xstate v5 `systemId`), so a sibling can
+// address it by a well-known name rather than by ref. It is meaningful only for
+// InvokeActor; on a plain service Invoke it is ignored.
+func WithSystemID(id string) InvokeOption {
+	return func(c *invokeConfig) { c.systemID = id }
+}
+
+// SpawnOption configures a Builder.Spawn declaration (the dynamic spawn built-in).
+type SpawnOption func(*spawnConfig)
+
+type spawnConfig struct {
+	input    map[string]any
+	systemID string
+	onDone   any
+	onError  any
+}
+
+// WithSpawnInput sets the serializable input passed to a dynamically spawned
+// actor when it is created (xstate v5 `input`), surfaced on the SpawnActor effect.
+func WithSpawnInput(input map[string]any) SpawnOption {
+	return func(c *spawnConfig) { c.input = input }
+}
+
+// WithSpawnSystemID sets the system-scoped name a dynamically spawned actor
+// registers under in the ActorSystem (xstate v5 `systemId`).
+func WithSpawnSystemID(id string) SpawnOption {
+	return func(c *spawnConfig) { c.systemID = id }
+}
+
+// WithSpawnOnDone sets the event the host re-fires through the parent's Fire when
+// a dynamically spawned actor reaches its final state, routing the child's output
+// through an ordinary transition from the spawning state. Omit it for a
+// fire-and-forget spawn whose completion the parent does not observe.
+func WithSpawnOnDone[E comparable](onDone E) SpawnOption {
+	return func(c *spawnConfig) { c.onDone = onDone }
+}
+
+// WithSpawnOnError sets the event the host re-fires through the parent's Fire when
+// a dynamically spawned actor fails, routing the error through an ordinary
+// transition from the spawning state.
+func WithSpawnOnError[E comparable](onError E) SpawnOption {
+	return func(c *spawnConfig) { c.onError = onError }
 }
 
 // CastOption configures Cast.

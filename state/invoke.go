@@ -53,6 +53,20 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// failure through an ordinary transition keyed on this event from the owning
 	// state.
 	OnError E `json:"onError"`
+
+	// Kind tags this invocation as a host-run service (the default,
+	// ActorKindService) or a child-MACHINE actor (ActorKindMachine). A service
+	// invocation emits StartService / StopService and is driven by a ServiceRunner;
+	// an actor invocation emits SpawnActor / StopActor and is driven by an
+	// ActorSystem that runs the child machine as an actor and routes its done/error
+	// back through the parent. The field serializes, so the distinction round-trips
+	// losslessly through JSON.
+	Kind ActorKind `json:"kind,omitempty"`
+	// SystemID is the optional system-scoped name a child-machine actor registers
+	// under in the ActorSystem (xstate v5 `systemId`), so a sibling can address it
+	// by a well-known name. It is meaningful only for an ActorKindMachine
+	// invocation and serializes for lossless round-trip.
+	SystemID string `json:"systemId,omitempty"`
 }
 
 // StartService is the effect the kernel emits when an instance enters a state
@@ -127,6 +141,9 @@ func (i *Instance[S, E, C]) invokeEffectsOnEntry(entries []S, tr *Trace) []Effec
 		}
 		for ix := range n.state.Invoke {
 			inv := &n.state.Invoke[ix]
+			if inv.Kind == ActorKindMachine {
+				continue
+			}
 			id := invocationID(m.name, s, ix, inv)
 			out = append(out, StartService{
 				ID:      id,
@@ -156,6 +173,9 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 		}
 		for ix := range n.state.Invoke {
 			inv := &n.state.Invoke[ix]
+			if inv.Kind == ActorKindMachine {
+				continue
+			}
 			id := invocationID(m.name, s, ix, inv)
 			out = append(out, StopService{ID: id})
 			tr.Microsteps = append(tr.Microsteps, "service.stop."+id)
@@ -174,7 +194,10 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 // services; a parallel initial configuration reports every active region's.
 func (i *Instance[S, E, C]) StartEffects() []Effect {
 	var tr Trace
-	return i.invokeEffectsOnEntry(i.Configuration(), &tr)
+	cfg := i.Configuration()
+	out := i.invokeEffectsOnEntry(cfg, &tr)
+	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	return out
 }
 
 // invocationID resolves the identifier for an invocation: its explicit ID when
