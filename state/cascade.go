@@ -47,6 +47,47 @@ func (m *Machine[S, E, C]) cascade(from, to S) (exits, entries []S) {
 	return exits, entries
 }
 
+// reentersSelfOrAncestor reports whether transition t is an external reentering
+// transition whose target is the source leaf itself or one of its ancestors. For
+// such a transition the standard LCA cascade is empty (the target is its own
+// least common ancestor), so a dedicated reentry cascade is used instead. A
+// reentering transition to an unrelated target is an ordinary external
+// transition and uses the LCA cascade.
+func reentersSelfOrAncestor[S comparable, E comparable, C any](t *Transition[S, E, C], from, to S, m *Machine[S, E, C]) bool {
+	if !t.Reenter {
+		return false
+	}
+	for _, anc := range m.ancestors(from) {
+		if anc == to {
+			return true
+		}
+	}
+	return false
+}
+
+// reenterCascade computes the exit and entry sets for an external reentering
+// transition from source leaf `from` to target `to`, where `to` is `from` or an
+// ancestor of `from`. It exits from the source up to and including the target
+// (innermost-first), then re-enters from the target back down to the source
+// spine and descends into the target's initial children (outermost-first). For a
+// self-transition (to == from) this is exit [from], entry [from].
+func (m *Machine[S, E, C]) reenterCascade(from, to S) (exits, entries []S) {
+	chain := m.ancestors(from) // innermost-first: [from, ..., to, ...]
+	for _, s := range chain {
+		exits = append(exits, s)
+		if s == to {
+			break
+		}
+	}
+	// Entries are the exits reversed (outermost-first), then the descent into the
+	// target's initial children.
+	for k := len(exits) - 1; k >= 0; k-- {
+		entries = append(entries, exits[k])
+	}
+	entries = append(entries, m.descentInterior(to)...)
+	return exits, entries
+}
+
 // descentInterior returns the interior states entered when descending into a
 // compound or parallel target's initial children, outermost-first. It excludes
 // the target itself (already in the entry chain) but includes nested compound

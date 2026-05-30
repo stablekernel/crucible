@@ -34,7 +34,10 @@ func (m *Machine[S, E, C]) PlanPath(from, to S, entity C, opts ...PlanOption) ([
 
 		for ti := range src.Transitions {
 			t := &src.Transitions[ti]
-			if t.EventLess || t.Internal {
+			// Eventless and internal transitions advance no named-event path step;
+			// forbidden blocks have no target; a targetless wildcard catch-all is an
+			// internal action-only edge. None contribute a planning edge.
+			if t.EventLess || t.Internal || t.Forbidden || (t.Wildcard && isZero(t.To)) {
 				continue
 			}
 			if visited[t.To] {

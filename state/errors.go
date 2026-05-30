@@ -81,6 +81,19 @@ func (e *ErrActionFailed) Error() string {
 
 func (e *ErrActionFailed) Unwrap() error { return e.Cause }
 
+// ErrMicrostepOverflow is returned when a single Fire macrostep does not reach a
+// stable configuration within the run-to-completion step budget. It indicates a
+// cycle of raised internal events or eventless ("always") transitions that never
+// settles.
+type ErrMicrostepOverflow struct {
+	Limit int
+	State string
+}
+
+func (e *ErrMicrostepOverflow) Error() string {
+	return fmt.Sprintf("crucible/state: run-to-completion did not stabilize within %d microsteps (at %q): a raise/eventless cycle", e.Limit, e.State)
+}
+
 // ErrNoPath is returned by PlanPath when no event sequence connects from->to.
 type ErrNoPath struct {
 	From string

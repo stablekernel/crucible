@@ -106,6 +106,36 @@ type Transition[S comparable, E comparable, C any] struct {
 	EventLess bool           `json:"eventLess,omitempty"`
 	After     *time.Duration `json:"after,omitempty"`
 
+	// Wildcard marks a catch-all transition: it matches any event that no
+	// specific-event transition of the same state handles. Wildcard transitions
+	// are the lowest-priority candidates in a state, tried only after every
+	// On-keyed match fails, and resolution still bubbles to ancestors when no
+	// wildcard fires. On is ignored when Wildcard is set. This mirrors xstate v5
+	// `on: { '*': ... }`.
+	Wildcard bool `json:"wildcard,omitempty"`
+
+	// Forbidden marks an event as explicitly blocked at this state: the event is
+	// consumed and ignored, and — unlike "no handler declared" — it does NOT
+	// bubble to ancestor states. To has no meaning for a forbidden transition.
+	// This mirrors xstate v5 `on: { E: undefined }`.
+	Forbidden bool `json:"forbidden,omitempty"`
+
+	// Reenter makes a transition external. By default (v5 semantics) a transition
+	// whose target is the source itself or an ancestor of the source is internal:
+	// its effects run but the source is not exited and re-entered. Setting Reenter
+	// forces the external form, running the full exit/entry cascade of the target.
+	// For an unrelated target (an ordinary state change) the cascade always runs;
+	// Reenter only changes the self/ancestor case. This mirrors xstate v5
+	// `reenter: true`.
+	Reenter bool `json:"reenter,omitempty"`
+
+	// Raise lists internal events this transition enqueues. They are appended to
+	// the macrostep's internal queue after the transition's own effects run, and
+	// drained by Fire's run-to-completion loop within the SAME macrostep — before
+	// Fire returns and before any externally-sent event. This mirrors xstate v5
+	// `raise(...)`. The queue is local to the macrostep, so Fire stays pure.
+	Raise []E `json:"raise,omitempty"`
+
 	SrcFile string `json:"srcFile,omitempty"`
 	SrcLine int    `json:"srcLine,omitempty"`
 
@@ -467,10 +497,111 @@ func (b *Builder[S, E, C]) On(event E) *Builder[S, E, C] {
 	return b
 }
 
+// OnAny opens a wildcard (catch-all) transition from the most-recent state. It
+// matches any event no specific On-keyed transition of the state handles, and is
+// the lowest-priority candidate — tried only after every specific match fails,
+// before the event bubbles to an ancestor. Chain GoTo/When/Do/Reenter/Raise as
+// usual. This is the DSL form of xstate v5 `on: { '*': ... }`.
+func (b *Builder[S, E, C]) OnAny() *Builder[S, E, C] {
+	b.openTransition()
+	if b.curTransition != nil {
+		b.curTransition.Wildcard = true
+		b.curTransition.set = true
+	}
+	return b
+}
+
+// Forbid declares that the most-recent state blocks the given event: the event
+// is consumed and ignored there and does NOT bubble to ancestors, distinct from
+// having no handler (which bubbles). This is the DSL form of xstate v5
+// `on: { E: undefined }`. A forbidden transition takes no target, guards, or
+// effects.
+func (b *Builder[S, E, C]) Forbid(event E) *Builder[S, E, C] {
+	b.openTransition()
+	if b.curTransition != nil {
+		b.curTransition.On = event
+		b.curTransition.Forbidden = true
+		b.curTransition.set = true
+	}
+	return b
+}
+
+// ForbidAny declares a forbidden wildcard: every event not otherwise handled is
+// consumed and ignored at the most-recent state instead of bubbling. This is the
+// DSL form of xstate v5 `on: { '*': undefined }`.
+func (b *Builder[S, E, C]) ForbidAny() *Builder[S, E, C] {
+	b.openTransition()
+	if b.curTransition != nil {
+		b.curTransition.Wildcard = true
+		b.curTransition.Forbidden = true
+		b.curTransition.set = true
+	}
+	return b
+}
+
+// openTransition selects the transition the next OnAny/Forbid/Always/ForbidAny
+// will configure, mirroring On: it reuses a freshly-opened transition from a
+// preceding Transition(from) call, and otherwise opens a new edge from the
+// most-recent state. This lets `Transition(x).OnAny().GoTo(y)` and
+// `.State(x).OnAny().GoTo(y)` both read cleanly.
+func (b *Builder[S, E, C]) openTransition() {
+	if b.curState == nil {
+		return
+	}
+	needNew := b.curTransition == nil || b.curTransState != b.curState || b.curTransition.set
+	if !needNew {
+		return
+	}
+	sd := b.curState
+	file, line := callerSite2()
+	sd.state.Transitions = append(sd.state.Transitions, Transition[S, E, C]{
+		From:    sd.state.Name,
+		SrcFile: file,
+		SrcLine: line,
+	})
+	b.curTransState = sd
+	b.curTransition = &sd.state.Transitions[len(sd.state.Transitions)-1]
+}
+
 // GoTo sets the target of the most-recent transition.
 func (b *Builder[S, E, C]) GoTo(to S) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.To = to
+	}
+	return b
+}
+
+// Always opens an eventless ("always") transition from the most-recent state. It
+// carries no triggering event and is auto-fired by the run-to-completion loop
+// whenever its guards pass and the state is active, within the firing macrostep.
+// Chain GoTo/When/Do as usual. This is the DSL form of xstate v5 `always`.
+func (b *Builder[S, E, C]) Always() *Builder[S, E, C] {
+	b.openTransition()
+	if b.curTransition != nil {
+		b.curTransition.EventLess = true
+		b.curTransition.set = true
+	}
+	return b
+}
+
+// Reenter marks the most-recent transition external: a self- or ancestor-
+// targeted transition that would otherwise be internal (the v5 default) instead
+// runs the full exit/entry cascade of its target. This is the DSL form of xstate
+// v5 `reenter: true`.
+func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Reenter = true
+	}
+	return b
+}
+
+// Raise attaches internal events to the most-recent transition. After the
+// transition's effects run, each raised event is processed within the same Fire
+// macrostep by the run-to-completion loop, before Fire returns. This is the DSL
+// form of xstate v5 `raise(...)`.
+func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Raise = append(b.curTransition.Raise, events...)
 	}
 	return b
 }
@@ -679,6 +810,10 @@ type Instance[S comparable, E comparable, C any] struct {
 	// threaded through Fire — never global or IO-backed — so Fire stays pure.
 	historyShallow map[S]S
 	historyDeep    map[S][]S
+	// raised is the macrostep-local internal-event queue fed by Raise actions and
+	// drained by Fire's run-to-completion loop. It is never persisted and is empty
+	// between macrosteps, so Fire stays pure.
+	raised []E
 	// Reserved drop-in surface: actor mailbox.
 }
 
