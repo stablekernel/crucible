@@ -237,6 +237,12 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 		if !ok {
 			continue
 		}
+		if forbids(n.state, event) {
+			tr.MatchedAt = fmtState(anc)
+			tr.Outcome = OutcomeSuccess
+			tr.Microsteps = append(tr.Microsteps, "forbidden."+fmt.Sprint(event)+"@"+fmtState(anc))
+			return FireResult[S]{NewState: from, Trace: tr}
+		}
 		for _, t := range matchingTransitions(n.state, event) {
 			pass := true
 			for _, g := range t.Guards {

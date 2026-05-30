@@ -105,7 +105,10 @@ func collectEdges[S comparable, E comparable, C any](states []state.State[S, E, 
 			s := &ss[i]
 			for ti := range s.Transitions {
 				t := &s.Transitions[ti]
-				if t.EventLess || t.Internal {
+				// Skip edges that do not produce an event-driven change to a named
+				// target: eventless and internal transitions, forbidden blocks, and
+				// targetless wildcard catch-alls (no concrete target to assert).
+				if t.EventLess || t.Internal || t.Forbidden || t.Wildcard {
 					continue
 				}
 				out[s.Name] = append(out[s.Name], edge[S, E]{to: t.To, on: t.On})

@@ -316,6 +316,16 @@ func collectEdges[S comparable, E comparable, C any](states []State[S, E, C]) []
 				if !siblings[fromName] || !siblings[toName] {
 					scope = ""
 				}
+				// A forbidden transition is a block, not a graph edge: it has no
+				// target and produces no state change, so it is not rendered. A
+				// targetless wildcard (an internal action-only catch-all) likewise has
+				// no edge to draw.
+				if t.Forbidden {
+					continue
+				}
+				if t.Wildcard && isZero(t.To) {
+					continue
+				}
 				e := edge{
 					from:    resolve(fromName),
 					to:      resolve(toName),
@@ -323,7 +333,11 @@ func collectEdges[S comparable, E comparable, C any](states []State[S, E, C]) []
 					toRaw:   toName,
 					scope:   scope,
 				}
-				if !t.EventLess {
+				switch {
+				case t.Wildcard:
+					// Render the catch-all as the conventional "*" event label.
+					e.on = "*"
+				case !t.EventLess:
 					e.on = fmt.Sprint(t.On)
 				}
 				for _, g := range t.Guards {

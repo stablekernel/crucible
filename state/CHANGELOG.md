@@ -13,6 +13,31 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Transition-semantics parity with xstate v5: wildcard, forbidden, `reenter`, and
+  `raise`.
+  - **Wildcard catch-all.** `Transition.Wildcard` (DSL `OnAny()`) matches any event
+    no specific `On`-keyed transition of the state handles. It is the lowest-priority
+    candidate — tried only after every specific match fails — and the event still
+    bubbles to ancestors when no wildcard fires.
+  - **Forbidden transitions.** `Transition.Forbidden` (DSL `Forbid(event)` /
+    `ForbidAny()`) blocks an event at a state: the event is consumed and ignored and,
+    unlike an unhandled event, does NOT bubble to ancestors.
+  - **`reenter` / internal-by-default.** A self- or ancestor-targeted transition is
+    now internal by default (its effects run with no exit/re-entry of the source),
+    matching v5. `Transition.Reenter` (DSL `Reenter()`) forces the external form,
+    running the target's exit then entry. Existing transitions are unaffected:
+    ordinary transitions to a distinct target keep their full cascade.
+  - **`raise`.** `Transition.Raise` (DSL `Raise(events...)`) enqueues internal events
+    processed within the same `Fire` macrostep. `Fire` now drives a run-to-completion
+    loop that drains raised events (FIFO) and auto-fires enabled eventless ("always")
+    transitions until the configuration is stable, recording each as a Trace
+    microstep. The internal queue is macrostep-local, so `Fire` stays pure. An
+    unhandled raised event is ignored; a non-settling raise/eventless cycle fails fast
+    with the typed `ErrMicrostepOverflow`.
+  - DSL also gains `Always()` to author eventless transitions directly (previously
+    IR-only). The wildcard target, forbidden marker, reenter flag, and raised-event
+    list serialize in the IR and round-trip losslessly through JSON; `raise` is
+    carried structurally as part of the transition.
 - Arbitrarily nested superstates in the builder DSL. A `SuperState` block may now
   contain another `SuperState` block (and so on, to any depth), so a deep
   hierarchy can be authored entirely through the chained DSL rather than only via

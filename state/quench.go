@@ -2,6 +2,13 @@ package state
 
 import "fmt"
 
+// isZero reports whether a comparable value equals its type's zero value. Used
+// to tell a targetless wildcard (no GoTo) from one with an explicit target.
+func isZero[S comparable](s S) bool {
+	var zero S
+	return s == zero
+}
+
 // Diagnostic severities used by lint/Temper/Quench.
 const (
 	diagError   = "error"
@@ -122,11 +129,28 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		b.checkRefs(&diags, "action", sd.state.OnExit, sd.state.OwnedBy, 0)
 		b.checkRefs(&diags, "action", sd.state.OnDone, sd.state.OwnedBy, 0)
 
+		guardlessWildcard := 0
 		for ti := range sd.state.Transitions {
 			t := &sd.state.Transitions[ti]
 
-			// Undeclared transition target.
-			if _, ok := b.stateIndex[t.To]; !ok {
+			// A forbidden transition is a pure block: it declares no target, guards,
+			// or effects, so the remaining target/ref checks do not apply.
+			if t.Forbidden {
+				if t.Reenter || len(t.Guards) > 0 || len(t.Effects) > 0 || len(t.Raise) > 0 {
+					diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  fmt.Sprintf("forbidden transition from %v must not declare a target, guards, effects, or raise", t.From),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					}})
+				}
+				continue
+			}
+
+			// Undeclared transition target. A targetless wildcard catch-all (no
+			// GoTo) is an internal action-only transition and is exempt.
+			targetlessWildcard := t.Wildcard && isZero(t.To)
+			if _, ok := b.stateIndex[t.To]; !ok && !targetlessWildcard {
 				diags = append(diags, diagnostic{Diagnostic: Diagnostic{
 					Severity: diagError,
 					Message:  fmt.Sprintf("transition from %v on %v targets undeclared state %v", t.From, t.On, t.To),
@@ -135,18 +159,32 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 				}})
 			}
 
-			// Ambiguity check.
+			// Ambiguity check. Wildcard catch-alls are counted separately: more than
+			// one guardless wildcard at a state is ambiguous, but a wildcard never
+			// conflicts with a specific-event transition (specific outranks it).
 			if len(t.Guards) == 0 {
-				if prev, seen := guardlessByEvent[t.On]; seen {
-					_ = prev
-					diags = append(diags, diagnostic{Diagnostic: Diagnostic{
-						Severity: diagWarning,
-						Message:  fmt.Sprintf("ambiguous guardless transitions from %v on %v", t.From, t.On),
-						SrcFile:  t.SrcFile,
-						SrcLine:  t.SrcLine,
-					}})
+				switch {
+				case t.Wildcard:
+					if guardlessWildcard >= 1 {
+						diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+							Severity: diagWarning,
+							Message:  fmt.Sprintf("ambiguous guardless wildcard transitions from %v", t.From),
+							SrcFile:  t.SrcFile,
+							SrcLine:  t.SrcLine,
+						}})
+					}
+					guardlessWildcard++
+				default:
+					if _, seen := guardlessByEvent[t.On]; seen {
+						diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+							Severity: diagWarning,
+							Message:  fmt.Sprintf("ambiguous guardless transitions from %v on %v", t.From, t.On),
+							SrcFile:  t.SrcFile,
+							SrcLine:  t.SrcLine,
+						}})
+					}
+					guardlessByEvent[t.On]++
 				}
-				guardlessByEvent[t.On]++
 			}
 
 			// Unresolved guard/action refs.

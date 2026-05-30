@@ -2,8 +2,13 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+// as is a thin alias over errors.As for the kernel's internal typed-error
+// checks, keeping call sites terse.
+func as(err error, target any) bool { return errors.As(err, target) }
 
 // Guards and actions receive the entity the Instance was Cast with; the kernel
 // supplies it from Instance.entity at Fire time. The entity is never threaded
@@ -36,11 +41,170 @@ func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) Fir
 	return res
 }
 
-// fireCore is the pure transition step. It resolves the event against the
-// active configuration child-first, bubbling up through ancestors, and routes
-// to every active orthogonal region. A flat machine collapses to a single leaf
-// with no parent, so this reduces to the flat behavior.
+// maxMicrosteps bounds the run-to-completion loop so a machine whose raised
+// events or eventless transitions form a cycle fails fast with a typed error
+// instead of spinning forever. It is generous enough that no well-formed machine
+// reaches it within one macrostep.
+const maxMicrosteps = 10_000
+
+// fireCore drives one macrostep to a stable configuration: it runs the external
+// event's transition, then runs the run-to-completion loop — draining internal
+// events enqueued by Raise actions and auto-firing enabled eventless ("always")
+// transitions — until neither remains. Every sub-step's effects and trace detail
+// are accumulated into the single returned result, and each is recorded in the
+// Trace microsteps. The internal queue is local to this call, so Fire stays
+// pure: no clock, no IO.
 func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S] {
+	res := i.fireOnce(ctx, event)
+	if res.Err != nil {
+		return res
+	}
+	return i.runToCompletion(ctx, res)
+}
+
+// runToCompletion settles the macrostep after the triggering transition: it
+// drains raised internal events first (FIFO, in the same macrostep), then fires
+// any enabled eventless transition, looping until the configuration is stable.
+// Effects concatenate and microsteps accumulate onto the seed result. A raised
+// event or eventless transition that errors stops the loop and surfaces the
+// error; an unhandled raised event is ignored (it had no enabled transition),
+// matching xstate, rather than failing the macrostep.
+func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[S]) FireResult[S] {
+	steps := 0
+	for {
+		// Internal (raised) events take priority and are processed FIFO.
+		if len(i.raised) > 0 {
+			ev := i.raised[0]
+			i.raised = i.raised[1:]
+			steps++
+			if steps > maxMicrosteps {
+				return microstepOverflow(res, i.current)
+			}
+			sub := i.fireOnce(ctx, ev)
+			res.Effects = append(res.Effects, sub.Effects...)
+			absorbMicrosteps(&res.Trace, sub.Trace)
+			res.NewState = i.current
+			if sub.Err != nil {
+				// An unhandled raised event (no enabled transition) is ignored; any
+				// other failure stops the macrostep and surfaces.
+				if isNoTransition(sub.Err) {
+					continue
+				}
+				res.Err = sub.Err
+				res.Trace.Outcome = sub.Trace.Outcome
+				return res
+			}
+			continue
+		}
+
+		// No pending internal events: fire one enabled eventless transition.
+		t, anc, ok := i.selectEventless()
+		if !ok {
+			return res
+		}
+		steps++
+		if steps > maxMicrosteps {
+			return microstepOverflow(res, i.current)
+		}
+		sub := i.commit(ctx, t, i.current, anc, i.entity, i.seedTrace("always"))
+		res.Effects = append(res.Effects, sub.Effects...)
+		absorbMicrosteps(&res.Trace, sub.Trace)
+		res.NewState = i.current
+		if sub.Err != nil {
+			res.Err = sub.Err
+			res.Trace.Outcome = sub.Trace.Outcome
+			return res
+		}
+	}
+}
+
+// seedTrace builds a fresh Trace for an internal sub-step (a raised event or an
+// eventless transition), tagged with the active leaf so the microstep record is
+// self-describing.
+func (i *Instance[S, E, C]) seedTrace(event string) Trace {
+	return Trace{
+		Machine:   i.machine.name,
+		Event:     event,
+		FromState: fmtState(i.current),
+		MatchedAt: fmtState(i.current),
+		Outcome:   OutcomeInvalidTransition,
+	}
+}
+
+// selectEventless finds one enabled eventless ("always") transition for the
+// current configuration, resolved child-first and bubbling up through ancestors;
+// the first whose guards all pass is returned with the ancestor it was found on.
+func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc S, ok bool) {
+	m := i.machine
+	for _, a := range m.ancestors(i.current) {
+		n, found := m.resolveNode(a)
+		if !found {
+			continue
+		}
+		for ti := range n.state.Transitions {
+			cand := &n.state.Transitions[ti]
+			if !cand.EventLess {
+				continue
+			}
+			if i.guardsPass(cand) {
+				return cand, a, true
+			}
+		}
+	}
+	var zero S
+	return nil, zero, false
+}
+
+// guardsPass reports whether every guard on a transition currently passes. A
+// guard that errors (panics) is treated as not passing, so a faulty guard never
+// silently enables an eventless transition.
+func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
+	for _, g := range t.Guards {
+		ok, err := i.machine.evalGuard(g, i.entity)
+		if err != nil || !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// absorbMicrosteps folds an internal sub-step's observable trace detail into the
+// macrostep's running trace, preserving order across the run-to-completion loop.
+func absorbMicrosteps(dst *Trace, sub Trace) {
+	if sub.Event != "" {
+		dst.Microsteps = append(dst.Microsteps, sub.Event)
+	}
+	dst.Microsteps = append(dst.Microsteps, sub.Microsteps...)
+	dst.GuardsEvaluated = append(dst.GuardsEvaluated, sub.GuardsEvaluated...)
+	dst.EffectsEmitted = append(dst.EffectsEmitted, sub.EffectsEmitted...)
+	dst.ExitedStates = append(dst.ExitedStates, sub.ExitedStates...)
+	dst.EnteredStates = append(dst.EnteredStates, sub.EnteredStates...)
+}
+
+// microstepOverflow returns the macrostep result annotated with the typed
+// run-to-completion overflow error.
+func microstepOverflow[S comparable](res FireResult[S], state S) FireResult[S] {
+	res.Err = &ErrMicrostepOverflow{Limit: maxMicrosteps, State: fmtState(state)}
+	res.Trace.Outcome = OutcomeInvalidTransition
+	res.NewState = state
+	return res
+}
+
+// isNoTransition reports whether err is the "no transition declared" outcome —
+// the benign result of a raised event the current configuration does not handle.
+func isNoTransition(err error) bool {
+	var it *ErrInvalidTransition
+	if as(err, &it) {
+		return it.Reason == "no transition declared for this state and event"
+	}
+	return false
+}
+
+// fireOnce is the pure single-event transition step. It resolves the event
+// against the active configuration child-first, bubbling up through ancestors,
+// and routes to every active orthogonal region. A flat machine collapses to a
+// single leaf with no parent, so this reduces to the flat behavior.
+func (i *Instance[S, E, C]) fireOnce(ctx context.Context, event E) FireResult[S] {
 	m := i.machine
 	from := i.current
 
@@ -101,6 +265,15 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 		if !ok {
 			continue
 		}
+		// A forbidden declaration consumes the event at this state and halts the
+		// bubble: distinct from "no handler", which would keep climbing. The event
+		// is ignored — no state change, no effects, a success outcome.
+		if forbids(n.state, event) {
+			tr.MatchedAt = fmtState(anc)
+			tr.Outcome = OutcomeSuccess
+			tr.Microsteps = append(tr.Microsteps, "forbidden."+fmt.Sprint(event)+"@"+fmtState(anc))
+			return FireResult[S]{NewState: from, Trace: tr}
+		}
 		candidates := matchingTransitions(n.state, event)
 		if len(candidates) == 0 {
 			continue
@@ -144,20 +317,45 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 	return FireResult[S]{NewState: from, Trace: tr, Err: err}
 }
 
-// matchingTransitions returns the event-triggered (non-eventless) transitions of
-// a state in declaration order.
+// matchingTransitions returns the event-triggered transitions of a state for an
+// event, in priority order: every specific On-keyed match in declaration order
+// first, then every wildcard catch-all in declaration order. Eventless and
+// forbidden transitions are not returned here (forbidden is resolved separately,
+// before candidates are tried). This realizes xstate v5 priority — specific
+// events outrank the wildcard — and the wildcard outranks bubbling to an
+// ancestor.
 func matchingTransitions[S comparable, E comparable, C any](s *State[S, E, C], event E) []*Transition[S, E, C] {
-	var out []*Transition[S, E, C]
+	var specific, wild []*Transition[S, E, C]
 	for ti := range s.Transitions {
 		t := &s.Transitions[ti]
-		if t.EventLess {
+		if t.EventLess || t.Forbidden {
 			continue
 		}
-		if t.On == event {
-			out = append(out, t)
+		switch {
+		case t.Wildcard:
+			wild = append(wild, t)
+		case t.On == event:
+			specific = append(specific, t)
 		}
 	}
-	return out
+	return append(specific, wild...)
+}
+
+// forbids reports whether state s explicitly forbids event: a transition marked
+// Forbidden that keys on this event (a specific Forbidden) or a forbidden
+// wildcard. A forbidden event is consumed at this state and must not bubble to
+// ancestors.
+func forbids[S comparable, E comparable, C any](s *State[S, E, C], event E) bool {
+	for ti := range s.Transitions {
+		t := &s.Transitions[ti]
+		if !t.Forbidden {
+			continue
+		}
+		if t.Wildcard || t.On == event {
+			return true
+		}
+	}
+	return false
 }
 
 // commit advances the configuration (before running actions, per the locked
@@ -177,8 +375,10 @@ func (i *Instance[S, E, C]) commit(
 
 	tr.SelectedTransition = projectTransition(t)
 
-	if t.Internal {
-		// Internal transitions run effects without changing state or cascading.
+	if i.isInternal(t, from) {
+		// Internal transition: run effects without exiting/re-entering the source
+		// or cascading. This is the v5 default for a self- or ancestor-targeted
+		// transition without Reenter, and the explicit Internal form.
 		effects, errName, err := i.runActions(t.Effects, entity, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
@@ -190,6 +390,7 @@ func (i *Instance[S, E, C]) commit(
 				},
 			}
 		}
+		i.enqueueRaised(t, &tr)
 		tr.Outcome = OutcomeSuccess
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
 	}
@@ -207,8 +408,18 @@ func (i *Instance[S, E, C]) commit(
 		to = owner
 	}
 
-	// Compute the exit/entry cascade across the hierarchy.
-	exits, entries := m.cascade(from, to)
+	// Compute the exit/entry cascade across the hierarchy. A reentering self- or
+	// ancestor-targeted transition is external on its own subtree: it exits from
+	// the source up to and including the target, then re-enters the target (and
+	// descends back into its initial children). The standard LCA cascade would
+	// produce an empty set here because the target is its own least common
+	// ancestor, so this case is computed explicitly.
+	var exits, entries []S
+	if reentersSelfOrAncestor(t, from, to, m) {
+		exits, entries = m.reenterCascade(from, to)
+	} else {
+		exits, entries = m.cascade(from, to)
+	}
 	if restoreLeaves != nil {
 		// Replace the compound's default descent with the remembered descent: the
 		// entry chain up to and including the compound is kept, then the recorded
@@ -297,8 +508,49 @@ func (i *Instance[S, E, C]) commit(
 		}
 	}
 
+	i.enqueueRaised(t, &tr)
 	tr.Outcome = OutcomeSuccess
 	return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+}
+
+// isInternal reports whether transition t executes as an internal transition
+// from source leaf `from`: it runs effects without exiting and re-entering the
+// source. A transition is internal when the explicit Internal flag is set, or —
+// per the xstate v5 default — when Reenter is unset and the target is the source
+// itself or one of its ancestors. An external transition (Reenter set, or a
+// target outside the source's own spine) always runs the exit/entry cascade.
+func (i *Instance[S, E, C]) isInternal(t *Transition[S, E, C], from S) bool {
+	if t.Internal {
+		return true
+	}
+	if t.Reenter {
+		return false
+	}
+	// Targetless wildcard/self edges: a transition whose target equals the source,
+	// or whose target is an ancestor of the source, is internal by default.
+	if t.To == from {
+		return true
+	}
+	for _, anc := range i.machine.ancestors(from) {
+		if anc == from {
+			continue
+		}
+		if anc == t.To {
+			return true
+		}
+	}
+	return false
+}
+
+// enqueueRaised appends a transition's raised internal events to the instance's
+// macrostep queue and records each in the trace. The queue is drained by Fire's
+// run-to-completion loop within the same macrostep; it is local to that loop, so
+// Fire performs no IO and stays pure.
+func (i *Instance[S, E, C]) enqueueRaised(t *Transition[S, E, C], tr *Trace) {
+	for _, ev := range t.Raise {
+		i.raised = append(i.raised, ev)
+		tr.Microsteps = append(tr.Microsteps, "raise."+fmt.Sprint(ev))
+	}
 }
 
 // transName renders a transition label for diagnostics.
@@ -355,6 +607,10 @@ func projectTransition[S comparable, E comparable, C any](t *Transition[S, E, C]
 	}
 	guards := append([]Ref(nil), t.Guards...)
 	effects := append([]Ref(nil), t.Effects...)
+	var raise []any
+	for _, ev := range t.Raise {
+		raise = append(raise, ev)
+	}
 	return &Transition[any, any, any]{
 		From:      t.From,
 		To:        t.To,
@@ -365,6 +621,10 @@ func projectTransition[S comparable, E comparable, C any](t *Transition[S, E, C]
 		Internal:  t.Internal,
 		EventLess: t.EventLess,
 		After:     t.After,
+		Wildcard:  t.Wildcard,
+		Forbidden: t.Forbidden,
+		Reenter:   t.Reenter,
+		Raise:     raise,
 		SrcFile:   t.SrcFile,
 		SrcLine:   t.SrcLine,
 	}
