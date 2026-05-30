@@ -73,5 +73,46 @@ func (m *Machine[S, E, C]) guardsPass(t *Transition[S, E, C], entity C) bool {
 			return false
 		}
 	}
+	if t.GuardExpr != nil && !m.planGuardExpr(t.GuardExpr, entity) {
+		return false
+	}
 	return true
+}
+
+// planGuardExpr evaluates a composite guard for path planning, where there is no
+// live instance configuration. Named-ref leaves are evaluated against the entity
+// (a panic is treated as failing, keeping PlanPath pure); the stateIn built-in is
+// configuration-dependent and cannot be decided statically, so it is treated as
+// satisfiable — the planner may traverse the edge. The and/or/not combinators
+// compose the leaf results with the same short-circuit semantics as at Fire.
+func (m *Machine[S, E, C]) planGuardExpr(g *GuardNode[S], entity C) bool {
+	if g == nil {
+		return true
+	}
+	switch g.Op {
+	case GuardLeaf:
+		ok, err := m.evalGuard(*g.Ref, entity)
+		return err == nil && ok
+	case GuardStateIn:
+		// Configuration-dependent: assume satisfiable for planning.
+		return true
+	case GuardAnd:
+		for k := range g.Children {
+			if !m.planGuardExpr(&g.Children[k], entity) {
+				return false
+			}
+		}
+		return true
+	case GuardOr:
+		for k := range g.Children {
+			if m.planGuardExpr(&g.Children[k], entity) {
+				return true
+			}
+		}
+		return false
+	case GuardNot:
+		return !m.planGuardExpr(&g.Children[0], entity)
+	default:
+		return false
+	}
 }

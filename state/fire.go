@@ -165,6 +165,12 @@ func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
 			return false
 		}
 	}
+	if t.GuardExpr != nil {
+		res := i.evalGuardExpr(t.GuardExpr, i.entity, nil)
+		if res.err != nil || !res.ok {
+			return false
+		}
+	}
 	return true
 }
 
@@ -292,6 +298,25 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 					sawGuardFail = true
 					lastGuardErr = &ErrGuardFailed{GuardName: g.Name, Reason: "predicate returned false"}
 					break
+				}
+			}
+			// A composite guard expression is evaluated only when the plain guards
+			// pass; the transition is enabled when both do. A leaf panic surfaces as
+			// a guard panic; a clean false records which leaf(s) failed when cheap,
+			// else the composite.
+			if passed && t.GuardExpr != nil {
+				res := i.evalGuardExpr(t.GuardExpr, entity, &tr)
+				if res.err != nil {
+					tr.Outcome = OutcomeGuardPanic
+					return FireResult[S]{NewState: from, Trace: tr, Err: res.err}
+				}
+				if !res.ok {
+					passed = false
+					sawGuardFail = true
+					lastGuardErr = &ErrGuardFailed{
+						GuardName: joinLeafs(res.failedLeafs),
+						Reason:    "composite guard failed",
+					}
 				}
 			}
 			if passed {
@@ -611,11 +636,16 @@ func projectTransition[S comparable, E comparable, C any](t *Transition[S, E, C]
 	for _, ev := range t.Raise {
 		raise = append(raise, ev)
 	}
+	var guardExpr *GuardNode[any]
+	if t.GuardExpr != nil {
+		guardExpr = projectGuardNode(t.GuardExpr)
+	}
 	return &Transition[any, any, any]{
 		From:      t.From,
 		To:        t.To,
 		On:        t.On,
 		Guards:    guards,
+		GuardExpr: guardExpr,
 		Effects:   effects,
 		WaitMode:  t.WaitMode,
 		Internal:  t.Internal,

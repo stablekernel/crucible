@@ -343,6 +343,9 @@ func collectEdges[S comparable, E comparable, C any](states []State[S, E, C]) []
 				for _, g := range t.Guards {
 					e.guards = append(e.guards, g.Name)
 				}
+				if t.GuardExpr != nil {
+					e.guards = append(e.guards, renderGuardExpr(t.GuardExpr))
+				}
 				out = append(out, e)
 			}
 			if len(s.Children) > 0 {
