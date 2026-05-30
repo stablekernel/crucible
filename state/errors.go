@@ -206,3 +206,19 @@ func (e *AssayError) Error() string {
 	}
 	return fmt.Sprintf("crucible/state: assay failed: %s", strings.Join(names, ", "))
 }
+
+// ErrUnsupportedSchema is returned by LoadFromJSON when an IR document declares a
+// schema major version newer than the loader supports. The reject-higher-major
+// policy is the reserved compatibility seam: a higher minor (same major) loads,
+// preserving unknown fields for forward-compat, but a higher major signals a wire
+// form this build cannot safely interpret and is refused rather than guessed at.
+type ErrUnsupportedSchema struct {
+	// Got is the schemaVersion declared in the document.
+	Got string
+	// Supported is the loader's own schema version.
+	Supported string
+}
+
+func (e *ErrUnsupportedSchema) Error() string {
+	return fmt.Sprintf("crucible/state: unsupported schema version %q (loader supports %q)", e.Got, e.Supported)
+}

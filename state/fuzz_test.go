@@ -21,6 +21,16 @@ func FuzzLoadFromJSON(f *testing.F) {
 	f.Add([]byte(`null`))
 	f.Add([]byte(``))
 	f.Add([]byte(`{"name":`))
+	// Versioned, extension-laden, input/output-bearing documents exercise the
+	// envelope parse path and the preserve-unknown machinery.
+	f.Add([]byte(`{"schemaVersion":"1.0","id":"m1","name":"x","version":"1.2.3",` +
+		`"input":{"schema":{"type":"object"},"description":"in"},` +
+		`"output":{"description":"out"},"meta":{"crucible.binding":{"kind":"go"}},` +
+		`"initial":0,"hasInitial":true,"states":[{"name":0,"meta":{"doc.description":"d"},` +
+		`"transitions":[{"from":0,"to":1,"on":0,"meta":{"x":1},` +
+		`"effects":[{"name":"emit","meta":{"crucible.binding":{"kind":"go"}}}]}]},{"name":1}]}`))
+	f.Add([]byte(`{"schemaVersion":"1.7","name":"x","futureField":{"a":1},"initial":0,"hasInitial":true}`))
+	f.Add([]byte(`{"schemaVersion":"2.0","name":"x","initial":0,"hasInitial":true}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// A parse either errors or yields a usable IR; it must not panic.

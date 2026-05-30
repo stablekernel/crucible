@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -14,9 +15,44 @@ type P = map[string]any
 // Ref is a named reference to a host-provided implementation plus serializable
 // params. The IR carries Refs; the registry binds Name -> func at
 // Provide/Quench time.
+//
+// Meta is the reserved extension namespace at ref granularity. It is the
+// attachment point for a future polyglot binding descriptor (under the reserved
+// crucible.binding key): absent any descriptor, a ref resolves to an in-process Go
+// registry entry, today's behavior unchanged. The kernel never inspects Meta; it
+// round-trips verbatim. extra preserves any unknown JSON keys a newer producer
+// emitted so they survive a load -> save cycle (forward-compat).
 type Ref struct {
 	Name   string         `json:"name"`
 	Params map[string]any `json:"params,omitempty"`
+	Meta   map[string]any `json:"meta,omitempty"`
+
+	extra map[string]json.RawMessage
+}
+
+// refKnownKeys is the set of JSON keys Ref models; anything else is captured into
+// extra and preserved verbatim on round-trip.
+var refKnownKeys = map[string]struct{}{"name": {}, "params": {}, "meta": {}}
+
+// MarshalJSON encodes a Ref, merging its preserved unknown keys back in with
+// stable key ordering.
+func (r Ref) MarshalJSON() ([]byte, error) {
+	type alias Ref
+	return marshalWithExtra(alias(r), r.extra)
+}
+
+// UnmarshalJSON decodes a Ref and captures any unknown keys into extra so they
+// survive re-serialization.
+func (r *Ref) UnmarshalJSON(data []byte) error {
+	type alias Ref
+	var a alias
+	extra, err := captureExtra(data, &a, refKnownKeys)
+	if err != nil {
+		return err
+	}
+	*r = Ref(a)
+	r.extra = extra
+	return nil
 }
 
 // HistoryType is the reserved drop-in surface for shallow/deep history states.
@@ -92,6 +128,44 @@ type State[S comparable, E comparable, C any] struct {
 	// drives (the actor model); the per-instance actor mailboxes live on the host
 	// ActorSystem, not on this definition.
 	Parent *State[S, E, C] `json:"-"`
+
+	// Meta is the reserved extension namespace at state (node) granularity: studio
+	// layout, documentation strings, tags, and codegen hints live here. The kernel
+	// never inspects it; it round-trips verbatim.
+	Meta map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// stateKnownKeys is the set of JSON keys State models; anything else is captured
+// into extra and preserved verbatim on round-trip.
+var stateKnownKeys = map[string]struct{}{
+	"name": {}, "ownedBy": {}, "transitions": {}, "onEntry": {}, "onExit": {},
+	"isFinal": {}, "onDone": {}, "children": {}, "initialChild": {}, "regions": {},
+	"historyType": {}, "historyDefault": {}, "invoke": {}, "meta": {},
+}
+
+// MarshalJSON encodes a State, merging its preserved unknown keys back in with
+// stable key ordering.
+func (s State[S, E, C]) MarshalJSON() ([]byte, error) {
+	type alias State[S, E, C]
+	return marshalWithExtra(alias(s), s.extra)
+}
+
+// UnmarshalJSON decodes a State and captures any unknown keys into extra so they
+// survive re-serialization.
+func (s *State[S, E, C]) UnmarshalJSON(data []byte) error {
+	type alias State[S, E, C]
+	var a alias
+	extra, err := captureExtra(data, &a, stateKnownKeys)
+	if err != nil {
+		return err
+	}
+	*s = State[S, E, C](a)
+	s.extra = extra
+	return nil
 }
 
 // Region is one orthogonal region of a parallel state: a self-contained set of
@@ -159,9 +233,47 @@ type Transition[S comparable, E comparable, C any] struct {
 	SrcFile string `json:"srcFile,omitempty"`
 	SrcLine int    `json:"srcLine,omitempty"`
 
+	// Meta is the reserved extension namespace at transition (edge) granularity:
+	// edge layout, documentation, and codegen hints live here. The kernel never
+	// inspects it; it round-trips verbatim.
+	Meta map[string]any `json:"meta,omitempty"`
+
 	// set is builder-only bookkeeping: true once On has assigned this edge's
 	// event, so a following On opens a fresh transition. Never serialized.
 	set bool `json:"-"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// transitionKnownKeys is the set of JSON keys Transition models; anything else is
+// captured into extra and preserved verbatim on round-trip.
+var transitionKnownKeys = map[string]struct{}{
+	"from": {}, "to": {}, "on": {}, "guards": {}, "effects": {}, "waitMode": {},
+	"guardExpr": {}, "internal": {}, "eventLess": {}, "after": {}, "wildcard": {},
+	"forbidden": {}, "reenter": {}, "raise": {}, "srcFile": {}, "srcLine": {}, "meta": {},
+}
+
+// MarshalJSON encodes a Transition, merging its preserved unknown keys back in
+// with stable key ordering.
+func (t Transition[S, E, C]) MarshalJSON() ([]byte, error) {
+	type alias Transition[S, E, C]
+	return marshalWithExtra(alias(t), t.extra)
+}
+
+// UnmarshalJSON decodes a Transition and captures any unknown keys into extra so
+// they survive re-serialization.
+func (t *Transition[S, E, C]) UnmarshalJSON(data []byte) error {
+	type alias Transition[S, E, C]
+	var a alias
+	extra, err := captureExtra(data, &a, transitionKnownKeys)
+	if err != nil {
+		return err
+	}
+	*t = Transition[S, E, C](a)
+	t.extra = extra
+	return nil
 }
 
 // Effect is an abstract, domain-defined payload. The kernel never inspects it.
@@ -417,6 +529,23 @@ type Builder[S comparable, E comparable, C any] struct {
 	// hsmDiags carries HSM-specific lint findings recorded during the chained
 	// build (e.g. SubState outside a SuperState), surfaced at Temper/Quench.
 	hsmDiags []diagnostic
+
+	// envelope carries the IR's identity/version/input-output/extension metadata
+	// from Provide through Quench so a rehydrated machine re-emits it on ToJSON.
+	envelope irEnvelope
+}
+
+// irEnvelope groups the additive IR envelope metadata (identity, definition
+// version, opaque IO slots, and the extension namespace plus preserved unknown
+// keys) so it threads as a unit from a loaded IR through Provide/Quench back out
+// to ToJSON without losing forward-compat fields.
+type irEnvelope struct {
+	id      string
+	version string
+	input   *IOSpec
+	output  *IOSpec
+	meta    map[string]any
+	extra   map[string]json.RawMessage
 }
 
 // Forge opens a builder.
@@ -1054,6 +1183,7 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 		actions:        map[string]ActionFn[C]{},
 		services:       map[string]ServiceFn[C]{},
 		middleware:     append([]Middleware[S, E, C](nil), b.middleware...),
+		envelope:       b.envelope,
 	}
 	for i := range m.states {
 		m.stateIndex[m.states[i].Name] = i
@@ -1092,6 +1222,9 @@ type Machine[S comparable, E comparable, C any] struct {
 	actions        map[string]ActionFn[C]
 	services       map[string]ServiceFn[C]
 	middleware     []Middleware[S, E, C]
+	// envelope retains the IR identity/version/IO/extension metadata so ToJSON
+	// re-emits it for a machine rehydrated from a versioned document.
+	envelope irEnvelope
 	// reg is the registry the machine was Quenched from, retained so Palette can
 	// surface the discoverable descriptor set of a built machine. It is never
 	// consulted by Fire.
