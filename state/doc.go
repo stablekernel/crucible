@@ -28,6 +28,16 @@
 // makes one machine usable across tests, handlers, and consumers without
 // change.
 //
+// An effect is discriminated data: every kernel-emitted effect reports a stable,
+// serializable Kind (the KindedEffect interface) and serializes to an
+// EffectEnvelope (kind + payload + meta), so effects can be journaled, deduped,
+// rendered, and routed across a serialization boundary by kind rather than by Go
+// type. An EffectRegistry decodes an envelope back to a concrete effect;
+// built-in kinds are pre-registered and a host registers its own through
+// RegisterEffect. An unknown effect kind is preserved on load and rejected only
+// at dispatch, never silently dropped. Effects stay data the host applies — the
+// kernel never executes them.
+//
 // # The definition IR is the spec
 //
 // The canonical machine is a serializable definition IR: pure data, lossless to

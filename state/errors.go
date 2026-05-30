@@ -222,3 +222,18 @@ type ErrUnsupportedSchema struct {
 func (e *ErrUnsupportedSchema) Error() string {
 	return fmt.Sprintf("crucible/state: unsupported schema version %q (loader supports %q)", e.Got, e.Supported)
 }
+
+// ErrUnknownEffectKind is returned by EffectRegistry.Dispatchable when an effect
+// carries a kind the registry does not recognize. It realizes the reject half of
+// the closed-enum extension policy for effect kinds: an unknown kind is preserved
+// on load (as an UnknownEffect) so a foreign effect round-trips losslessly, but
+// it is refused at dispatch rather than silently applied — the host must register
+// the kind (RegisterEffect) or drop the effect deliberately.
+type ErrUnknownEffectKind struct {
+	// Kind is the unrecognized effect discriminant.
+	Kind string
+}
+
+func (e *ErrUnknownEffectKind) Error() string {
+	return fmt.Sprintf("crucible/state: unknown effect kind %q (not registered for dispatch)", e.Kind)
+}
