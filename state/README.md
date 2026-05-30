@@ -2,9 +2,8 @@
 
 The pure, abstract state machine kernel of the [Crucible](../README.md) suite.
 
-> **Status: scaffolding.** This module is a buildable, empty placeholder. Phase 1
-> (Kernel Core + serializable IR + host registry) is pending per the roadmap. No
-> types or logic have landed yet.
+> **Status:** experimental, released as `state/v0.1.0`. The kernel is complete
+> and tested; the API may still change before v1.
 
 Import path: `github.com/stablekernel/crucible/state`
 
@@ -34,16 +33,22 @@ surface.
 
 ## Stability
 
-Stability label: **experimental** (pre-v1, scaffolding).
+Stability label: **experimental** (pre-v1; the API may change).
 
-## Roadmap
+## What's implemented
 
-Phase 1 (Kernel Core + IR + registry) → Phase 2 (HSM) → Phase 3 (Path Planning)
-→ Phase 4 (Visualization) → Phase 5 (Conformance).
+The builder and transition engine; guards, actions, and effects; typed errors
+and always-recorded traces; hierarchical and orthogonal states; entity
+validation; path planning; batch firing; the serializable IR and host registry;
+a reusable conformance harness; and Mermaid/DOT export. The kernel depends only
+on the standard library.
 
-Design rationale and the full roadmap live on the GitHub Discussions board under
-the **State Machine** category. See the
-[Overview & Roadmap](https://github.com/stablekernel/crucible/discussions/1) and
+Reserved for later releases: history states, invoked services, the actor model,
+and timed transitions.
+
+Design rationale lives on the GitHub Discussions board under the **State
+Machine** category — see the
+[Overview](https://github.com/stablekernel/crucible/discussions/1) and
 [Kernel Core](https://github.com/stablekernel/crucible/discussions/2)
 discussions.
 
