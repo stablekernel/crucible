@@ -223,6 +223,21 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 					}})
 				}
 				b.checkRefs(&diags, "guard", t.GuardExpr.leafRefs(), "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
+
+				// Type-check Core expression leaves (field-refs and the literals
+				// they compare against) against the attached ContextSchema, when one
+				// is present. A guard with no schema still evaluates dynamically; the
+				// check is skipped rather than failing the build.
+				if b.envelope.context != nil {
+					for _, err := range typeCheckCoreExpr(t.GuardExpr, b.envelope.context) {
+						diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+							Severity: diagError,
+							Message:  fmt.Sprintf("guard expression on transition from %v: %v", t.From, err),
+							SrcFile:  t.SrcFile,
+							SrcLine:  t.SrcLine,
+						}})
+					}
+				}
 			}
 		}
 	}
