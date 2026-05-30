@@ -1,0 +1,112 @@
+{
+  "name": "worker",
+  "states": [
+    {
+      "name": 0,
+      "transitions": [
+        {
+          "from": 0,
+          "to": 1,
+          "on": 0,
+          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+          "srcLine": 171
+        }
+      ]
+    },
+    {
+      "name": 1,
+      "ownedBy": "Supervisor",
+      "onDone": [
+        {
+          "name": "activeDone"
+        }
+      ],
+      "regions": [
+        {
+          "name": "Execution",
+          "states": [
+            {
+              "name": 2,
+              "transitions": [
+                {
+                  "from": 2,
+                  "to": 3,
+                  "on": 1,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 177
+                }
+              ]
+            },
+            {
+              "name": 3,
+              "transitions": [
+                {
+                  "from": 3,
+                  "to": 2,
+                  "on": 2,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 179
+                },
+                {
+                  "from": 3,
+                  "to": 4,
+                  "on": 5,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 180
+                }
+              ]
+            },
+            {
+              "name": 4,
+              "isFinal": true
+            }
+          ],
+          "initialChild": 2
+        },
+        {
+          "name": "Telemetry",
+          "states": [
+            {
+              "name": 5,
+              "transitions": [
+                {
+                  "from": 5,
+                  "to": 6,
+                  "on": 3,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 186
+                }
+              ]
+            },
+            {
+              "name": 6,
+              "transitions": [
+                {
+                  "from": 6,
+                  "to": 5,
+                  "on": 4,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 188
+                },
+                {
+                  "from": 6,
+                  "to": 7,
+                  "on": 6,
+                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
+                  "srcLine": 189
+                }
+              ]
+            },
+            {
+              "name": 7,
+              "isFinal": true
+            }
+          ],
+          "initialChild": 5
+        }
+      ]
+    }
+  ],
+  "initial": 0,
+  "hasInitial": true
+}

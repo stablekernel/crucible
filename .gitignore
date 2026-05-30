@@ -7,7 +7,8 @@ dist/
 # Test & coverage artifacts
 *.out
 *.test
-coverage*
+coverage*.out
+coverage*.html
 
 # Go workspace sums (kept local; not committed)
 go.work.sum
