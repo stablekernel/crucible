@@ -30,7 +30,18 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `analysis.ShortestPaths`/`SimplePaths` over a branchy machine. All report
   allocations and join the existing benchstat gate.
 
-## [0.2.0] - 2026-05-30
+### Fixed
+
+- On-entry lifecycle effects (`after` / `invoke` / actor `spawn`) are now emitted
+  for a state entered *inside* a parallel region. The region-entry path
+  (`applyRegionTransition`) previously ran only transition effects, so a region
+  substate declaring an `after` timeout, an invoked service, or an invoked actor
+  silently never started it. The region path now emits the same
+  `ScheduleAfter` / `StartService` / `SpawnActor` effects on entry — and the
+  symmetric `CancelScheduled` / `StopService` / `StopActor` effects on exit — as
+  the normal entry/exit cascade, for every state entered within a region
+  (including nested compounds). `Fire` stays pure: the fix emits effect data, it
+  does not run timers/services/actors in the kernel.
 
 ### Added
 
