@@ -29,6 +29,8 @@ const (
 	KindGuard DescriptorKind = "guard"
 	// KindAction marks a registered action/effect.
 	KindAction DescriptorKind = "action"
+	// KindAssign marks a registered assign reducer — the sole context writer.
+	KindAssign DescriptorKind = "assign"
 	// KindService marks a registered invoked service.
 	KindService DescriptorKind = "service"
 	// KindActor marks a registered actor behavior.
@@ -296,7 +298,7 @@ func descriptorFrom(kind DescriptorKind, name string, spec describeSpec) Descrip
 // The returned slice is freshly allocated each call and safe for the caller to
 // retain or mutate.
 func (r *Registry[C]) Palette() []Descriptor {
-	out := make([]Descriptor, 0, len(r.guards)+len(r.actions)+len(r.services)+len(r.actorDescs))
+	out := make([]Descriptor, 0, len(r.guards)+len(r.actions)+len(r.assigns)+len(r.services)+len(r.actorDescs))
 
 	collect := func(kind DescriptorKind, names []string) {
 		for _, name := range names {
@@ -310,6 +312,7 @@ func (r *Registry[C]) Palette() []Descriptor {
 
 	collect(KindGuard, keysOf(r.guards))
 	collect(KindAction, keysOf(r.actions))
+	collect(KindAssign, keysOf(r.assigns))
 	collect(KindService, keysOf(r.services))
 	collect(KindActor, r.actorDescs)
 

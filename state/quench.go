@@ -128,6 +128,8 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		b.checkRefs(&diags, "action", sd.state.OnEntry, sd.state.OwnedBy, 0)
 		b.checkRefs(&diags, "action", sd.state.OnExit, sd.state.OwnedBy, 0)
 		b.checkRefs(&diags, "action", sd.state.OnDone, sd.state.OwnedBy, 0)
+		b.checkRefs(&diags, "assign", sd.state.OnEntryAssign, sd.state.OwnedBy, 0)
+		b.checkRefs(&diags, "assign", sd.state.OnExitAssign, sd.state.OwnedBy, 0)
 
 		// Validate every invoked service's Src ref against the service registry,
 		// surfacing an unbound service as the same typed *ErrUnboundRef the DSL and
@@ -206,6 +208,7 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 			// Unresolved guard/action refs.
 			b.checkRefs(&diags, "guard", t.Guards, "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
 			b.checkRefs(&diags, "action", t.Effects, "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
+			b.checkRefs(&diags, "assign", t.Assigns, "", t.SrcLine, refSrc{t.SrcFile, t.SrcLine})
 
 			// A composite guard expression must be structurally well-formed, and
 			// every named-ref leaf must bind against the registry. The stateIn
@@ -324,6 +327,8 @@ func (b *Builder[S, E, C]) checkRefs(diags *[]diagnostic, kind string, refs []Re
 			ok = isBuiltinAction(r.Name) || func() bool { _, f := b.reg.actions[r.Name]; return f }()
 		case "service":
 			_, ok = b.reg.services[r.Name]
+		case "assign":
+			_, ok = b.reg.assigns[r.Name]
 		}
 		if !ok {
 			ub := &ErrUnboundRef{Kind: kind, Name: r.Name}

@@ -94,6 +94,13 @@ type State[S comparable, E comparable, C any] struct {
 	IsFinal bool  `json:"isFinal,omitempty"`
 	OnDone  []Ref `json:"onDone,omitempty"`
 
+	// OnEntryAssign and OnExitAssign list the context-reducer refs folded on this
+	// state's entry and exit respectively — the assign siblings of OnEntry/OnExit.
+	// Exit assigns fold before transition assigns; entry assigns fold after, each
+	// seeing the prior result. Both serialize and round-trip losslessly through JSON.
+	OnEntryAssign []Ref `json:"onEntryAssign,omitempty"`
+	OnExitAssign  []Ref `json:"onExitAssign,omitempty"`
+
 	// Hierarchy. Children holds the nested substates of a compound state, and
 	// InitialChild names the substate entered transitively when the compound
 	// state is entered. Both serialize, so the hierarchy round-trips through
@@ -143,7 +150,8 @@ type State[S comparable, E comparable, C any] struct {
 // into extra and preserved verbatim on round-trip.
 var stateKnownKeys = map[string]struct{}{
 	"name": {}, "ownedBy": {}, "transitions": {}, "onEntry": {}, "onExit": {},
-	"isFinal": {}, "onDone": {}, "children": {}, "initialChild": {}, "regions": {},
+	"isFinal": {}, "onDone": {}, "onEntryAssign": {}, "onExitAssign": {},
+	"children": {}, "initialChild": {}, "regions": {},
 	"historyType": {}, "historyDefault": {}, "invoke": {}, "meta": {},
 }
 
@@ -186,6 +194,14 @@ type Transition[S comparable, E comparable, C any] struct {
 	Guards   []Ref    `json:"guards,omitempty"`
 	Effects  []Ref    `json:"effects,omitempty"`
 	WaitMode WaitMode `json:"waitMode,omitempty"`
+
+	// Assigns lists the context-reducer refs run when this transition fires, folded
+	// after the transition's effects in declaration order. Each assign sees the
+	// context as folded by the assigns preceding it; the result becomes the
+	// instance's context. Assigns are structurally distinct from Effects (the
+	// assigner-vs-effector discriminator) so the cascade runs them in distinct
+	// phases. The slice serializes and round-trips losslessly through JSON.
+	Assigns []Ref `json:"assigns,omitempty"`
 
 	// GuardExpr is an optional composite guard: a serializable boolean
 	// expression tree over named-ref leaves, the stateIn built-in, and the
@@ -250,9 +266,10 @@ type Transition[S comparable, E comparable, C any] struct {
 // transitionKnownKeys is the set of JSON keys Transition models; anything else is
 // captured into extra and preserved verbatim on round-trip.
 var transitionKnownKeys = map[string]struct{}{
-	"from": {}, "to": {}, "on": {}, "guards": {}, "effects": {}, "waitMode": {},
-	"guardExpr": {}, "internal": {}, "eventLess": {}, "after": {}, "wildcard": {},
-	"forbidden": {}, "reenter": {}, "raise": {}, "srcFile": {}, "srcLine": {}, "meta": {},
+	"from": {}, "to": {}, "on": {}, "guards": {}, "effects": {}, "assigns": {},
+	"waitMode": {}, "guardExpr": {}, "internal": {}, "eventLess": {}, "after": {},
+	"wildcard": {}, "forbidden": {}, "reenter": {}, "raise": {}, "srcFile": {},
+	"srcLine": {}, "meta": {},
 }
 
 // MarshalJSON encodes a Transition, merging its preserved unknown keys back in
@@ -291,6 +308,7 @@ const (
 	OutcomeGuardPanic
 	OutcomePolicyDenied
 	OutcomeEffectError
+	OutcomeAssignFailed
 )
 
 // Trace is the kernel's canonical observability surface — pure data recorded
@@ -303,6 +321,7 @@ type Trace struct {
 	GuardsEvaluated    []string                   `json:"guardsEvaluated,omitempty"`
 	PoliciesEvaluated  []string                   `json:"policiesEvaluated,omitempty"`
 	EffectsEmitted     []string                   `json:"effectsEmitted,omitempty"`
+	AssignsApplied     []string                   `json:"assignsApplied,omitempty"`
 	Microsteps         []string                   `json:"microsteps,omitempty"`
 
 	// MatchedAt names the state whose transition actually fired. For a flat
@@ -367,6 +386,7 @@ type RequirementFailure struct {
 type Registry[C any] struct {
 	guards   map[string]GuardFn[C]
 	actions  map[string]ActionFn[C]
+	assigns  map[string]AssignFn[C]
 	services map[string]ServiceFn[C]
 
 	// bindings holds the per-kind binding interface recorded for every guard,
@@ -392,6 +412,7 @@ func NewRegistry[C any]() *Registry[C] {
 	return &Registry[C]{
 		guards:      map[string]GuardFn[C]{},
 		actions:     map[string]ActionFn[C]{},
+		assigns:     map[string]AssignFn[C]{},
 		services:    map[string]ServiceFn[C]{},
 		bindings:    map[string]boundBehavior[C]{},
 		descriptors: map[string]Descriptor{},
@@ -423,6 +444,19 @@ func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption
 	r.actions[name] = fn
 	r.bindAction(name, inProcessAction(fn))
 	r.describe(KindAction, name, opts)
+	return r
+}
+
+// Assign registers a named assign reducer — the sole context writer. The reducer
+// takes the prior context by value, the triggering event, and the ref's static
+// params, and returns the next context; the kernel folds the assigns declared on
+// a transition's exit/transition/entry phases to produce the instance's context.
+// An optional Describe option adds palette metadata; registering without one still
+// works and yields a minimal palette descriptor.
+func (r *Registry[C]) Assign(name string, fn AssignFn[C], opts ...DescribeOption) *Registry[C] {
+	r.assigns[name] = fn
+	r.bindAssign(name, inProcessAssign(fn))
+	r.describe(KindAssign, name, opts)
 	return r
 }
 
@@ -584,6 +618,17 @@ func (b *Builder[S, E, C]) Guard(name string, fn GuardFn[C], opts ...DescribeOpt
 // Describe option attaches palette metadata, mirroring Registry.Action.
 func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C], opts ...DescribeOption) *Builder[S, E, C] {
 	b.reg.Action(name, fn, opts...)
+	return b
+}
+
+// Reducer registers a named assign reducer into the builder's palette — the sole
+// context writer, wired onto a transition with the Assign DSL verb or onto a state
+// with OnEntryAssign / OnExitAssign. It is the builder-side registration of an
+// assign (the Do verb wires an Action that Action registers; the Assign verb wires
+// a reducer that Reducer registers), forwarding to Registry.Assign. An optional
+// Describe option attaches palette metadata.
+func (b *Builder[S, E, C]) Reducer(name string, fn AssignFn[C], opts ...DescribeOption) *Builder[S, E, C] {
+	b.reg.Assign(name, fn, opts...)
 	return b
 }
 
@@ -1104,6 +1149,17 @@ func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Buil
 	return b
 }
 
+// Assign attaches a named context-reducer ref with params to the most-recent
+// transition. The reducer folds onto the instance's context when the transition
+// fires — the sole context-mutation site under the value-semantics contract. It is
+// distinct from Do: Do emits an effect, Assign computes the next context.
+func (b *Builder[S, E, C]) Assign(assignName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
+	}
+	return b
+}
+
 // WaitMode tags the most-recent transition's synchronization mode.
 func (b *Builder[S, E, C]) WaitMode(m WaitMode) *Builder[S, E, C] {
 	if b.curTransition != nil {
@@ -1193,6 +1249,7 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 		requirements:   reqs,
 		guards:         map[string]GuardFn[C]{},
 		actions:        map[string]ActionFn[C]{},
+		assigns:        map[string]AssignFn[C]{},
 		services:       map[string]ServiceFn[C]{},
 		middleware:     append([]Middleware[S, E, C](nil), b.middleware...),
 		envelope:       b.envelope,
@@ -1206,6 +1263,9 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	}
 	for name, fn := range b.reg.actions {
 		m.actions[name] = fn
+	}
+	for name, fn := range b.reg.assigns {
+		m.assigns[name] = fn
 	}
 	for name, fn := range b.reg.services {
 		m.services[name] = fn
@@ -1232,6 +1292,7 @@ type Machine[S comparable, E comparable, C any] struct {
 	requirements   map[S][]Requirement[C]
 	guards         map[string]GuardFn[C]
 	actions        map[string]ActionFn[C]
+	assigns        map[string]AssignFn[C]
 	services       map[string]ServiceFn[C]
 	middleware     []Middleware[S, E, C]
 	// envelope retains the IR identity/version/IO/extension metadata so ToJSON
@@ -1342,6 +1403,15 @@ type Instance[S comparable, E comparable, C any] struct {
 	// drained by Fire's run-to-completion loop. It is never persisted and is empty
 	// between macrosteps, so Fire stays pure.
 	raised []E
+	// fireData carries the optional event payload supplied to a single Fire via
+	// WithEventData: the service result, actor output, or error a host re-fires
+	// with so the onDone/onError transition's Assign reads it from AssignCtx.Event
+	// with no side channel. It is set at the top of the triggering Fire and consumed
+	// by the first commit of that macrostep; it is macrostep-local and never
+	// persisted, so Fire stays pure. hasFireData distinguishes a supplied nil
+	// payload from the absent default (the boxed triggering event).
+	fireData    any
+	hasFireData bool
 	// clock is the time seam a delayed-transition driver reads to schedule
 	// `after` timers. It is never consulted by the pure Fire step — only by a
 	// Scheduler/host driver wired to this instance — so Fire stays clock-free.

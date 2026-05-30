@@ -207,6 +207,9 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 	for name, fn := range reg.actions {
 		b.reg.actions[name] = fn
 	}
+	for name, fn := range reg.assigns {
+		b.reg.assigns[name] = fn
+	}
 	for name, fn := range reg.services {
 		b.reg.services[name] = fn
 	}

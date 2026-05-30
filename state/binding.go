@@ -17,9 +17,9 @@ import "context"
 //
 // The guard binding is synchronous (it returns (bool, error)) so it stays callable
 // inside the pure Fire step. Out-of-process and host-pre-resolved guards are
-// reserved, not built. Actions still return effects-as-data; the reserved
-// ContextDelta channel is left unused at v1 so adding context-mutating actions
-// later stays additive.
+// reserved, not built. Actions return effects-as-data and never write context; a
+// context change is expressed only through an AssignBinding, whose
+// AssignResult.Context carries the new value — the sole context-writer seam.
 
 // GuardRequest is the serializable invocation envelope for a guard: the named ref,
 // its params, and the read-only context projection the guard evaluates against.
@@ -44,15 +44,13 @@ type ActionRequest[C any] struct {
 }
 
 // ActionResult is the action's serializable result. Effects carries the emitted
-// effects-as-data (today an action emits exactly one). ContextDelta is the
-// RESERVED, unused-at-v1 channel for an action that wants to express a context
-// change as serializable data: the in-process binding never populates it, so an
-// out-of-process action gaining a delta later is additive rather than a breaking
-// change to the action contract. The Assign/Action split that would populate it is
-// a later change, not this one.
+// effects-as-data (today an action emits exactly one). Actions never write
+// context: under the value-semantics contract a context change is expressed only
+// through an Assign, whose AssignResult.Context carries the new value. The channel
+// an action formerly reserved for a context delta now lives on the assign binding,
+// the sole context writer.
 type ActionResult struct {
-	Effects      []Effect
-	ContextDelta map[string]any
+	Effects []Effect
 }
 
 // ServiceRequest is the serializable invocation envelope for an invoked service.
@@ -114,7 +112,8 @@ func inProcessAction[C any](fn ActionFn[C]) ActionBinding[C] {
 }
 
 // EvalAction invokes the wrapped ActionFn and lifts its single effect into the
-// ActionResult envelope. ContextDelta is left nil — actions emit effects only.
+// ActionResult envelope. Actions emit effects only; context is written through an
+// assign, not here.
 func (b actionFnBinding[C]) EvalAction(_ context.Context, req ActionRequest[C]) (ActionResult, error) {
 	entity, _ := req.Context.Raw().(C)
 	eff, err := b.fn(ActionCtx[C]{Entity: entity, Params: req.Params})
@@ -149,6 +148,7 @@ type boundBehavior[C any] struct {
 	guard   GuardBinding[C]
 	action  ActionBinding[C]
 	service ServiceBinding[C]
+	assign  AssignBinding[C]
 }
 
 // bindingKey namespaces a binding by kind and name, mirroring descriptorKey, so
@@ -172,6 +172,11 @@ func (r *Registry[C]) bindService(name string, b ServiceBinding[C]) {
 	r.bindings[bindingKey(KindService, name)] = boundBehavior[C]{service: b}
 }
 
+// bindAssign records the in-process AssignBinding for an assign registration.
+func (r *Registry[C]) bindAssign(name string, b AssignBinding[C]) {
+	r.bindings[bindingKey(KindAssign, name)] = boundBehavior[C]{assign: b}
+}
+
 // guardBinding returns the recorded in-process GuardBinding for name, or nil when
 // no guard is registered under it.
 func (r *Registry[C]) guardBinding(name string) GuardBinding[C] {
@@ -186,6 +191,11 @@ func (r *Registry[C]) actionBinding(name string) ActionBinding[C] {
 // serviceBinding returns the recorded in-process ServiceBinding for name, or nil.
 func (r *Registry[C]) serviceBinding(name string) ServiceBinding[C] {
 	return r.bindings[bindingKey(KindService, name)].service
+}
+
+// assignBinding returns the recorded in-process AssignBinding for name, or nil.
+func (r *Registry[C]) assignBinding(name string) AssignBinding[C] {
+	return r.bindings[bindingKey(KindAssign, name)].assign
 }
 
 // adoptBindings copies another registry's bindings into this one wholesale,

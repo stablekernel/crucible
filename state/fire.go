@@ -23,7 +23,27 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	for _, o := range opts {
 		o(&cfg)
 	}
+	// A supplied payload (WithEventData) reaches the triggering transition's Assign
+	// through AssignCtx.Event. It is macrostep-local: set for this Fire and cleared
+	// when the macrostep settles, so it never leaks into a later Fire.
+	i.fireData = cfg.eventData
+	i.hasFireData = cfg.hasData
+	defer func() {
+		i.fireData = nil
+		i.hasFireData = false
+	}()
 	return i.fireWithMiddleware(ctx, event)
+}
+
+// eventData resolves the payload an assign reads from AssignCtx.Event: the explicit
+// payload supplied to this Fire via WithEventData (consumed once, so only the
+// triggering transition sees it), else the boxed triggering event itself.
+func (i *Instance[S, E, C]) eventData(event E) any {
+	if i.hasFireData {
+		i.hasFireData = false
+		return i.fireData
+	}
+	return event
 }
 
 // fireWithMiddleware wraps the core step in the installed middleware chain,
@@ -110,7 +130,7 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		if steps > maxMicrosteps {
 			return microstepOverflow(res, i.current)
 		}
-		sub := i.commit(ctx, t, i.current, anc, i.entity, i.seedTrace("always"))
+		sub := i.commit(ctx, t, i.current, anc, i.entity, i.eventData(t.On), i.seedTrace("always"))
 		res.Effects = append(res.Effects, sub.Effects...)
 		absorbMicrosteps(&res.Trace, sub.Trace)
 		res.NewState = i.current
@@ -325,7 +345,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 			}
 			if passed {
 				tr.MatchedAt = fmtState(anc)
-				return i.commit(ctx, t, from, anc, entity, tr)
+				return i.commit(ctx, t, from, anc, entity, i.eventData(event), tr)
 			}
 		}
 	}
@@ -397,6 +417,7 @@ func (i *Instance[S, E, C]) commit(
 	from S,
 	matchedAt S,
 	entity C,
+	eventData any,
 	tr Trace,
 ) FireResult[S] {
 	_ = ctx
@@ -404,11 +425,17 @@ func (i *Instance[S, E, C]) commit(
 
 	tr.SelectedTransition = projectTransition(t)
 
+	// cur threads the context by value through the cascade. Actions in a phase read
+	// cur as it stood at phase entry (read-only); the assigns of that phase then
+	// fold cur, each reducer seeing the prior result. The folded value is committed
+	// to the instance at the end — the sole context-mutation site (G1).
+	cur := entity
+
 	if i.isInternal(t, from) {
 		// Internal transition: run effects without exiting/re-entering the source
 		// or cascading. This is the v5 default for a self- or ancestor-targeted
 		// transition without Reenter, and the explicit Internal form.
-		effects, errName, err := i.runActions(t.Effects, entity, &tr)
+		effects, errName, err := i.runActions(t.Effects, cur, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
@@ -419,6 +446,18 @@ func (i *Instance[S, E, C]) commit(
 				},
 			}
 		}
+		next, aName, aErr := i.applyAssigns(t.Assigns, cur, eventData, &tr)
+		if aErr != nil {
+			tr.Outcome = OutcomeAssignFailed
+			return FireResult[S]{
+				NewState: i.current, Effects: effects, Trace: tr,
+				Err: &ErrActionFailed{
+					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
+					ActionName:     aName, Cause: aErr,
+				},
+			}
+		}
+		i.entity = next
 		i.enqueueRaised(t, &tr)
 		tr.Outcome = OutcomeSuccess
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
@@ -463,14 +502,15 @@ func (i *Instance[S, E, C]) commit(
 	// advances, so a later history-targeted entry can restore it.
 	i.recordHistory(exits, i.config)
 
-	// Exit actions: innermost -> outermost.
+	// Exit actions then exit assigns: innermost -> outermost. Each state's exit
+	// actions read cur (pre-assign), then its exit assigns fold cur.
 	for _, s := range exits {
 		tr.ExitedStates = append(tr.ExitedStates, fmtState(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
 			continue
 		}
-		eff, errName, err := i.runActions(n.state.OnExit, entity, &tr)
+		eff, errName, err := i.runActions(n.state.OnExit, cur, &tr)
 		effects = append(effects, eff...)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
@@ -479,6 +519,15 @@ func (i *Instance[S, E, C]) commit(
 				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
+		next, aName, aErr := i.applyAssigns(n.state.OnExitAssign, cur, eventData, &tr)
+		if aErr != nil {
+			tr.Outcome = OutcomeAssignFailed
+			return FireResult[S]{
+				NewState: i.current, Effects: effects, Trace: tr,
+				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
+			}
+		}
+		cur = next
 	}
 
 	// Auto-cancel-on-exit: every exited state that armed a delayed (`after`)
@@ -509,8 +558,8 @@ func (i *Instance[S, E, C]) commit(
 		}
 	}
 
-	// Transition effects.
-	eff, errName, err := i.runActions(t.Effects, entity, &tr)
+	// Transition effects (read cur, pre-assign) then transition assigns (fold cur).
+	eff, errName, err := i.runActions(t.Effects, cur, &tr)
 	effects = append(effects, eff...)
 	if err != nil {
 		tr.Outcome = OutcomeEffectError
@@ -519,15 +568,25 @@ func (i *Instance[S, E, C]) commit(
 			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 		}
 	}
+	tnext, taName, taErr := i.applyAssigns(t.Assigns, cur, eventData, &tr)
+	if taErr != nil {
+		tr.Outcome = OutcomeAssignFailed
+		return FireResult[S]{
+			NewState: i.current, Effects: effects, Trace: tr,
+			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: taName, Cause: taErr},
+		}
+	}
+	cur = tnext
 
-	// Entry actions: outermost -> innermost.
+	// Entry actions then entry assigns: outermost -> innermost. Each state's entry
+	// actions read cur (pre-assign), then its entry assigns fold cur.
 	for _, s := range entries {
 		tr.EnteredStates = append(tr.EnteredStates, fmtState(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
 			continue
 		}
-		eff, errName, err := i.runActions(n.state.OnEntry, entity, &tr)
+		eff, errName, err := i.runActions(n.state.OnEntry, cur, &tr)
 		effects = append(effects, eff...)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
@@ -536,6 +595,15 @@ func (i *Instance[S, E, C]) commit(
 				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
+		next, aName, aErr := i.applyAssigns(n.state.OnEntryAssign, cur, eventData, &tr)
+		if aErr != nil {
+			tr.Outcome = OutcomeAssignFailed
+			return FireResult[S]{
+				NewState: i.current, Effects: effects, Trace: tr,
+				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
+			}
+		}
+		cur = next
 	}
 
 	// Delayed-transition scheduling: every entered state that declares an
@@ -550,8 +618,10 @@ func (i *Instance[S, E, C]) commit(
 	// a SpawnActor effect so the host's ActorSystem runs it and routes done/error.
 	effects = append(effects, i.actorEffectsOnEntry(entries, &tr)...)
 
-	// Done-event semantics: entering a final leaf may complete its parent.
-	doneEff, dname, derr := i.settleDone(to, entity, &tr)
+	// Done-event semantics: entering a final leaf may complete its parent. OnDone
+	// actions read the folded context (cur), consistent with every other action
+	// reading context read-only.
+	doneEff, dname, derr := i.settleDone(to, cur, &tr)
 	effects = append(effects, doneEff...)
 	if derr != nil {
 		tr.Outcome = OutcomeEffectError
@@ -561,6 +631,8 @@ func (i *Instance[S, E, C]) commit(
 		}
 	}
 
+	// Commit the folded context to the instance — the sole context-mutation site.
+	i.entity = cur
 	i.enqueueRaised(t, &tr)
 	tr.Outcome = OutcomeSuccess
 	return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
@@ -657,6 +729,41 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
 		return nil, fmt.Errorf("unbound action %q at fire time", a.Name)
 	}
 	return fn(ActionCtx[C]{Entity: entity, Params: a.Params})
+}
+
+// applyAssigns folds a list of assign refs onto cur in declaration order, each
+// reducer seeing the prior result, and records every reduced ref in the trace. It
+// is the sole context-mutation path: the returned context replaces cur for the
+// next phase of the cascade. A failing (panicking) reducer surfaces as a typed
+// error that stops the commit, mirroring a guard panic.
+func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *Trace) (C, string, error) {
+	for _, a := range refs {
+		next, err := i.machine.evalAssign(a, cur, eventData)
+		if err != nil {
+			tr.AssignsApplied = append(tr.AssignsApplied, a.Name)
+			return cur, a.Name, err
+		}
+		cur = next
+		tr.AssignsApplied = append(tr.AssignsApplied, a.Name)
+	}
+	return cur, "", nil
+}
+
+// evalAssign resolves and runs an assign ref, folding the prior context into the
+// next. A reducer panic is recovered into a typed ErrAssignPanic so a faulty
+// reducer fails the commit deterministically rather than corrupting context.
+func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err error) {
+	fn, found := m.assigns[a.Name]
+	if !found {
+		return cur, &ErrAssignPanic{AssignName: a.Name, Recovered: "unbound assign at fire time"}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			next = cur
+			err = &ErrAssignPanic{AssignName: a.Name, Recovered: r}
+		}
+	}()
+	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params}), nil
 }
 
 // projectTransition erases the generic parameters of a Transition into the

@@ -156,11 +156,29 @@ func WithInitialState[S comparable](s S) CastOption[S] {
 // FireOption configures Fire / FireSeq / FireEach.
 type FireOption func(*fireConfig)
 
-type fireConfig struct{ collectAll bool }
+type fireConfig struct {
+	collectAll bool
+	eventData  any
+	hasData    bool
+}
 
 // CollectAll makes a batch fire run every step and gather all errors instead of
 // stopping at the first.
 func CollectAll() FireOption { return func(c *fireConfig) { c.collectAll = true } }
+
+// WithEventData attaches a payload to a single Fire so the triggering transition's
+// Assign reads it from AssignCtx.Event. It is the channel by which a host delivers
+// a service result, an actor's done-data, or an error to the onDone/onError
+// transition's reducer: the ServiceRunner and ActorSystem re-fire the routing
+// event with the result as the payload, so the reducer consumes it through
+// AssignCtx.Event with no side channel. When omitted, AssignCtx.Event carries the
+// boxed triggering event itself.
+func WithEventData(data any) FireOption {
+	return func(c *fireConfig) {
+		c.eventData = data
+		c.hasData = true
+	}
+}
 
 // AssayOption configures Assay.
 type AssayOption func(*assayConfig)

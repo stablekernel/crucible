@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -61,7 +62,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 		if !ok {
 			continue
 		}
-		handled, eff, err := i.fireRegion(parallel, r, leaf, event, entity, &tr)
+		handled, eff, err := i.fireRegion(parallel, r, leaf, event, entity, i.eventData(event), &tr)
 		if handled {
 			anyHandled = true
 			effects = append(effects, eff...)
@@ -94,19 +95,30 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 		tr.Outcome = OutcomeSuccess
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
 	case 1:
-		tr.Outcome = OutcomeGuardFailed
+		tr.Outcome = regionErrOutcome(regionErrs[0])
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr, Err: regionErrs[0]}
 	default:
-		tr.Outcome = OutcomeGuardFailed
+		tr.Outcome = regionErrOutcome(regionErrs[0])
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr, Err: &MultiRegionErr{Errors: regionErrs}}
 	}
+}
+
+// regionErrOutcome maps a region-level error to the appropriate outcome,
+// mirroring the main commit path: assign reducer failures use
+// OutcomeAssignFailed while guard failures use OutcomeGuardFailed.
+func regionErrOutcome(err error) Outcome {
+	var ap *ErrAssignPanic
+	if errors.As(err, &ap) {
+		return OutcomeAssignFailed
+	}
+	return OutcomeGuardFailed
 }
 
 // fireRegion resolves the event within one region, child-first from the region's
 // active leaf up to (but not crossing) the region boundary. handled is true when
 // a transition matched (whether it then succeeded or failed a guard/effect).
 func (i *Instance[S, E, C]) fireRegion(
-	parallel S, r *Region[S, E, C], leaf S, event E, entity C, tr *Trace,
+	parallel S, r *Region[S, E, C], leaf S, event E, entity C, eventData any, tr *Trace,
 ) (handled bool, effects []Effect, err error) {
 	m := i.machine
 
@@ -146,8 +158,8 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 			}
 			if pass {
-				eff := i.applyRegionTransition(r, leaf, t, entity, tr)
-				return true, eff, nil
+				eff, aErr := i.applyRegionTransition(r, leaf, t, entity, eventData, tr)
+				return true, eff, aErr
 			}
 		}
 	}
@@ -157,20 +169,30 @@ func (i *Instance[S, E, C]) fireRegion(
 }
 
 // applyRegionTransition advances one region's leaf and runs the exit/transition/
-// entry cascade confined to that region.
+// entry cascade confined to that region. It mirrors the main commit path: a
+// reducer that errors or panics stops the cascade immediately and surfaces the
+// error to the caller rather than silently no-oping.
 func (i *Instance[S, E, C]) applyRegionTransition(
-	r *Region[S, E, C], leaf S, t *Transition[S, E, C], entity C, tr *Trace,
-) []Effect {
+	r *Region[S, E, C], leaf S, t *Transition[S, E, C], entity C, eventData any, tr *Trace,
+) ([]Effect, error) {
 	m := i.machine
 	to := t.To
 	exits, entries := m.cascade(leaf, to)
 
+	// Region transition assigns fold onto the live instance context (i.entity) so
+	// sequential regions compose in region-declaration order; actions in each phase
+	// read the entity snapshot passed in, consistent with the main commit cascade.
 	var effects []Effect
 	for _, s := range exits {
 		tr.ExitedStates = append(tr.ExitedStates, fmtState(s))
 		if n, ok := m.resolveNode(s); ok {
 			eff, _, _ := i.runActions(n.state.OnExit, entity, tr)
 			effects = append(effects, eff...)
+			next, _, aErr := i.applyAssigns(n.state.OnExitAssign, i.entity, eventData, tr)
+			if aErr != nil {
+				return effects, aErr
+			}
+			i.entity = next
 		}
 	}
 
@@ -188,12 +210,22 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 
 	eff, _, _ := i.runActions(t.Effects, entity, tr)
 	effects = append(effects, eff...)
+	next, _, aErr := i.applyAssigns(t.Assigns, i.entity, eventData, tr)
+	if aErr != nil {
+		return effects, aErr
+	}
+	i.entity = next
 
 	for _, s := range entries {
 		tr.EnteredStates = append(tr.EnteredStates, fmtState(s))
 		if n, ok := m.resolveNode(s); ok {
 			eff, _, _ := i.runActions(n.state.OnEntry, entity, tr)
 			effects = append(effects, eff...)
+			next, _, aErr := i.applyAssigns(n.state.OnEntryAssign, i.entity, eventData, tr)
+			if aErr != nil {
+				return effects, aErr
+			}
+			i.entity = next
 		}
 	}
 
@@ -205,7 +237,7 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	effects = append(effects, i.afterEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.invokeEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.actorEffectsOnEntry(entries, tr)...)
-	return effects
+	return effects, nil
 }
 
 // replaceRegionLeaf substitutes the region's old active leaf in the
@@ -297,7 +329,7 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 			}
 			if pass {
 				tr.MatchedAt = fmtState(anc)
-				return i.commit(ctx, t, start, anc, entity, tr)
+				return i.commit(ctx, t, start, anc, entity, i.eventData(event), tr)
 			}
 		}
 	}

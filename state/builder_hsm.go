@@ -157,6 +157,26 @@ func (b *Builder[S, E, C]) OnExit(actionName string, params ...map[string]any) *
 	return b
 }
 
+// OnEntryAssign attaches a named context-reducer ref to the most-recent state's
+// entry phase. It folds onto the instance's context when the state is entered,
+// after the transition's assigns — the assign sibling of OnEntry.
+func (b *Builder[S, E, C]) OnEntryAssign(assignName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.OnEntryAssign = append(b.curState.state.OnEntryAssign, Ref{Name: assignName, Params: firstParams(params)})
+	}
+	return b
+}
+
+// OnExitAssign attaches a named context-reducer ref to the most-recent state's
+// exit phase. It folds onto the instance's context when the state is exited,
+// before the transition's assigns — the assign sibling of OnExit.
+func (b *Builder[S, E, C]) OnExitAssign(assignName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.OnExitAssign = append(b.curState.state.OnExitAssign, Ref{Name: assignName, Params: firstParams(params)})
+	}
+	return b
+}
+
 // OnDone attaches a named done-action ref to the most-recent state. It runs when
 // the state completes — a compound state when its active leaf is final, a
 // parallel state when every region is final.
