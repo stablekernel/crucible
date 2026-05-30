@@ -477,6 +477,10 @@ func (i *Instance[S, E, C]) commit(
 		}
 	}
 
+	// Auto-cancel-on-exit: every exited state that armed a delayed (`after`)
+	// timer emits a CancelScheduled effect so the host drops the pending timer.
+	effects = append(effects, i.afterEffectsOnExit(exits, &tr)...)
+
 	// Advance the configuration before transition/entry actions run. A history
 	// restore pins the configuration to the remembered leaves; otherwise descend
 	// into the target's initial children.
@@ -521,6 +525,10 @@ func (i *Instance[S, E, C]) commit(
 			}
 		}
 	}
+
+	// Delayed-transition scheduling: every entered state that declares an
+	// `after` transition emits a ScheduleAfter effect so the host arms a timer.
+	effects = append(effects, i.afterEffectsOnEntry(entries, &tr)...)
 
 	// Done-event semantics: entering a final leaf may complete its parent.
 	doneEff, dname, derr := i.settleDone(to, entity, &tr)
@@ -615,8 +623,12 @@ func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
 }
 
-// evalAction resolves and runs an action ref.
+// evalAction resolves and runs an action ref. Kernel built-in actions (e.g. the
+// Cancel built-in) are handled directly without consulting the host registry.
 func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
+	if isBuiltinAction(a.Name) {
+		return evalBuiltinAction(a)
+	}
 	fn, found := m.actions[a.Name]
 	if !found {
 		return nil, fmt.Errorf("unbound action %q at fire time", a.Name)

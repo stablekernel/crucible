@@ -13,6 +13,28 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Delayed-transition (`after`) scheduling: the runtime contract that makes the
+  declarative `after` representation drivable, while keeping `Fire` pure.
+  - **Schedule/cancel effects.** Entering a state that declares an `after`
+    transition emits a `ScheduleAfter{ID, Delay, Event, State}` effect; exiting it
+    before the delay elapses emits a `CancelScheduled{ID}` effect (xstate v5
+    auto-cancel-on-exit). The kernel never reads a clock and never sleeps — it
+    emits these as data alongside the transition's other effects, and a host
+    runtime owns the real timer and feeds the delayed event back through `Fire`.
+    Schedule IDs are stable per `(machine, source state, delayed edge)`; derive
+    one with `ScheduleID`.
+  - **DSL.** `Transition(from).After(delay).On(event).GoTo(target)` declares a
+    timed edge; `Cancel(id)` attaches the kernel Cancel built-in so a machine can
+    explicitly drop a pending delayed event. The Cancel built-in needs no host
+    registration, mirroring the `stateIn` guard built-in.
+  - **Host-driver harness.** A reusable, exported `Scheduler` driver consumes the
+    schedule/cancel effects and re-fires delayed events; `WithClock` injects the
+    time seam (used only by the driver, never by `Fire`), with `SystemClock()` for
+    production and a deterministic `FakeClock` for tests, so `after` machines are
+    fully testable without real waiting.
+  - **Trace & IR.** Schedule, cancel, and delayed fires record microsteps; the
+    `after` delay + target round-trip losslessly through JSON, and visualization
+    annotates a delayed edge with its delay.
 - Guard combinators and the `stateIn` built-in, for xstate v5 guard parity.
   - **Combinators.** `And(...)`, `Or(...)`, and `Not(...)` compose guards into a
     serializable boolean expression tree whose leaves are named-ref guards

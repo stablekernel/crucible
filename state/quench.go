@@ -305,7 +305,9 @@ func (b *Builder[S, E, C]) checkRefs(diags *[]diagnostic, kind string, refs []Re
 		case "guard":
 			_, ok = b.reg.guards[r.Name]
 		case "action":
-			_, ok = b.reg.actions[r.Name]
+			// Kernel built-in actions (e.g. the Cancel built-in) resolve without a
+			// host registration, mirroring the stateIn guard built-in.
+			ok = isBuiltinAction(r.Name) || func() bool { _, f := b.reg.actions[r.Name]; return f }()
 		}
 		if !ok {
 			ub := &ErrUnboundRef{Kind: kind, Name: r.Name}
