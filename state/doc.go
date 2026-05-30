@@ -90,7 +90,9 @@
 //
 // Hierarchical and orthogonal states extend the same surface: a state may
 // declare nested substates with an initial child (compound states) or parallel
-// regions (orthogonal states). Events resolve child-first and bubble to
+// regions (orthogonal states). Superstates nest to arbitrary depth — a
+// SuperState block may contain another SuperState block — and parallel regions
+// may contain nested compounds. Events resolve child-first and bubble to
 // ancestors; orthogonal regions each receive the event and resolve
 // independently; transitions run the standard exit/entry cascade across the
 // hierarchy; and final states drive done-event completion, including the

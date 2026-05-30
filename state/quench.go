@@ -37,7 +37,7 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 	var diags []diagnostic
 
 	// HSM findings recorded during the chained build (SubState outside a block,
-	// missing region/superstate Initial, nested superstates).
+	// missing region/superstate Initial, unclosed blocks).
 	diags = append(diags, b.hsmDiags...)
 
 	// Unclosed SuperState / Region blocks at Quench.

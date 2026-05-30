@@ -13,6 +13,17 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Arbitrarily nested superstates in the builder DSL. A `SuperState` block may now
+  contain another `SuperState` block (and so on, to any depth), so a deep
+  hierarchy can be authored entirely through the chained DSL rather than only via
+  the IR/`Provide` path. The entry cascade descends through every level to the
+  deepest initial leaf, the exit cascade unwinds innermost-first across all
+  levels, child-first event resolution bubbles up through every ancestor, and a
+  nested compound's `done` event propagates upward as each level completes.
+  Deep history authored via the DSL now restores the full nested leaf
+  configuration, and the IR round-trips losslessly at arbitrary depth. The
+  remaining superstate lints (a compound with substates needs an `Initial`,
+  unclosed blocks, etc.) are unchanged.
 - History pseudo-states (shallow and deep). A history pseudo-state belongs to a
   compound state and remembers that compound's last active configuration;
   transitioning to it re-enters the remembered configuration instead of the

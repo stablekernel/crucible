@@ -30,6 +30,7 @@ func goldenMachines() []goldenIR {
 		{"document", func() ([]byte, error) { return buildDocMachine().ToJSON(state.WithoutSrcPos()) }},
 		{"job", func() ([]byte, error) { return buildJobMachine().ToJSON(state.WithoutSrcPos()) }},
 		{"worker", func() ([]byte, error) { return buildWorkerMachine().ToJSON(state.WithoutSrcPos()) }},
+		{"nested", func() ([]byte, error) { return forgeNested().ToJSON(state.WithoutSrcPos()) }},
 	}
 }
 

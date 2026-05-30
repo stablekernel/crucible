@@ -14,11 +14,12 @@ import (
 // shallow-history target restores the last active direct child.
 //
 // Deep history needs a nested leaf to distinguish it from shallow, which means a
-// superstate inside a superstate. The DSL gates nested superstates in v1, but
-// the IR (structs) supports arbitrary depth, so the deep-history machine is
-// authored as IR and loaded via Provide — the same path a JSON-authored machine
-// takes. There, Playing nests an Audio compound (Lo/Hi); deep history restores
-// the exact nested leaf, shallow would only restore the Audio child.
+// superstate inside a superstate. These cases author the nested machine as IR and
+// load it via Provide — the same path a JSON-authored machine takes — exercising
+// deep history independently of the builder. The DSL-authored counterpart (now
+// that nested superstates are supported in the builder) lives in nested_test.go.
+// Here, Playing nests an Audio compound (Lo/Hi); deep history restores the exact
+// nested leaf, shallow would only restore the Audio child.
 
 type playState int
 

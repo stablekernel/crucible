@@ -28,6 +28,8 @@ func vizGoldens() []vizRender {
 		{"job", "dot", func() string { return buildJobMachine().ToDOT() }},
 		{"worker", "mermaid", func() string { return buildWorkerMachine().ToMermaid() }},
 		{"worker", "dot", func() string { return buildWorkerMachine().ToDOT() }},
+		{"nested", "mermaid", func() string { return forgeNested().ToMermaid() }},
+		{"nested", "dot", func() string { return forgeNested().ToDOT() }},
 	}
 }
 
