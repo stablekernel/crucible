@@ -6,5 +6,5 @@ use (
 	./telemetry
 	./telemetry/datadog
 	./telemetry/otel
-	./telemetry/slogadapter
+	./telemetry/slog
 )

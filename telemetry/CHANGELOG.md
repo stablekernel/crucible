@@ -17,7 +17,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   SDK.
 - Attributes backed by the standard library's `slog.Value`, giving type-safe,
   zero-allocation scalar attributes (`Any` is the opt-in boxing escape hatch).
-- A `slog` adapter (`telemetry/slogadapter`) that emits spans and metrics as
+- A `slog` adapter (`telemetry/slog`) that emits spans and metrics as
   structured logs with no conversion.
 
 [Unreleased]: https://github.com/stablekernel/crucible/compare/telemetry/v0.1.0...HEAD

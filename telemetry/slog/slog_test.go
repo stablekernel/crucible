@@ -1,4 +1,4 @@
-package slogadapter_test
+package slog_test
 
 import (
 	"bytes"
@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"github.com/stablekernel/crucible/telemetry"
-	"github.com/stablekernel/crucible/telemetry/slogadapter"
+	crucibleslog "github.com/stablekernel/crucible/telemetry/slog"
 )
 
 // newCapture builds a logger that writes JSON records to a buffer at debug
 // level (so span/metric debug records are captured), plus deterministic clock
 // and id options for stable assertions.
-func newCapture() (*bytes.Buffer, []slogadapter.Option) {
+func newCapture() (*bytes.Buffer, []crucibleslog.Option) {
 	var buf bytes.Buffer
 	h := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	logger := slog.New(h)
@@ -30,10 +30,10 @@ func newCapture() (*bytes.Buffer, []slogadapter.Option) {
 		// Each call advances 1ms so span elapsed is deterministic and non-zero.
 		return base.Add(time.Duration(ticks.Add(1)) * time.Millisecond)
 	}
-	return &buf, []slogadapter.Option{
-		slogadapter.WithLogger(logger),
-		slogadapter.WithClock(clock),
-		slogadapter.WithIDFn(func() uint64 { return ids.Add(1) }),
+	return &buf, []crucibleslog.Option{
+		crucibleslog.WithLogger(logger),
+		crucibleslog.WithClock(clock),
+		crucibleslog.WithIDFn(func() uint64 { return ids.Add(1) }),
 	}
 }
 
@@ -63,7 +63,7 @@ func group(m map[string]any, name string) map[string]any {
 // the expected fields, including status and a non-zero elapsed duration.
 func TestTracer_EmitsSpanLifecycle(t *testing.T) {
 	buf, opts := newCapture()
-	tr := slogadapter.NewTracer(opts...)
+	tr := crucibleslog.NewTracer(opts...)
 
 	_, span := tr.Start(context.Background(), "sink.Sink", telemetry.String("payload.type", "Order"))
 	span.SetAttributes(telemetry.String("outlet", "dynamo"))
@@ -110,7 +110,7 @@ func TestTracer_EmitsSpanLifecycle(t *testing.T) {
 // context logs the parent's id, reproducing span parentage in the logs.
 func TestTracer_ContextParentage(t *testing.T) {
 	buf, opts := newCapture()
-	tr := slogadapter.NewTracer(opts...)
+	tr := crucibleslog.NewTracer(opts...)
 
 	ctx, parent := tr.Start(context.Background(), "state.transition")
 	_, child := tr.Start(ctx, "sink.Sink")
@@ -144,7 +144,7 @@ func TestTracer_ContextParentage(t *testing.T) {
 // kind, value, unit, and attributes.
 func TestMeter_EmitsInstruments(t *testing.T) {
 	buf, opts := newCapture()
-	mt := slogadapter.NewMeter(opts...)
+	mt := crucibleslog.NewMeter(opts...)
 	ctx := context.Background()
 
 	mt.Counter("sink.sunk", telemetry.WithDescription("records sunk")).
@@ -186,14 +186,14 @@ func TestMeter_EmitsInstruments(t *testing.T) {
 // TestDefaults_Silent confirms a zero-option adapter discards everything (no
 // panic, no output) — the no-op-by-default posture.
 func TestDefaults_Silent(t *testing.T) {
-	tr := slogadapter.NewTracer()
+	tr := crucibleslog.NewTracer()
 	_, span := tr.Start(context.Background(), "op")
 	span.SetAttributes(telemetry.Int64("k", 1))
 	span.RecordError(errors.New("x"))
 	span.SetStatus(telemetry.StatusOK, "")
 	span.End()
 
-	mt := slogadapter.NewMeter()
+	mt := crucibleslog.NewMeter()
 	mt.Counter("c").Add(context.Background(), 1)
 	mt.Histogram("h").Record(context.Background(), 1)
 	mt.Gauge("g").Record(context.Background(), 1)
@@ -202,7 +202,7 @@ func TestDefaults_Silent(t *testing.T) {
 // TestSpan_PostEndIsNoop confirms calls after End emit nothing further.
 func TestSpan_PostEndIsNoop(t *testing.T) {
 	buf, opts := newCapture()
-	tr := slogadapter.NewTracer(opts...)
+	tr := crucibleslog.NewTracer(opts...)
 	_, span := tr.Start(context.Background(), "op")
 	span.End()
 	before := len(records(t, buf))

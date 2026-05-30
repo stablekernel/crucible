@@ -88,7 +88,7 @@
 // Adapters translate this interface to a concrete backend and ship as separate,
 // optional sub-modules so the core never imports a vendor SDK:
 //
-//   - telemetry/slogadapter — a standard-library log/slog adapter (zero external
+//   - telemetry/slog — a standard-library log/slog adapter (zero external
 //     deps) that emits spans and metrics as structured logs. Shipped here; it
 //     proves the seam end to end. Because Attr is slog.Attr, this adapter is
 //     conversion-free: attributes pass straight to the slog handler.
@@ -96,7 +96,7 @@
 //     sub-module with its own go.mod that requires the vendor SDK, implement the
 //     same interfaces (Span.SetStatus -> otel status / dd error flag,
 //     ResolveInstrument -> instrument unit/description), and be wired by a
-//     consumer via WithTracer/WithMeter exactly like slogadapter. They convert
+//     consumer via WithTracer/WithMeter exactly like the slog adapter. They convert
 //     each attribute with a switch over Attr.Value.Kind (the slog.Value kind),
 //     reading the typed accessor for each scalar kind and Value.Any only for the
 //     KindAny escape hatch.

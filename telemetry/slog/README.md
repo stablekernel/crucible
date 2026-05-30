@@ -1,14 +1,14 @@
-# crucible/telemetry/slogadapter
+# crucible/telemetry/slog
 
 A standard-library `log/slog` adapter for
 [`crucible/telemetry`](../README.md). Emits spans and metric instruments as
 structured log records, with **zero external dependencies**.
 
-Import path: `github.com/stablekernel/crucible/telemetry/slogadapter`
+Import path: `github.com/stablekernel/crucible/telemetry/slog`
 
 ## What it is
 
-`slogadapter` implements the `telemetry.Tracer` and `telemetry.Meter` interfaces
+This adapter implements the `telemetry.Tracer` and `telemetry.Meter` interfaces
 on top of Go's `log/slog`. It is the reference adapter — it proves the telemetry
 seam end to end without pulling in any vendor SDK — and is useful for
 development, tests, and environments where structured logs are the only
@@ -24,14 +24,25 @@ adapter against the same interfaces.
 
 ## Usage
 
+The package name is `slog`, which collides with the standard library's
+`log/slog`. Import it under an alias (e.g. `crucibleslog`) in any file that also
+imports `log/slog`:
+
 ```go
+import (
+    "log/slog"
+
+    "github.com/stablekernel/crucible/telemetry"
+    crucibleslog "github.com/stablekernel/crucible/telemetry/slog"
+)
+
 logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
     Level: slog.LevelDebug, // span/metric records are emitted at DEBUG
 }))
 
 tel := telemetry.Nop().Apply(
-    telemetry.WithTracer(slogadapter.NewTracer(slogadapter.WithLogger(logger))),
-    telemetry.WithMeter(slogadapter.NewMeter(slogadapter.WithLogger(logger))),
+    telemetry.WithTracer(crucibleslog.NewTracer(crucibleslog.WithLogger(logger))),
+    telemetry.WithMeter(crucibleslog.NewMeter(crucibleslog.WithLogger(logger))),
 )
 ```
 

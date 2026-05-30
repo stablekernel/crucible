@@ -1,4 +1,4 @@
-package slogadapter_test
+package slog_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/stablekernel/crucible/telemetry"
-	"github.com/stablekernel/crucible/telemetry/slogadapter"
+	crucibleslog "github.com/stablekernel/crucible/telemetry/slog"
 )
 
 // Example wires the slog adapter into a consuming module's telemetry Provider,
@@ -28,8 +28,8 @@ func Example() {
 	}))
 
 	tel := telemetry.Nop().Apply(
-		telemetry.WithTracer(slogadapter.NewTracer(slogadapter.WithLogger(logger))),
-		telemetry.WithMeter(slogadapter.NewMeter(slogadapter.WithLogger(logger))),
+		telemetry.WithTracer(crucibleslog.NewTracer(crucibleslog.WithLogger(logger))),
+		telemetry.WithMeter(crucibleslog.NewMeter(crucibleslog.WithLogger(logger))),
 	)
 
 	ctx, span := tel.Tracer.Start(context.Background(), "sink.Sink")
