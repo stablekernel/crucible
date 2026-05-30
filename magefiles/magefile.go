@@ -28,7 +28,7 @@ import (
 // modules is the list of Go modules in the suite, by directory. As new modules
 // land (broker, store, sink), add them here and every target picks them
 // up automatically.
-var modules = []string{"state"}
+var modules = []string{"state", "telemetry", "telemetry/slogadapter"}
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.
 const (

@@ -23,7 +23,8 @@ stability label.
 
 | Module    | What it is                                                                 | Status      |
 | --------- | -------------------------------------------------------------------------- | ----------- |
-| `state`   | Pure, abstract, domain-agnostic state machine kernel. Stdlib-only, no IO.  | experimental |
+| `state`     | Pure, abstract, domain-agnostic state machine kernel. Stdlib-only, no IO.  | experimental |
+| `telemetry` | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.  | experimental |
 | `broker`  | Message broker seam — publish/subscribe transport with injected adapters.  | planned     |
 | `store`   | Durable state/event store seam with graceful lifecycle.                    | planned     |
 | `sink`    | Effect dispatch / egress seam for emitted effects.                         | planned     |

@@ -31,6 +31,12 @@ jobs:
       - name: golangci-lint (state)
         working-directory: state
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (telemetry)
+        working-directory: telemetry
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (telemetry/slogadapter)
+        working-directory: telemetry/slogadapter
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
 
   test:
     strategy:
@@ -48,6 +54,12 @@ jobs:
       - name: test -race (state)
         working-directory: state
         run: go test -race ./...
+      - name: test -race (telemetry)
+        working-directory: telemetry
+        run: go test -race ./...
+      - name: test -race (telemetry/slogadapter)
+        working-directory: telemetry/slogadapter
+        run: go test -race ./...
 
   vuln:
     runs-on: ubuntu-latest
@@ -59,6 +71,12 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - name: govulncheck (state)
         working-directory: state
+        run: go run "$GOVULNCHECK" ./...
+      - name: govulncheck (telemetry)
+        working-directory: telemetry
+        run: go run "$GOVULNCHECK" ./...
+      - name: govulncheck (telemetry/slogadapter)
+        working-directory: telemetry/slogadapter
         run: go run "$GOVULNCHECK" ./...
 
   coverage:
@@ -73,6 +91,22 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - name: coverage gate (state)
         working-directory: state
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+      - name: coverage gate (telemetry)
+        working-directory: telemetry
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+      - name: coverage gate (telemetry/slogadapter)
+        working-directory: telemetry/slogadapter
         run: |
           go test -covermode=atomic -coverprofile=coverage.out ./...
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
