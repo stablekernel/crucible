@@ -57,4 +57,35 @@ jobs:
       - name: govulncheck (state)
         working-directory: state
         run: go run "$GOVULNCHECK" ./...
+
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      THRESHOLD: "80"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - name: coverage gate (state)
+        working-directory: state
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - name: benchmarks (state, informational)
+        working-directory: state
+        run: go test -run '^$' -bench . -benchmem ./... | tee "$GITHUB_STEP_SUMMARY"
 # As modules land (broker, store, sink), add their dirs to each job.
