@@ -11,6 +11,25 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ## [Unreleased]
 
+### Added
+
+- End-to-end exemplar: a realistic connection-lifecycle machine
+  (`Disconnected → Connecting → Backoff → Connected{ Live: Heartbeat ‖ Work } →
+  Closing → Closed`) that exercises hierarchy, parallel regions, deep-history
+  resume, guard combinators (`And`/`Or`/`Not`) with the `stateIn` built-in,
+  eventless run-to-completion, a delayed (`after`) retry backoff, an invoked dial
+  service, and a spawned worker actor. It is driven end-to-end through the wired
+  host runtime (`ActorSystem` + `Scheduler`/`FakeClock` + `ServiceRunner`) in an
+  e2e test (happy path, deep-history reconnect, and a snapshot/restore-mid-run
+  identity check) and exposed as a runnable `Example`.
+- Benchmarks: an end-to-end `BenchmarkE2E_ConnectionLifecycle` over the exemplar,
+  plus micro-benchmarks for the previously-uncovered hot paths — guard-combinator
+  and `stateIn` evaluation, hierarchical and deep-nested `Fire`, history
+  record/restore, actor spawn + dispatch + message delivery, the `after`
+  schedule + fire cycle, snapshot + restore, invoke start + settle, and
+  `analysis.ShortestPaths`/`SimplePaths` over a branchy machine. All report
+  allocations and join the existing benchstat gate.
+
 ## [0.2.0] - 2026-05-30
 
 ### Added
