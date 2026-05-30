@@ -619,6 +619,9 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 		}
 		effects = append(effects, e)
 		tr.EffectsEmitted = append(tr.EffectsEmitted, fmt.Sprintf("%s:%s", a.Name, typeName(e)))
+		if ms, ok := commMicrostep(e); ok {
+			tr.Microsteps = append(tr.Microsteps, ms)
+		}
 	}
 	return effects, "", nil
 }

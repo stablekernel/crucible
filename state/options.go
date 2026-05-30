@@ -95,6 +95,21 @@ func WithSpawnOnError[E comparable](onError E) SpawnOption {
 	return func(c *spawnConfig) { c.onError = onError }
 }
 
+// SendOption configures a Builder.SendTo / Builder.ForwardTo declaration (the
+// actor-communication send built-ins).
+type SendOption func(*sendConfig)
+
+type sendConfig struct {
+	systemID string
+}
+
+// WithSendToSystemID addresses the send target by its system-scoped id (xstate v5
+// `systemId`) instead of its registry id, so a sibling actor is addressed by a
+// well-known name. When set it takes precedence over the positional target id.
+func WithSendToSystemID(id string) SendOption {
+	return func(c *sendConfig) { c.systemID = id }
+}
+
 // CastOption configures Cast.
 type CastOption[S comparable] func(*castConfig[S])
 
