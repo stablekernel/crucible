@@ -7,8 +7,12 @@ name: Release
 on:
   push:
     tags:
+      # A bare "vX.Y.Z" releases the primary module (state). A nested
+      # "<module>/vX.Y.Z" releases that submodule; "**" matches any path depth,
+      # so two-segment module tags like "telemetry/otel/v0.1.0" trigger too (a
+      # single "*" never crosses "/", so it would miss them).
       - "v*.*.*"
-      - "*/v*.*.*"
+      - "**/v*.*.*"
 
 # Read-only by default; the publish job opts into contents:write explicitly.
 permissions:
