@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "machineId": "document",
+  "name": "reach-Published",
+  "initialState": "Draft",
+  "events": [
+    {
+      "event": "Submit"
+    },
+    {
+      "event": "Approve"
+    },
+    {
+      "event": "Publish"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "FinalState",
+      "expected": "Published"
+    },
+    {
+      "type": "TraceLength",
+      "expected": 3
+    },
+    {
+      "type": "NoErrors",
+      "expected": true
+    }
+  ]
+}

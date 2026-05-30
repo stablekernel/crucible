@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "machineId": "document",
+  "name": "reach-Archived",
+  "initialState": "Draft",
+  "events": [
+    {
+      "event": "Archive"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "FinalState",
+      "expected": "Archived"
+    },
+    {
+      "type": "TraceLength",
+      "expected": 1
+    },
+    {
+      "type": "NoErrors",
+      "expected": true
+    }
+  ]
+}

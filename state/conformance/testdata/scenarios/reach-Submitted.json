@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "machineId": "document",
+  "name": "reach-Submitted",
+  "initialState": "Draft",
+  "events": [
+    {
+      "event": "Submit"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "FinalState",
+      "expected": "Submitted"
+    },
+    {
+      "type": "TraceLength",
+      "expected": 1
+    },
+    {
+      "type": "NoErrors",
+      "expected": true
+    }
+  ]
+}
