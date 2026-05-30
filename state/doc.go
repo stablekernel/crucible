@@ -110,6 +110,12 @@
 // owns the real timer and re-fires the delayed event, with a deterministic
 // FakeClock for testing.
 //
-// Invoked services and the actor model are reserved-but-inert and not yet
-// implemented.
+// Invoked services (`invoke`) are drivable: entering a state that declares an
+// invoke emits a StartService effect and exiting it before the service completes
+// emits a StopService effect (xstate v5 auto-stop-on-exit), while Fire stays pure
+// — a host ServiceRunner runs the bound service and re-fires the invocation's
+// onDone (with the result) or onError (with the error) back through Fire, with a
+// deterministic settle-by-id harness for testing. Child-machine actors (invoking
+// another Machine as a sub-actor) and the actor model remain reserved-but-inert;
+// they arrive with the instance mailbox.
 package state

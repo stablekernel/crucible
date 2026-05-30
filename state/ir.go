@@ -116,6 +116,9 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 	for name, fn := range reg.actions {
 		b.reg.actions[name] = fn
 	}
+	for name, fn := range reg.services {
+		b.reg.services[name] = fn
+	}
 
 	// The IR carries its hierarchy already nested. Register every state
 	// (top-level and nested) in the flat builder index so lint and indexing see

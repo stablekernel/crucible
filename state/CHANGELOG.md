@@ -13,6 +13,35 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Invoked services (`invoke`): state-scoped service invocation with `onDone` /
+  `onError` routing, host-driven so `Fire` stays pure.
+  - **Start/stop effects.** Entering a state that declares an `invoke` emits a
+    `StartService{ID, Src, Input, OnDone, OnError, State}` effect; exiting it
+    before the service completes emits a `StopService{ID}` effect (xstate v5
+    auto-stop-on-exit). The kernel never runs a service, never starts a goroutine,
+    and performs no IO — it emits these as data alongside the transition's other
+    effects, and a host runtime runs the service and feeds the result back through
+    `Fire`. Invoke IDs are stable per `(machine, owning state, invoke index)` or
+    set explicitly; derive one with `InvokeID`.
+  - **Declarative invoke + service registry.** A state declares
+    `Invocation{ID, Src, Input, OnDone, OnError}`; service implementations bind by
+    name through `Registry.Service` / `Builder.Service`, parallel to guards and
+    actions. An unbound service ref fails `Quench` with the typed `*ErrUnboundRef`
+    (`Kind: "service"`), consistent with unbound guards/actions. Authored via the
+    DSL `Invoke(src, onDone, onError, ...InvokeOption)` with `WithInput`,
+    `WithServiceParams`, and `WithInvokeID`.
+  - **Host-driver harness.** A reusable, exported `ServiceRunner` driver consumes
+    the start/stop effects, runs the bound `ServiceFn`, and re-fires each service's
+    `onDone` (carrying the result) or `onError` (carrying the error) through the
+    instance; `SettleDone` / `SettleError` settle a service by ID for a
+    deterministic test driver with no real IO, while `Run` resolves and executes a
+    bound service for production. `LastResult` / `LastError` let an onDone/onError
+    action read the routed payload, and `StartEffects` arms the services of the
+    initial state entered at `Cast`.
+  - **Trace & IR.** Service start/stop record microsteps; the `invoke` block (id,
+    src ref + params, input, onDone/onError) round-trips losslessly through JSON.
+  - Child-machine actors (invoking another `Machine` as a sub-actor) and the actor
+    model remain reserved; they arrive with the instance mailbox.
 - Delayed-transition (`after`) scheduling: the runtime contract that makes the
   declarative `after` representation drivable, while keeping `Fire` pure.
   - **Schedule/cancel effects.** Entering a state that declares an `after`

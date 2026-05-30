@@ -20,6 +20,35 @@ type quenchConfig struct{ strict bool }
 // Strict makes Quench reject any lint warning, not just hard errors.
 func Strict() QuenchOption { return func(c *quenchConfig) { c.strict = true } }
 
+// InvokeOption configures a Builder.Invoke declaration.
+type InvokeOption func(*invokeConfig)
+
+type invokeConfig struct {
+	id     string
+	params map[string]any
+	input  map[string]any
+}
+
+// WithInput sets the serializable input passed to an invoked service when it
+// starts (xstate v5 `input`), surfaced on the StartService effect.
+func WithInput(input map[string]any) InvokeOption {
+	return func(c *invokeConfig) { c.input = input }
+}
+
+// WithServiceParams sets the serializable params on an invoked service's Src ref,
+// available to the bound ServiceFn as ServiceCtx.Params — the per-ref
+// configuration knob, distinct from the per-start Input.
+func WithServiceParams(params map[string]any) InvokeOption {
+	return func(c *invokeConfig) { c.params = params }
+}
+
+// WithInvokeID sets an explicit, stable id for an invoked service instead of the
+// derived InvokeID. Use it when a host or a Cancel-style coordination needs a
+// known id independent of the invocation's declaration order.
+func WithInvokeID(id string) InvokeOption {
+	return func(c *invokeConfig) { c.id = id }
+}
+
 // CastOption configures Cast.
 type CastOption[S comparable] func(*castConfig[S])
 
