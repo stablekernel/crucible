@@ -590,6 +590,7 @@ type irEnvelope struct {
 	version string
 	input   *IOSpec
 	output  *IOSpec
+	context *ContextSchema
 	meta    map[string]any
 	extra   map[string]json.RawMessage
 }
@@ -646,6 +647,23 @@ func (b *Builder[S, E, C]) Service(name string, fn ServiceFn[C], opts ...Describ
 // binds at the host ActorSystem — so it never affects Quench binding or lint.
 func (b *Builder[S, E, C]) Actor(name string, opts ...DescribeOption) *Builder[S, E, C] {
 	b.reg.Actor(name, opts...)
+	return b
+}
+
+// WithContextSchema attaches a serializable description of the machine's context
+// data model to the IR envelope (the IR.Context slot), so a rehydrated machine
+// re-emits it on ToJSON and an expression layer or studio can read the context's
+// shape. Pair it with SchemaOf to derive the schema from the Go context type:
+//
+//	state.Forge[S, E, *Order]("checkout").
+//	    WithContextSchema(state.SchemaOf[*Order]())
+//
+// It is opt-in and additive: deriving is never automatic at Forge, and a machine
+// with no schema is valid and simply limits later type-checking. The schema is
+// metadata only — the kernel never inspects it and Fire never reads it.
+func (b *Builder[S, E, C]) WithContextSchema(schema ContextSchema) *Builder[S, E, C] {
+	cp := cloneContextSchema(&schema)
+	b.envelope.context = cp
 	return b
 }
 

@@ -40,6 +40,14 @@ type IR[S comparable, E comparable, C any] struct {
 	Input  *IOSpec `json:"input,omitempty"`
 	Output *IOSpec `json:"output,omitempty"`
 
+	// Context is the optional, serializable description of the machine's context
+	// data model — the L5 data contract an expression layer type-checks guards and
+	// assigns against and a studio renders context-update forms from. It is opt-in
+	// (set with Builder.WithContextSchema, helper SchemaOf); an absent schema is
+	// valid and simply limits later type-checking. The kernel never inspects it; it
+	// round-trips verbatim.
+	Context *ContextSchema `json:"context,omitempty"`
+
 	States     []State[S, E, C] `json:"states,omitempty"`
 	Initial    S                `json:"initial"`
 	HasInitial bool             `json:"hasInitial"`
@@ -58,7 +66,7 @@ type IR[S comparable, E comparable, C any] struct {
 // captured into extra and preserved verbatim on round-trip.
 var irKnownKeys = map[string]struct{}{
 	"schemaVersion": {}, "id": {}, "name": {}, "version": {}, "input": {},
-	"output": {}, "states": {}, "initial": {}, "hasInitial": {}, "meta": {},
+	"output": {}, "context": {}, "states": {}, "initial": {}, "hasInitial": {}, "meta": {},
 }
 
 // MarshalJSON encodes an IR, merging its preserved unknown top-level keys back in
@@ -101,6 +109,7 @@ func (m *Machine[S, E, C]) ToJSON(opts ...ToJSONOption) ([]byte, error) {
 		Version:       m.envelope.version,
 		Input:         m.envelope.input,
 		Output:        m.envelope.output,
+		Context:       cloneContextSchema(m.envelope.context),
 		States:        states,
 		Initial:       m.initial,
 		HasInitial:    m.hasInitial,
@@ -197,6 +206,7 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 		version: ir.Version,
 		input:   ir.Input,
 		output:  ir.Output,
+		context: cloneContextSchema(ir.Context),
 		meta:    cloneMeta(ir.Meta),
 		extra:   cloneRawExtra(ir.extra),
 	}
