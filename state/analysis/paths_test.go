@@ -7,7 +7,7 @@ import (
 	"github.com/stablekernel/crucible/state/analysis"
 )
 
-// feedbackMachine is the canonical @xstate/graph example: a linear-with-shortcuts
+// feedbackMachine is a canonical path-enumeration example: a linear-with-shortcuts
 // feedback flow. "question" branches to "thanks" (good) or "form" (bad) or
 // "closed"; "form" reaches "thanks" or "closed"; "thanks" reaches "closed". It is
 // guard-free, so ShortestPaths is directly comparable to the kernel's PlanPath.

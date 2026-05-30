@@ -73,7 +73,7 @@ func TestAfter_FiresAfterDelay(t *testing.T) {
 	}
 }
 
-// TestAfter_CanceledOnExit asserts xstate auto-cancel-on-exit: leaving the armed
+// TestAfter_CanceledOnExit asserts auto-cancel-on-exit: leaving the armed
 // state before the delay emits CancelScheduled and the delayed event never fires.
 func TestAfter_CanceledOnExit(t *testing.T) {
 	m := afterMachine()

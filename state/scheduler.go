@@ -11,7 +11,7 @@ import (
 // clock seam used by drivers, and the host-driver model. The kernel itself never
 // reads a clock and never sleeps — Fire stays pure. Entering a state that owns
 // `after` transitions emits a ScheduleAfter effect per delayed edge; exiting that
-// state emits a CancelScheduled effect per pending timer (xstate v5
+// state emits a CancelScheduled effect per pending timer
 // auto-cancel-on-exit); a host's runtime owns the real timer and re-fires the
 // delayed event back through Fire when it elapses.
 
@@ -42,7 +42,7 @@ type ScheduleAfter struct {
 // CancelScheduled is the effect the kernel emits when an instance exits a state
 // that had a pending delayed (`after`) timer, or when a Cancel action runs. The
 // host cancels the timer registered under ID; canceling an unknown ID is a
-// no-op. This realizes xstate v5 semantics: a state's `after` timers are
+// no-op. A state's `after` timers are
 // auto-canceled when the state is exited before the delay elapses.
 type CancelScheduled struct {
 	// ID identifies the timer to cancel. It matches the ID of the ScheduleAfter
@@ -132,7 +132,7 @@ func (i *Instance[S, E, C]) afterEffectsOnEntry(entries []S, tr *Trace) []Effect
 // afterEffectsOnExit returns the CancelScheduled effects for every delayed
 // (`after`) transition declared on the exited states, in exit order. Emitting a
 // cancel for a state that may not have an armed timer is safe: the host treats an
-// unknown ID as a no-op, and this is exactly xstate's auto-cancel-on-exit.
+// unknown ID as a no-op; this is auto-cancel-on-exit.
 func (i *Instance[S, E, C]) afterEffectsOnExit(exits []S, tr *Trace) []Effect {
 	var out []Effect
 	m := i.machine

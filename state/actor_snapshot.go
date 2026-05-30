@@ -7,7 +7,7 @@ import (
 
 // This file extends deep persistence to the actor tree: an ActorSystem snapshots
 // its running child actors recursively and restores them, so a parent snapshot
-// can carry its spawned children's state (xstate v5 deeply/recursively persists
+// can carry its spawned children's state (the actor tree is persisted
 // invoked and spawned actors). It is the actor-model analog of Instance.Snapshot
 // / Machine.Restore, layered on the same ActorSystem that already runs the actors
 // — so it stays on the documented host-driver harness and the kernel's Fire step

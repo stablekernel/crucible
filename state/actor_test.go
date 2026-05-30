@@ -10,7 +10,7 @@ import (
 )
 
 // childEntity is the entity a child-machine actor is bound to. result records the
-// output the child exposes on completion (xstate v5 `output`).
+// output the child exposes on completion.
 type childEntity struct {
 	result string
 }

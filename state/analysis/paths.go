@@ -7,7 +7,7 @@ import (
 )
 
 // This file ships path enumeration over a machine's static transition graph — the
-// `@xstate/graph` analog of `getShortestPaths` / `getSimplePaths`. It lives in the
+// shortest-paths / simple-paths enumeration over the graph. It lives in the
 // analysis package because it reuses the same guard-agnostic flattened graph the
 // reachability checks use: paths are enumerated over the IR's event-triggered
 // edges without evaluating guards, since a static pass cannot run a host guard and
@@ -25,7 +25,7 @@ import (
 // Step is one segment of a path: the event that fires from the segment's source
 // state, and the destination state it leads to. A path is read as: starting at the
 // initial state, fire Step[0].Event to reach Step[0].To, then Step[1].Event, and so
-// on. This mirrors an `@xstate/graph` path segment (its `event` plus the resulting
+// on. A path segment carries its event plus the resulting
 // `state`).
 type Step struct {
 	// Event is the string label of the event fired for this segment; "always" for an

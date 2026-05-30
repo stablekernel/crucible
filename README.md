@@ -11,35 +11,43 @@ consumer-providable interface with a do-nothing default. You bring *your*
 logger, *your* tracer, *your* clock — Crucible never makes you adopt its
 choices, and never leaks a third-party type into a public signature.
 
-The pure kernel (`state`) is the extreme end of this: **stdlib-only**, with no
-injected IO at all. The IO modules carry the heavier seams via injection, but
-follow the same rule — defaults are no-ops, nothing third-party is forced on the
-consumer.
+The `state` engine is the extreme end of this: **stdlib-only**, with no injected
+IO at all. The IO modules carry the heavier seams via injection, but follow the
+same rule — defaults are no-ops, nothing third-party is forced on the consumer.
 
 ## Modules
 
 Each module is independently versioned (per-module SemVer) and carries its own
 stability label.
 
-| Module    | What it is                                                                 | Status      |
-| --------- | -------------------------------------------------------------------------- | ----------- |
-| `state`     | Pure, abstract, domain-agnostic state machine kernel. Stdlib-only, no IO.  | experimental |
-| `telemetry` | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.  | experimental |
-| `broker`  | Message broker seam — publish/subscribe transport with injected adapters.  | planned     |
-| `store`   | Durable state/event store seam with graceful lifecycle.                    | planned     |
-| `sink`    | Effect dispatch / egress seam for emitted effects.                         | planned     |
+| Module                | What it is                                                                       | Status       |
+| --------------------- | -------------------------------------------------------------------------------- | ------------ |
+| `state`               | Full-featured, domain-agnostic statechart engine. Stdlib-only, no IO.            | experimental |
+| `state/analysis`      | Static model-checking and path enumeration over a machine's IR.                  | experimental |
+| `state/evolution`     | Diffs two machine definitions and classifies the SemVer bump.                    | experimental |
+| `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | experimental |
+| `telemetry`           | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.        | experimental |
+| `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
+| `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
+| `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
+| `broker`              | Message broker seam — publish/subscribe transport with injected adapters.        | planned      |
+| `store`               | Durable state/event store seam with graceful lifecycle.                          | planned      |
+| `sink`                | Effect dispatch / egress seam for emitted effects.                               | planned      |
 
-The kernel emits effects as pure data; the IO modules are the thin seams that
+The engine emits effects as pure data; the IO modules are the thin seams that
 carry those effects to real transports, stores, and sinks — each
 "bring your own adapter," none forced on the consumer.
 
 ## Status
 
-Early and evolving. The `state` kernel is implemented — the builder and
-transition engine, guards and actions, validation, path planning, batch
-helpers, and JSON (de)serialization — with test coverage; treat its API as
-experimental until a tagged release. The `broker`, `store`, and `sink` modules
-are planned.
+Early and evolving. The `state` module is now a complete, embeddable statechart
+engine — hierarchical, parallel, and final states; history; guard combinators;
+delayed transitions; invoked services; an actor model with message passing;
+snapshots; inspection; and JSON (de)serialization — backed by its `analysis`,
+`evolution`, and `conformance` companion packages. Treat its API as experimental
+until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
+`datadog` adapters are released. The `broker`, `store`, and `sink` modules are
+planned.
 
 ## Design & discussions
 

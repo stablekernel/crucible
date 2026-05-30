@@ -115,7 +115,7 @@ func TestInvoke_OnError(t *testing.T) {
 	}
 }
 
-// TestInvoke_StoppedOnExit asserts xstate auto-stop-on-exit: leaving the loading
+// TestInvoke_StoppedOnExit asserts auto-stop-on-exit: leaving the loading
 // state before the service completes emits StopService and the service can no
 // longer settle (onDone never fires).
 func TestInvoke_StoppedOnExit(t *testing.T) {

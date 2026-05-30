@@ -78,7 +78,7 @@ type State[S comparable, E comparable, C any] struct {
 	HistoryType    HistoryType `json:"historyType,omitempty"`
 	HistoryDefault *S          `json:"historyDefault,omitempty"`
 
-	// Invoke declares the services invoked while this state is active (xstate v5
+	// Invoke declares the services invoked while this state is active (the
 	// `invoke`). Entering the state emits a StartService effect per invocation;
 	// exiting it before a service completes emits a StopService effect
 	// (auto-stop-on-exit). Each invocation routes its result through OnDone and its
@@ -115,7 +115,7 @@ type Transition[S comparable, E comparable, C any] struct {
 
 	// GuardExpr is an optional composite guard: a serializable boolean
 	// expression tree over named-ref leaves, the stateIn built-in, and the
-	// and/or/not combinators (xstate v5 parity). When set it is evaluated in
+	// and/or/not combinators. When set it is evaluated in
 	// addition to every Ref in Guards — the transition is enabled only when both
 	// the plain guards and the expression pass — so the common single-guard case
 	// stays the plain Guards slice and composition is purely additive. The tree
@@ -130,14 +130,14 @@ type Transition[S comparable, E comparable, C any] struct {
 	// specific-event transition of the same state handles. Wildcard transitions
 	// are the lowest-priority candidates in a state, tried only after every
 	// On-keyed match fails, and resolution still bubbles to ancestors when no
-	// wildcard fires. On is ignored when Wildcard is set. This mirrors xstate v5
+	// wildcard fires. On is ignored when Wildcard is set. This is the
 	// `on: { '*': ... }`.
 	Wildcard bool `json:"wildcard,omitempty"`
 
 	// Forbidden marks an event as explicitly blocked at this state: the event is
 	// consumed and ignored, and — unlike "no handler declared" — it does NOT
 	// bubble to ancestor states. To has no meaning for a forbidden transition.
-	// This mirrors xstate v5 `on: { E: undefined }`.
+	// This is a forbidden transition: the event is consumed and ignored.
 	Forbidden bool `json:"forbidden,omitempty"`
 
 	// Reenter makes a transition external. By default (v5 semantics) a transition
@@ -145,14 +145,14 @@ type Transition[S comparable, E comparable, C any] struct {
 	// its effects run but the source is not exited and re-entered. Setting Reenter
 	// forces the external form, running the full exit/entry cascade of the target.
 	// For an unrelated target (an ordinary state change) the cascade always runs;
-	// Reenter only changes the self/ancestor case. This mirrors xstate v5
+	// Reenter only changes the self/ancestor case. This is the
 	// `reenter: true`.
 	Reenter bool `json:"reenter,omitempty"`
 
 	// Raise lists internal events this transition enqueues. They are appended to
 	// the macrostep's internal queue after the transition's own effects run, and
 	// drained by Fire's run-to-completion loop within the SAME macrostep — before
-	// Fire returns and before any externally-sent event. This mirrors xstate v5
+	// Fire returns and before any externally-sent event. This is the
 	// `raise(...)`. The queue is local to the macrostep, so Fire stays pure.
 	Raise []E `json:"raise,omitempty"`
 
@@ -461,7 +461,7 @@ func (b *Builder[S, E, C]) Requires(req Requirement[C]) *Builder[S, E, C] {
 	return b
 }
 
-// Invoke declares an invoked service on the most-recent state (xstate v5
+// Invoke declares an invoked service on the most-recent state (an
 // `invoke`). src names the service in the registry (bind it with Service); onDone
 // and onError name the events the host re-fires through Fire when the service
 // completes or fails, routed by ordinary transitions from this state. Configure
@@ -490,7 +490,7 @@ func (b *Builder[S, E, C]) Invoke(src string, onDone, onError E, opts ...InvokeO
 }
 
 // InvokeActor declares a child-MACHINE actor invoked while the most-recent state
-// is active (xstate v5 `invoke` of a child machine). src names the child-machine
+// is active (invoke of a child machine). src names the child-machine
 // factory registered in the host's ActorSystem actor palette; onDone and onError
 // name the events the host re-fires through the PARENT's Fire when the child
 // reaches its final state (carrying its output) or fails (carrying the error),
@@ -523,7 +523,7 @@ func (b *Builder[S, E, C]) InvokeActor(src string, onDone, onError E, opts ...In
 
 // Spawn attaches the kernel spawn built-in to the most-recent transition: when
 // the transition fires, the kernel emits a SpawnActor effect so a machine creates
-// an actor dynamically (xstate v5 `spawn`). src names the child-machine factory
+// an actor dynamically (spawn). src names the child-machine factory
 // in the host's ActorSystem actor palette; id is the actor's registry key (the
 // holder later stores the ActorSystem-returned ActorRef in its context to address
 // it). Configure input and a system-scoped id with the SpawnOptions. The built-in
@@ -559,7 +559,7 @@ func (b *Builder[S, E, C]) Spawn(src, id string, opts ...SpawnOption) *Builder[S
 // StopActor attaches the kernel stop-actor built-in to the most-recent
 // transition: when the transition fires, the kernel emits a StopActor effect for
 // the given actor id, so a machine can explicitly stop a spawned actor before its
-// natural completion (xstate v5 stopping an actor). Stopping an unknown id is a
+// natural completion (stopping an actor). Stopping an unknown id is a
 // host-side no-op. The built-in needs no host registration, mirroring Cancel.
 func (b *Builder[S, E, C]) StopActor(id string) *Builder[S, E, C] {
 	if b.curTransition != nil {
@@ -573,7 +573,7 @@ func (b *Builder[S, E, C]) StopActor(id string) *Builder[S, E, C] {
 // the transition fires, the kernel emits a SendTo effect so the host's ActorSystem
 // delivers event to the actor registered under targetID. Address an actor by its
 // system-scoped id instead with WithSendToSystemID. The built-in needs no host
-// registration, mirroring Spawn / Cancel. This is the DSL form of xstate v5
+// registration, mirroring Spawn / Cancel. This is the DSL form of
 // `sendTo(target, event)`.
 func (b *Builder[S, E, C]) SendTo(targetID string, event E, opts ...SendOption) *Builder[S, E, C] {
 	if b.curTransition == nil {
@@ -598,7 +598,7 @@ func (b *Builder[S, E, C]) SendTo(targetID string, event E, opts ...SendOption) 
 // transition: when the transition fires, the kernel emits a SendParent effect so
 // the host's ActorSystem delivers event to the emitting actor's parent. Emitted by
 // a top-level machine with no parent it is a host-side no-op. The built-in needs no
-// host registration. This is the DSL form of xstate v5 `sendParent(event)`.
+// host registration. This is the DSL form of sending an event to the parent.
 func (b *Builder[S, E, C]) SendParent(event E) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Effects = append(b.curTransition.Effects,
@@ -612,7 +612,7 @@ func (b *Builder[S, E, C]) SendParent(event E) *Builder[S, E, C] {
 // ActorSystem delivers event back to the sender of the event currently being
 // handled (the actor that sent it via SendTo / ForwardTo). When the current event
 // has no identifiable sender it is a host-side no-op. The built-in needs no host
-// registration. This is the DSL form of replying to an event's origin (xstate v5
+// registration. This is the DSL form of replying to an event's origin (the
 // `respond` / `sendBack`).
 func (b *Builder[S, E, C]) Respond(event E) *Builder[S, E, C] {
 	if b.curTransition != nil {
@@ -627,7 +627,7 @@ func (b *Builder[S, E, C]) Respond(event E) *Builder[S, E, C] {
 // ActorSystem forwards the event the emitting actor is currently handling, verbatim,
 // to the actor registered under targetID. Address an actor by its system-scoped id
 // instead with WithSendToSystemID. The built-in needs no host registration. This is
-// the DSL form of xstate v5 `forwardTo(target)`.
+// the DSL form of forwarding the current event to another actor.
 func (b *Builder[S, E, C]) ForwardTo(targetID string, opts ...SendOption) *Builder[S, E, C] {
 	if b.curTransition == nil {
 		return b
@@ -649,7 +649,7 @@ func (b *Builder[S, E, C]) ForwardTo(targetID string, opts ...SendOption) *Build
 
 // StopChild attaches the kernel stopChild built-in to the most-recent transition:
 // when the transition fires, the kernel emits a StopActor effect for the given
-// actor id, so a machine can explicitly stop a spawned child actor (xstate v5
+// actor id, so a machine can explicitly stop a spawned child actor (the
 // `stopChild`). It is the action-level twin of StopActor and shares its effect;
 // stopping an unknown id is a host-side no-op. The built-in needs no host
 // registration.
@@ -740,7 +740,7 @@ func (b *Builder[S, E, C]) On(event E) *Builder[S, E, C] {
 // matches any event no specific On-keyed transition of the state handles, and is
 // the lowest-priority candidate — tried only after every specific match fails,
 // before the event bubbles to an ancestor. Chain GoTo/When/Do/Reenter/Raise as
-// usual. This is the DSL form of xstate v5 `on: { '*': ... }`.
+// usual. This is the DSL form of a wildcard transition.
 func (b *Builder[S, E, C]) OnAny() *Builder[S, E, C] {
 	b.openTransition()
 	if b.curTransition != nil {
@@ -752,7 +752,7 @@ func (b *Builder[S, E, C]) OnAny() *Builder[S, E, C] {
 
 // Forbid declares that the most-recent state blocks the given event: the event
 // is consumed and ignored there and does NOT bubble to ancestors, distinct from
-// having no handler (which bubbles). This is the DSL form of xstate v5
+// having no handler (which bubbles). This is the DSL form of a
 // `on: { E: undefined }`. A forbidden transition takes no target, guards, or
 // effects.
 func (b *Builder[S, E, C]) Forbid(event E) *Builder[S, E, C] {
@@ -767,7 +767,7 @@ func (b *Builder[S, E, C]) Forbid(event E) *Builder[S, E, C] {
 
 // ForbidAny declares a forbidden wildcard: every event not otherwise handled is
 // consumed and ignored at the most-recent state instead of bubbling. This is the
-// DSL form of xstate v5 `on: { '*': undefined }`.
+// DSL form of a forbidden wildcard transition.
 func (b *Builder[S, E, C]) ForbidAny() *Builder[S, E, C] {
 	b.openTransition()
 	if b.curTransition != nil {
@@ -813,7 +813,7 @@ func (b *Builder[S, E, C]) GoTo(to S) *Builder[S, E, C] {
 // Always opens an eventless ("always") transition from the most-recent state. It
 // carries no triggering event and is auto-fired by the run-to-completion loop
 // whenever its guards pass and the state is active, within the firing macrostep.
-// Chain GoTo/When/Do as usual. This is the DSL form of xstate v5 `always`.
+// Chain GoTo/When/Do as usual. This is the DSL form of an eventless transition.
 func (b *Builder[S, E, C]) Always() *Builder[S, E, C] {
 	b.openTransition()
 	if b.curTransition != nil {
@@ -828,9 +828,9 @@ func (b *Builder[S, E, C]) Always() *Builder[S, E, C] {
 // state stays active. Chain On(event).GoTo(target) to name the delayed event the
 // host re-fires and the target it lands in (When/Do as usual). On entering the
 // source state the kernel emits a ScheduleAfter effect; on exiting it before the
-// delay elapses, a CancelScheduled effect (xstate v5 auto-cancel-on-exit). The
+// delay elapses, a CancelScheduled effect (auto-cancel-on-exit). The
 // kernel never sleeps — the host owns the timer and feeds the delayed event back
-// through Fire. This is the DSL form of xstate v5 `after: { <delay>: ... }`.
+// through Fire. This is the DSL form of a delayed (after) transition.
 func (b *Builder[S, E, C]) After(delay time.Duration) *Builder[S, E, C] {
 	b.openTransition()
 	if b.curTransition != nil {
@@ -842,7 +842,7 @@ func (b *Builder[S, E, C]) After(delay time.Duration) *Builder[S, E, C] {
 
 // Reenter marks the most-recent transition external: a self- or ancestor-
 // targeted transition that would otherwise be internal (the v5 default) instead
-// runs the full exit/entry cascade of its target. This is the DSL form of xstate
+// runs the full exit/entry cascade of its target. This is the DSL form of the
 // v5 `reenter: true`.
 func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
 	if b.curTransition != nil {
@@ -854,7 +854,7 @@ func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
 // Raise attaches internal events to the most-recent transition. After the
 // transition's effects run, each raised event is processed within the same Fire
 // macrostep by the run-to-completion loop, before Fire returns. This is the DSL
-// form of xstate v5 `raise(...)`.
+// form of raising an internal event.
 func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Raise = append(b.curTransition.Raise, events...)
@@ -887,7 +887,7 @@ func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Bui
 
 // WhenExpr attaches a composite guard expression to the most-recent transition:
 // a boolean tree over named-ref leaves (Guard), the stateIn built-in (StateIn),
-// and the And/Or/Not combinators, with xstate v5 short-circuit semantics. It is
+// and the And/Or/Not combinators, with short-circuit semantics. It is
 // evaluated alongside any When guards — the transition is enabled only when both
 // pass. Use When for the common single-guard case and WhenExpr when a transition
 // needs composition or stateIn.
@@ -1125,7 +1125,7 @@ type Instance[S comparable, E comparable, C any] struct {
 	// Defaults to SystemClock() when no WithClock is supplied at Cast.
 	clock Clock
 	// inspector is the optional live observer sink fed inspection events as the
-	// instance advances (xstate v5 `inspect`). It is nil by default — an
+	// instance advances (the inspection stream). It is nil by default — an
 	// un-inspected instance never calls it, so inspection is zero-overhead off and
 	// the pure Fire step performs no IO when one is absent. Wired with
 	// WithInspector at Cast.

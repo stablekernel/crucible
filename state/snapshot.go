@@ -13,8 +13,7 @@ import (
 // recorded history, status, and the metadata needed to re-arm its pending timers,
 // invoked services, and spawned actors.
 //
-// The model mirrors xstate v5 persistence (actor.getPersistedSnapshot /
-// createActor(logic, { snapshot })): a restored instance resumes at its persisted
+// The model captures instance persistence: a restored instance resumes at its persisted
 // configuration WITHOUT re-running entry actions (resume, not re-enter), and the
 // host re-establishes the instance's pending invoked/spawned children and timers
 // by absorbing the re-arm effects ResumeEffects emits — the same StartService /
@@ -22,8 +21,8 @@ import (
 // initial StartEffects. Fire stays pure: Snapshot is a read and Restore rebuilds
 // the instance without firing.
 
-// Status classifies a snapshotted instance's lifecycle, mirroring xstate v5's
-// actor status. StatusRunning is an instance still advancing; StatusDone is an
+// Status classifies a snapshotted instance's lifecycle. It mirrors the
+// runtime status. StatusRunning is an instance still advancing; StatusDone is an
 // instance whose active configuration is entirely final (every active leaf is a
 // final state); StatusError is an instance the host settled as failed, carrying
 // the error message on the snapshot.
@@ -231,14 +230,14 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // transition, a StartService per invoked service, and a SpawnActor per
 // child-machine actor invocation active in the configuration. It is the restore
 // twin of StartEffects (which arms an initial Cast configuration) extended with
-// the delayed-timer effects, and realizes xstate v5's "a restored actor
-// re-establishes its invoked/spawned children". Like StartEffects it is a pure
+// the delayed-timer effects, so a restored instance
+// re-establishes its invoked/spawned children. Like StartEffects it is a pure
 // read of the configuration and emits no IO; route the effects through the same
 // Scheduler / ServiceRunner / ActorSystem the host drives for Fire.
 //
 // Entry actions are NOT re-run: ResumeEffects emits only the lifecycle re-arm
 // effects, never the states' OnEntry actions, so a restored instance resumes
-// rather than re-enters (matching xstate).
+// rather than re-enters.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
 	cfg := i.Configuration()
@@ -250,8 +249,8 @@ func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 
 // Restore rebuilds a running Instance from snap, resuming at the snapshot's
 // configuration, context, and recorded history WITHOUT re-running any entry
-// actions (resume, not re-enter — matching xstate v5 createActor with a restored
-// snapshot). The snapshot's Machine must match m's name, every configuration leaf
+// actions (resume, not re-enter). The restored instance picks up at the
+// persisted snapshot. The snapshot's Machine must match m's name, every configuration leaf
 // must be a declared state, and the configuration must be non-empty; a violation
 // returns a typed *SnapshotError. The restored instance is wired to the supplied
 // clock (WithRestoreClock) or SystemClock by default, exactly as Cast wires it.

@@ -68,10 +68,10 @@ func Guard[S comparable](name string, params ...map[string]any) GuardNode[S] {
 // active leaves and their ancestors at evaluation time, so it works for atomic,
 // compound, and parallel configurations ("in" means the state is somewhere in
 // the active set/spine). It is a first-class built-in: the consumer never
-// registers it. The name deliberately mirrors xstate v5 stateIn(...) for guard
+// registers it. The name is stateIn for guard
 // parity; renaming to In would break that documented parity contract.
 //
-//nolint:revive // StateIn mirrors xstate v5's stateIn built-in (parity).
+//nolint:revive // StateIn is the config-aware stateIn built-in.
 func StateIn[S comparable](state S) GuardNode[S] {
 	s := state
 	return GuardNode[S]{Op: GuardStateIn, In: &s}
@@ -80,19 +80,19 @@ func StateIn[S comparable](state S) GuardNode[S] {
 // And composes guards into a node true only when every operand is true,
 // short-circuiting at the first false — consistent with the AND short-circuit
 // of a plain multi-guard transition. Operands may be named-ref leaves, stateIn,
-// or other combinators, nested arbitrarily. Mirrors xstate v5 and([...]).
+// or other combinators, nested arbitrarily.
 func And[S comparable](nodes ...GuardNode[S]) GuardNode[S] {
 	return GuardNode[S]{Op: GuardAnd, Children: append([]GuardNode[S](nil), nodes...)}
 }
 
 // Or composes guards into a node true when any operand is true, short-circuiting
 // at the first true. Operands may be named-ref leaves, stateIn, or other
-// combinators, nested arbitrarily. Mirrors xstate v5 or([...]).
+// combinators, nested arbitrarily.
 func Or[S comparable](nodes ...GuardNode[S]) GuardNode[S] {
 	return GuardNode[S]{Op: GuardOr, Children: append([]GuardNode[S](nil), nodes...)}
 }
 
-// Not inverts a single guard. Mirrors xstate v5 not(...).
+// Not inverts a single guard.
 func Not[S comparable](node GuardNode[S]) GuardNode[S] {
 	return GuardNode[S]{Op: GuardNot, Children: []GuardNode[S]{node}}
 }
@@ -197,7 +197,7 @@ type guardEval struct {
 
 // evalGuardExpr evaluates a guard expression tree against the entity and the
 // instance's live active configuration, with the same short-circuit semantics
-// as xstate v5: And stops at the first false, Or stops at the first true, Not
+// short-circuits: And stops at the first false, Or stops at the first true, Not
 // inverts. A leaf guard that panics or fails to bind stops evaluation and
 // surfaces the typed error (ErrGuardPanic), exactly like a plain transition
 // guard. The stateIn built-in reads the active spine, so it is correct for

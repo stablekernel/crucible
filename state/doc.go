@@ -36,7 +36,7 @@
 // host-provided implementations through a registry at freeze time. Binding
 // fails loudly if any reference does not resolve.
 //
-// This is the config/implementation split, borrowed from xstate: structure is
+// This is the config/implementation split: structure is
 // dual-authored (code or, eventually, a visual UI) while behavior is always
 // code, surfaced to authors as a named palette. The Go DSL and a future UI are
 // two front-ends that emit the same IR; a machine authored in Go and a machine
@@ -106,13 +106,13 @@
 //
 // Delayed (`after`) transitions are drivable: entering a state with an `after`
 // transition emits a ScheduleAfter effect and exiting it a CancelScheduled effect
-// (xstate v5 auto-cancel-on-exit), while Fire stays pure — a host Scheduler driver
+// (auto-cancel-on-exit), while Fire stays pure — a host Scheduler driver
 // owns the real timer and re-fires the delayed event, with a deterministic
 // FakeClock for testing.
 //
 // Invoked services (`invoke`) are drivable: entering a state that declares an
 // invoke emits a StartService effect and exiting it before the service completes
-// emits a StopService effect (xstate v5 auto-stop-on-exit), while Fire stays pure
+// emits a StopService effect (auto-stop-on-exit), while Fire stays pure
 // — a host ServiceRunner runs the bound service and re-fires the invocation's
 // onDone (with the result) or onError (with the error) back through Fire, with a
 // deterministic settle-by-id harness for testing. Child-machine actors (invoking
