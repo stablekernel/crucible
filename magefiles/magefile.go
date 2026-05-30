@@ -346,3 +346,43 @@ func Vuln() error {
 func Check() {
 	mg.SerialDeps(Lint, TestRace, Vuln)
 }
+
+// Changelog prints the Unreleased section of a module's CHANGELOG.md — the
+// pending entries that the next tag will publish. Pass a module dir (e.g.
+// `mage changelog state`); defaults to the primary module (state).
+func Changelog(module string) error {
+	if module == "" {
+		module = "state"
+	}
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(root, module, "CHANGELOG.md")
+	data, err := os.ReadFile(path) //nolint:gosec // module is a fixed in-repo dir name
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	section := unreleasedSection(string(data))
+	if section == "" {
+		fmt.Printf("==> %s: no Unreleased section in CHANGELOG.md\n", module)
+		return nil
+	}
+	fmt.Printf("==> %s pending release notes:\n\n%s\n", module, section)
+	return nil
+}
+
+// unreleasedSection extracts the body of the "## [Unreleased]" heading, up to
+// the next "## " heading. It returns "" if there is no such section.
+func unreleasedSection(changelog string) string {
+	const marker = "## [Unreleased]"
+	idx := strings.Index(changelog, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := changelog[idx+len(marker):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		rest = rest[:next]
+	}
+	return strings.TrimSpace(rest)
+}
