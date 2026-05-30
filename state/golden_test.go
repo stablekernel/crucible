@@ -37,8 +37,9 @@ func goldenMachines() []goldenIR {
 // file. The IR is canonical, so a structural change to a machine is a visible
 // diff in CI. Run with -update-golden to refresh after an intended change.
 //
-// Mermaid and DOT exporters are not implemented in v1; when they land, their
-// golden coverage slots in here alongside the IR goldens with no test rework.
+// The Mermaid and DOT renderings of these same machines are pinned alongside
+// the IR goldens by TestGoldenViz, which reuses these example machines and the
+// shared -update-golden flag.
 func TestGoldenIR(t *testing.T) {
 	dir := filepath.Join("testdata", "ir")
 	if *updateGolden {

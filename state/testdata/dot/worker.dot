@@ -1,0 +1,31 @@
+digraph "worker" {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+    __start [shape=point];
+    __start -> "Offline";
+    "Offline";
+    subgraph cluster_0 {
+        label="Active";
+        subgraph cluster_1 {
+            label="Execution";
+            style=dashed;
+            "Idle";
+            "Busy";
+            "ExecDone" [peripheries=2];
+        }
+        subgraph cluster_2 {
+            label="Telemetry";
+            style=dashed;
+            "Silent";
+            "Reporting";
+            "TelemetryDone" [peripheries=2];
+        }
+    }
+    "Busy" -> "Idle" [label="2"];
+    "Busy" -> "ExecDone" [label="5"];
+    "Idle" -> "Busy" [label="1"];
+    "Reporting" -> "Silent" [label="4"];
+    "Reporting" -> "TelemetryDone" [label="6"];
+    "Silent" -> "Reporting" [label="3"];
+    "Offline" -> "Active" [label="0"];
+}

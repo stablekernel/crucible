@@ -1,0 +1,17 @@
+digraph "document" {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+    __start [shape=point];
+    __start -> "0";
+    "0" [style="rounded,filled", fillcolor="#f0d9ff"];
+    "1" [style="rounded,filled", fillcolor="#f0d9ff"];
+    "2" [style="rounded,filled", fillcolor="#ffd6e0"];
+    "3" [style="rounded,filled", fillcolor="#ffd6e0"];
+    "4" [style="rounded,filled", fillcolor="#f0d9ff"];
+    "0" -> "1" [label="0"];
+    "0" -> "4" [label="4"];
+    "1" -> "2" [label="1 [hasReviewer]"];
+    "1" -> "0" [label="2"];
+    "1" -> "4" [label="4"];
+    "2" -> "3" [label="3"];
+}
