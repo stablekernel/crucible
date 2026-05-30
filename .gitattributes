@@ -1,0 +1,5 @@
+# Normalize line endings to LF on checkout for every platform. Golden tests
+# compare serialized output (which uses \n) byte-for-byte against committed
+# fixtures; without this, Windows checks the fixtures out as CRLF and the
+# comparisons fail.
+* text=auto eol=lf
