@@ -78,8 +78,16 @@ type State[S comparable, E comparable, C any] struct {
 	HistoryType    HistoryType `json:"historyType,omitempty"`
 	HistoryDefault *S          `json:"historyDefault,omitempty"`
 
-	// Reserved drop-in surface.
-	Invoke []Ref           `json:"invoke,omitempty"`
+	// Invoke declares the services invoked while this state is active (xstate v5
+	// `invoke`). Entering the state emits a StartService effect per invocation;
+	// exiting it before a service completes emits a StopService effect
+	// (auto-stop-on-exit). Each invocation routes its result through OnDone and its
+	// error through OnError. The whole block serializes, so it round-trips
+	// losslessly through JSON. A host's ServiceRunner runs the services and re-fires
+	// onDone/onError through Fire, keeping Fire pure.
+	Invoke []Invocation[S, E, C] `json:"invoke,omitempty"`
+	// Reserved drop-in surface: actor refs (the actor model). drops in by giving
+	// each instance a mailbox and turning Fire into a message send.
 	Parent *State[S, E, C] `json:"-"`
 }
 
@@ -242,15 +250,17 @@ type RequirementFailure struct {
 
 // Registry holds the host behavior palette, by name.
 type Registry[C any] struct {
-	guards  map[string]GuardFn[C]
-	actions map[string]ActionFn[C]
+	guards   map[string]GuardFn[C]
+	actions  map[string]ActionFn[C]
+	services map[string]ServiceFn[C]
 }
 
 // NewRegistry returns an empty host registry.
 func NewRegistry[C any]() *Registry[C] {
 	return &Registry[C]{
-		guards:  map[string]GuardFn[C]{},
-		actions: map[string]ActionFn[C]{},
+		guards:   map[string]GuardFn[C]{},
+		actions:  map[string]ActionFn[C]{},
+		services: map[string]ServiceFn[C]{},
 	}
 }
 
@@ -263,6 +273,15 @@ func (r *Registry[C]) Guard(name string, fn GuardFn[C]) *Registry[C] {
 // Action registers a named action implementation.
 func (r *Registry[C]) Action(name string, fn ActionFn[C]) *Registry[C] {
 	r.actions[name] = fn
+	return r
+}
+
+// Service registers a named invoked-service implementation. An invoke's Src ref
+// binds to it at Provide/Quench time exactly like a guard or action ref; an
+// unbound service ref fails Quench with the typed *ErrUnboundRef (Kind
+// "service"). The runner resolves and runs it when the owning state is entered.
+func (r *Registry[C]) Service(name string, fn ServiceFn[C]) *Registry[C] {
+	r.services[name] = fn
 	return r
 }
 
@@ -377,6 +396,14 @@ func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C]) *Builder[S, E, C]
 	return b
 }
 
+// Service registers a named invoked-service implementation into the builder's
+// palette, bound by an invoke's Src ref. An unbound service ref fails Quench with
+// the typed *ErrUnboundRef, mirroring guards and actions.
+func (b *Builder[S, E, C]) Service(name string, fn ServiceFn[C]) *Builder[S, E, C] {
+	b.reg.Service(name, fn)
+	return b
+}
+
 // State declares a state node. Inside a SuperState or Region block it declares a
 // substate of that block (equivalent to SubState); at the top level it declares
 // a top-level state.
@@ -428,6 +455,34 @@ func (b *Builder[S, E, C]) Requires(req Requirement[C]) *Builder[S, E, C] {
 	if b.curState != nil {
 		b.curState.requirements = append(b.curState.requirements, req)
 	}
+	return b
+}
+
+// Invoke declares an invoked service on the most-recent state (xstate v5
+// `invoke`). src names the service in the registry (bind it with Service); onDone
+// and onError name the events the host re-fires through Fire when the service
+// completes or fails, routed by ordinary transitions from this state. Configure
+// the input passed to the service and an explicit id with the variadic
+// InvokeOptions (WithInput, WithInvokeID); omitting WithInvokeID derives a stable
+// id via InvokeID. On entering this state the kernel emits a StartService effect;
+// on exiting it before the service completes, a StopService effect
+// (auto-stop-on-exit). The kernel never runs the service — a host ServiceRunner
+// does, keeping Fire pure.
+func (b *Builder[S, E, C]) Invoke(src string, onDone, onError E, opts ...InvokeOption) *Builder[S, E, C] {
+	if b.curState == nil {
+		return b
+	}
+	cfg := invokeConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	b.curState.state.Invoke = append(b.curState.state.Invoke, Invocation[S, E, C]{
+		ID:      cfg.id,
+		Src:     Ref{Name: src, Params: cfg.params},
+		Input:   cfg.input,
+		OnDone:  onDone,
+		OnError: onError,
+	})
 	return b
 }
 
@@ -766,6 +821,7 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 		requirements:   reqs,
 		guards:         map[string]GuardFn[C]{},
 		actions:        map[string]ActionFn[C]{},
+		services:       map[string]ServiceFn[C]{},
 		middleware:     append([]Middleware[S, E, C](nil), b.middleware...),
 	}
 	for i := range m.states {
@@ -777,6 +833,9 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	}
 	for name, fn := range b.reg.actions {
 		m.actions[name] = fn
+	}
+	for name, fn := range b.reg.services {
+		m.services[name] = fn
 	}
 	return m
 }
@@ -793,7 +852,19 @@ type Machine[S comparable, E comparable, C any] struct {
 	requirements   map[S][]Requirement[C]
 	guards         map[string]GuardFn[C]
 	actions        map[string]ActionFn[C]
+	services       map[string]ServiceFn[C]
 	middleware     []Middleware[S, E, C]
+}
+
+// Services returns the machine's bound invoked-service palette by name, for a
+// host that constructs a ServiceRunner from the machine's own registry. The map
+// is a copy; mutating it does not affect the machine.
+func (m *Machine[S, E, C]) Services() map[string]ServiceFn[C] {
+	out := make(map[string]ServiceFn[C], len(m.services))
+	for k, v := range m.services {
+		out[k] = v
+	}
+	return out
 }
 
 // Name returns the machine name.

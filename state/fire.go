@@ -481,6 +481,10 @@ func (i *Instance[S, E, C]) commit(
 	// timer emits a CancelScheduled effect so the host drops the pending timer.
 	effects = append(effects, i.afterEffectsOnExit(exits, &tr)...)
 
+	// Auto-stop-on-exit: every exited state with an in-flight invoked service
+	// emits a StopService effect so the host stops the service.
+	effects = append(effects, i.invokeEffectsOnExit(exits, &tr)...)
+
 	// Advance the configuration before transition/entry actions run. A history
 	// restore pins the configuration to the remembered leaves; otherwise descend
 	// into the target's initial children.
@@ -529,6 +533,10 @@ func (i *Instance[S, E, C]) commit(
 	// Delayed-transition scheduling: every entered state that declares an
 	// `after` transition emits a ScheduleAfter effect so the host arms a timer.
 	effects = append(effects, i.afterEffectsOnEntry(entries, &tr)...)
+
+	// Invoked services: every entered state that declares an `invoke` emits a
+	// StartService effect so the host runs the service and routes onDone/onError.
+	effects = append(effects, i.invokeEffectsOnEntry(entries, &tr)...)
 
 	// Done-event semantics: entering a final leaf may complete its parent.
 	doneEff, dname, derr := i.settleDone(to, entity, &tr)

@@ -129,6 +129,13 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		b.checkRefs(&diags, "action", sd.state.OnExit, sd.state.OwnedBy, 0)
 		b.checkRefs(&diags, "action", sd.state.OnDone, sd.state.OwnedBy, 0)
 
+		// Validate every invoked service's Src ref against the service registry,
+		// surfacing an unbound service as the same typed *ErrUnboundRef the DSL and
+		// IR paths raise for guards and actions.
+		for ix := range sd.state.Invoke {
+			b.checkRefs(&diags, "service", []Ref{sd.state.Invoke[ix].Src}, "", 0)
+		}
+
 		guardlessWildcard := 0
 		for ti := range sd.state.Transitions {
 			t := &sd.state.Transitions[ti]
@@ -308,6 +315,8 @@ func (b *Builder[S, E, C]) checkRefs(diags *[]diagnostic, kind string, refs []Re
 			// Kernel built-in actions (e.g. the Cancel built-in) resolve without a
 			// host registration, mirroring the stateIn guard built-in.
 			ok = isBuiltinAction(r.Name) || func() bool { _, f := b.reg.actions[r.Name]; return f }()
+		case "service":
+			_, ok = b.reg.services[r.Name]
 		}
 		if !ok {
 			ub := &ErrUnboundRef{Kind: kind, Name: r.Name}
