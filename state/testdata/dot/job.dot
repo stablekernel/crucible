@@ -1,0 +1,19 @@
+digraph "job" {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+    __start [shape=point];
+    __start -> "Queued";
+    "Queued" [style="rounded,filled", fillcolor="#f0d9ff"];
+    subgraph cluster_0 {
+        label="Running";
+        "Running" [style="rounded,filled", fillcolor="#d9f2f2"];
+        "Starting";
+        "Executing";
+    }
+    "JobDone" [peripheries=2];
+    "Canceled" [peripheries=2];
+    "Queued" -> "Running" [label="0"];
+    "Running" -> "Canceled" [label="3"];
+    "Executing" -> "JobDone" [label="2"];
+    "Starting" -> "Executing" [label="1"];
+}

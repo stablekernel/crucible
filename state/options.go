@@ -92,3 +92,40 @@ func WithoutSrcPos() ToJSONOption {
 type TemperOption func(*temperConfig)
 
 type temperConfig struct{}
+
+// VizOption configures the ToMermaid and ToDOT renderers.
+type VizOption func(*vizConfig)
+
+// vizConfig holds the resolved rendering knobs. Defaults render guard
+// annotations and owner color-coding; direction defaults differ per format and
+// are applied by the renderer when dirSet is false.
+type vizConfig struct {
+	hideGuards bool
+	hideOwners bool
+	leftRight  bool
+	dirSet     bool
+}
+
+// WithoutGuards omits the bracketed guard annotations from transition labels.
+func WithoutGuards() VizOption { return func(c *vizConfig) { c.hideGuards = true } }
+
+// WithoutOwners omits owner color-coding (Mermaid classDef / DOT fillcolor).
+func WithoutOwners() VizOption { return func(c *vizConfig) { c.hideOwners = true } }
+
+// LeftToRight lays the diagram out left-to-right (Mermaid direction LR, DOT
+// rankdir=LR).
+func LeftToRight() VizOption {
+	return func(c *vizConfig) {
+		c.leftRight = true
+		c.dirSet = true
+	}
+}
+
+// TopToBottom lays the diagram out top-to-bottom (Mermaid default, DOT
+// rankdir=TB).
+func TopToBottom() VizOption {
+	return func(c *vizConfig) {
+		c.leftRight = false
+		c.dirSet = true
+	}
+}

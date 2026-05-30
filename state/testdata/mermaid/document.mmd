@@ -1,0 +1,12 @@
+stateDiagram-v2
+    [*] --> 0
+    0 --> 1: 0
+    0 --> 4: 4
+    1 --> 2: 1 [hasReviewer]
+    1 --> 0: 2
+    1 --> 4: 4
+    2 --> 3: 3
+    classDef owner_Author fill:#f0d9ff
+    classDef owner_Reviewer fill:#ffd6e0
+    class 0,1,4 owner_Author
+    class 2,3 owner_Reviewer

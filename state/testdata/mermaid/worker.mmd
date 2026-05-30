@@ -1,0 +1,24 @@
+stateDiagram-v2
+    [*] --> Offline
+    state Active {
+        [*] --> Active_Execution__Idle
+        Active_Execution__Idle
+        Active_Execution__Busy
+        Active_Execution__ExecDone
+        Active_Execution__ExecDone --> [*]
+        Active_Execution__Busy --> Active_Execution__Idle: 2
+        Active_Execution__Busy --> Active_Execution__ExecDone: 5
+        Active_Execution__Idle --> Active_Execution__Busy: 1
+        --
+        [*] --> Active_Telemetry__Silent
+        Active_Telemetry__Silent
+        Active_Telemetry__Reporting
+        Active_Telemetry__TelemetryDone
+        Active_Telemetry__TelemetryDone --> [*]
+        Active_Telemetry__Reporting --> Active_Telemetry__Silent: 4
+        Active_Telemetry__Reporting --> Active_Telemetry__TelemetryDone: 6
+        Active_Telemetry__Silent --> Active_Telemetry__Reporting: 3
+    }
+    Offline --> Active: 0
+    classDef owner_Supervisor fill:#cfe8ff
+    class Active owner_Supervisor
