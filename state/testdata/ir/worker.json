@@ -7,9 +7,7 @@
         {
           "from": 0,
           "to": 1,
-          "on": 0,
-          "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-          "srcLine": 171
+          "on": 0
         }
       ]
     },
@@ -31,9 +29,7 @@
                 {
                   "from": 2,
                   "to": 3,
-                  "on": 1,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 177
+                  "on": 1
                 }
               ]
             },
@@ -43,16 +39,12 @@
                 {
                   "from": 3,
                   "to": 2,
-                  "on": 2,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 179
+                  "on": 2
                 },
                 {
                   "from": 3,
                   "to": 4,
-                  "on": 5,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 180
+                  "on": 5
                 }
               ]
             },
@@ -72,9 +64,7 @@
                 {
                   "from": 5,
                   "to": 6,
-                  "on": 3,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 186
+                  "on": 3
                 }
               ]
             },
@@ -84,16 +74,12 @@
                 {
                   "from": 6,
                   "to": 5,
-                  "on": 4,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 188
+                  "on": 4
                 },
                 {
                   "from": 6,
                   "to": 7,
-                  "on": 6,
-                  "srcFile": "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/test-harness/state/example_hsm_test.go",
-                  "srcLine": 189
+                  "on": 6
                 }
               ]
             },

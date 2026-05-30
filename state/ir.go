@@ -25,13 +25,60 @@ func (m *Machine[S, E, C]) ToJSON(opts ...ToJSONOption) ([]byte, error) {
 	for _, o := range opts {
 		o(&cfg)
 	}
+	states := deepCopyStates(m.states)
+	if cfg.withoutSrcPos {
+		for i := range states {
+			stripSrcPos(&states[i])
+		}
+	}
 	ir := IR[S, E, C]{
 		Name:       m.name,
-		States:     append([]State[S, E, C](nil), m.states...),
+		States:     states,
 		Initial:    m.initial,
 		HasInitial: m.hasInitial,
 	}
 	return json.Marshal(ir)
+}
+
+// deepCopyStates clones a state slice deeply enough that mutating source
+// positions on the copy never touches the live machine — children, regions,
+// and the transition slices each get their own backing arrays.
+func deepCopyStates[S comparable, E comparable, C any](in []State[S, E, C]) []State[S, E, C] {
+	if in == nil {
+		return nil
+	}
+	out := make([]State[S, E, C], len(in))
+	for i := range in {
+		out[i] = in[i]
+		out[i].Transitions = append([]Transition[S, E, C](nil), in[i].Transitions...)
+		out[i].Children = deepCopyStates(in[i].Children)
+		if in[i].Regions != nil {
+			out[i].Regions = make([]Region[S, E, C], len(in[i].Regions))
+			for r := range in[i].Regions {
+				out[i].Regions[r] = in[i].Regions[r]
+				out[i].Regions[r].States = deepCopyStates(in[i].Regions[r].States)
+			}
+		}
+	}
+	return out
+}
+
+// stripSrcPos clears the diagnostic source-position fields on a state's
+// transitions and recurses through its hierarchy, so a WithoutSrcPos
+// serialization carries no absolute filesystem paths.
+func stripSrcPos[S comparable, E comparable, C any](s *State[S, E, C]) {
+	for i := range s.Transitions {
+		s.Transitions[i].SrcFile = ""
+		s.Transitions[i].SrcLine = 0
+	}
+	for i := range s.Children {
+		stripSrcPos(&s.Children[i])
+	}
+	for r := range s.Regions {
+		for i := range s.Regions[r].States {
+			stripSrcPos(&s.Regions[r].States[i])
+		}
+	}
 }
 
 // LoadFromJSON rehydrates an IR from JSON.

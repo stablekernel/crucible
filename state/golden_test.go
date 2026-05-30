@@ -23,9 +23,13 @@ type goldenIR struct {
 
 func goldenMachines() []goldenIR {
 	return []goldenIR{
-		{"document", func() ([]byte, error) { return buildDocMachine().ToJSON() }},
-		{"job", func() ([]byte, error) { return buildJobMachine().ToJSON() }},
-		{"worker", func() ([]byte, error) { return buildWorkerMachine().ToJSON() }},
+		// Serialize WithoutSrcPos so the goldens carry no absolute source paths
+		// and stay byte-identical across checkouts and CI. Source positions are
+		// diagnostic-only and would otherwise pin the goldens to the authoring
+		// worktree's filesystem path.
+		{"document", func() ([]byte, error) { return buildDocMachine().ToJSON(state.WithoutSrcPos()) }},
+		{"job", func() ([]byte, error) { return buildJobMachine().ToJSON(state.WithoutSrcPos()) }},
+		{"worker", func() ([]byte, error) { return buildWorkerMachine().ToJSON(state.WithoutSrcPos()) }},
 	}
 }
 

@@ -74,7 +74,19 @@ type provideConfig struct{}
 // ToJSONOption configures ToJSON.
 type ToJSONOption func(*toJSONConfig)
 
-type toJSONConfig struct{}
+type toJSONConfig struct{ withoutSrcPos bool }
+
+// WithoutSrcPos omits the diagnostic source-position fields (srcFile/srcLine)
+// from the serialized IR. Source positions are captured from the builder via
+// runtime.Caller, so they carry the absolute filesystem path of the worktree
+// that authored the machine — which makes them non-portable across checkouts.
+// They are diagnostic-only metadata ("defined at machine.go:84" tooltips) and
+// have no effect on loading or behavior, so stripping them yields a stable,
+// position-independent serialization. Use it for committed goldens and any
+// interchange that must be byte-identical regardless of where it was generated.
+func WithoutSrcPos() ToJSONOption {
+	return func(c *toJSONConfig) { c.withoutSrcPos = true }
+}
 
 // TemperOption configures Temper.
 type TemperOption func(*temperConfig)
