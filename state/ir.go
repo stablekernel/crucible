@@ -210,6 +210,9 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 	for name, fn := range reg.services {
 		b.reg.services[name] = fn
 	}
+	// Carry the binding seam over in lockstep with the bare-func maps so a
+	// Provide'd machine exposes the same per-kind bindings as a DSL-authored one.
+	b.reg.adoptBindings(reg)
 	// Carry the palette metadata over too, so a Provide'd machine surfaces the
 	// same Palette as a DSL-authored one.
 	for key, d := range reg.descriptors {
