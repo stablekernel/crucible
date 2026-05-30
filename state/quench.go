@@ -131,8 +131,15 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 
 		// Validate every invoked service's Src ref against the service registry,
 		// surfacing an unbound service as the same typed *ErrUnboundRef the DSL and
-		// IR paths raise for guards and actions.
+		// IR paths raise for guards and actions. Child-MACHINE actor invocations
+		// (ActorKindMachine) are exempt: their Src binds at the host ActorSystem's
+		// actor palette, not the service registry, and an unbound actor src is
+		// surfaced at spawn time (routed through the parent's onError) rather than at
+		// Quench.
 		for ix := range sd.state.Invoke {
+			if sd.state.Invoke[ix].Kind == ActorKindMachine {
+				continue
+			}
 			b.checkRefs(&diags, "service", []Ref{sd.state.Invoke[ix].Src}, "", 0)
 		}
 

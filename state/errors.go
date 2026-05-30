@@ -116,6 +116,30 @@ func (e *ErrNoInitialState) Error() string {
 	return fmt.Sprintf("crucible/state: cannot Cast machine %q: no CurrentStateFn declared and no WithInitialState supplied", e.Machine)
 }
 
+// ErrUnknownBuiltin is returned when a ref names a kernel built-in action the
+// kernel does not recognize. It is a defensive programmer-error signal: the DSL
+// and lint only ever produce known built-in names, so this surfaces only a
+// hand-constructed or corrupted ref.
+type ErrUnknownBuiltin struct {
+	Name string
+}
+
+func (e *ErrUnknownBuiltin) Error() string {
+	return fmt.Sprintf("crucible/state: unknown built-in action %q", e.Name)
+}
+
+// ErrUnboundActor is returned by an ActorSystem when a SpawnActor's Src does not
+// resolve against the system's actor palette — no child-machine factory was
+// registered under that name. The actor is settled as an error so the parent
+// still routes its onError rather than hanging.
+type ErrUnboundActor struct {
+	Name string
+}
+
+func (e *ErrUnboundActor) Error() string {
+	return fmt.Sprintf("crucible/state: unbound actor ref %q", e.Name)
+}
+
 // MultiRegionErr aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.

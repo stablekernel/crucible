@@ -64,18 +64,20 @@ const cancelIDParam = "id"
 // are exempt from the unbound-ref lint at Quench and handled directly by
 // evalAction.
 func isBuiltinAction(name string) bool {
-	return name == cancelBuiltinName
+	return name == cancelBuiltinName || isActorBuiltinAction(name)
 }
 
 // evalBuiltinAction runs a kernel built-in action ref, returning its effect. It
 // is called only for refs isBuiltinAction reports true for.
 func evalBuiltinAction(a Ref) (Effect, error) {
-	switch a.Name {
-	case cancelBuiltinName:
+	switch {
+	case a.Name == cancelBuiltinName:
 		id, _ := a.Params[cancelIDParam].(string)
 		return CancelScheduled{ID: id}, nil
+	case isActorBuiltinAction(a.Name):
+		return evalActorBuiltinAction(a)
 	default:
-		return nil, fmt.Errorf("crucible/state: unknown built-in action %q", a.Name)
+		return nil, &ErrUnknownBuiltin{Name: a.Name}
 	}
 }
 

@@ -86,8 +86,11 @@ type State[S comparable, E comparable, C any] struct {
 	// losslessly through JSON. A host's ServiceRunner runs the services and re-fires
 	// onDone/onError through Fire, keeping Fire pure.
 	Invoke []Invocation[S, E, C] `json:"invoke,omitempty"`
-	// Reserved drop-in surface: actor refs (the actor model). drops in by giving
-	// each instance a mailbox and turning Fire into a message send.
+	// Parent is a runtime-only back-pointer to the compound state owning this node,
+	// rebuilt after Quench/Provide; it never serializes. An ActorKindMachine entry
+	// in Invoke marks a child-machine actor whose lifecycle the host ActorSystem
+	// drives (the actor model); the per-instance actor mailboxes live on the host
+	// ActorSystem, not on this definition.
 	Parent *State[S, E, C] `json:"-"`
 }
 
@@ -483,6 +486,86 @@ func (b *Builder[S, E, C]) Invoke(src string, onDone, onError E, opts ...InvokeO
 		OnDone:  onDone,
 		OnError: onError,
 	})
+	return b
+}
+
+// InvokeActor declares a child-MACHINE actor invoked while the most-recent state
+// is active (xstate v5 `invoke` of a child machine). src names the child-machine
+// factory registered in the host's ActorSystem actor palette; onDone and onError
+// name the events the host re-fires through the PARENT's Fire when the child
+// reaches its final state (carrying its output) or fails (carrying the error),
+// routed by ordinary transitions from this state. Configure the input passed to
+// the child, an explicit id, and a system-scoped id with WithInput / WithInvokeID
+// / WithSystemID. On entering this state the kernel emits a SpawnActor effect; on
+// exiting it before the child completes, a StopActor effect (auto-stop-on-exit).
+// The kernel never runs the actor — a host ActorSystem does, keeping Fire pure.
+// Unlike Invoke (a host-run service), the src here is bound at the ActorSystem,
+// not the registry, so it is not subject to the registry's unbound-ref lint.
+func (b *Builder[S, E, C]) InvokeActor(src string, onDone, onError E, opts ...InvokeOption) *Builder[S, E, C] {
+	if b.curState == nil {
+		return b
+	}
+	cfg := invokeConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	b.curState.state.Invoke = append(b.curState.state.Invoke, Invocation[S, E, C]{
+		ID:       cfg.id,
+		Src:      Ref{Name: src, Params: cfg.params},
+		Input:    cfg.input,
+		OnDone:   onDone,
+		OnError:  onError,
+		Kind:     ActorKindMachine,
+		SystemID: cfg.systemID,
+	})
+	return b
+}
+
+// Spawn attaches the kernel spawn built-in to the most-recent transition: when
+// the transition fires, the kernel emits a SpawnActor effect so a machine creates
+// an actor dynamically (xstate v5 `spawn`). src names the child-machine factory
+// in the host's ActorSystem actor palette; id is the actor's registry key (the
+// holder later stores the ActorSystem-returned ActorRef in its context to address
+// it). Configure input and a system-scoped id with the SpawnOptions. The built-in
+// needs no host registration, mirroring Cancel. The ActorSystem creates and runs
+// the actor; routing the spawned actor's done/error is configured with
+// WithSpawnOnDone / WithSpawnOnError.
+func (b *Builder[S, E, C]) Spawn(src, id string, opts ...SpawnOption) *Builder[S, E, C] {
+	if b.curTransition == nil {
+		return b
+	}
+	cfg := spawnConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	params := map[string]any{spawnSrcParam: src, spawnIDParam: id}
+	if cfg.input != nil {
+		params[spawnInputParam] = cfg.input
+	}
+	if cfg.systemID != "" {
+		params[spawnSystemIDParam] = cfg.systemID
+	}
+	if cfg.onDone != nil {
+		params[spawnOnDoneParam] = cfg.onDone
+	}
+	if cfg.onError != nil {
+		params[spawnOnErrorParam] = cfg.onError
+	}
+	b.curTransition.Effects = append(b.curTransition.Effects,
+		Ref{Name: spawnBuiltinName, Params: params})
+	return b
+}
+
+// StopActor attaches the kernel stop-actor built-in to the most-recent
+// transition: when the transition fires, the kernel emits a StopActor effect for
+// the given actor id, so a machine can explicitly stop a spawned actor before its
+// natural completion (xstate v5 stopping an actor). Stopping an unknown id is a
+// host-side no-op. The built-in needs no host registration, mirroring Cancel.
+func (b *Builder[S, E, C]) StopActor(id string) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Effects = append(b.curTransition.Effects,
+			Ref{Name: stopActorBuiltinName, Params: map[string]any{stopActorIDParam: id}})
+	}
 	return b
 }
 
@@ -949,7 +1032,10 @@ type Instance[S comparable, E comparable, C any] struct {
 	// Scheduler/host driver wired to this instance — so Fire stays clock-free.
 	// Defaults to SystemClock() when no WithClock is supplied at Cast.
 	clock Clock
-	// Reserved drop-in surface: actor mailbox.
+	// The actor model's per-instance mailbox lives on the host ActorSystem, which
+	// runs this instance as a child actor and routes events into its mailbox; the
+	// pure Fire step neither owns a mailbox nor sends messages. InFinal reports when
+	// this instance (as a child actor) has reached completion.
 }
 
 // Clock returns the time seam wired to this instance at Cast (SystemClock() by
