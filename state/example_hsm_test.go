@@ -49,6 +49,22 @@ const (
 	Cancel
 )
 
+// String renders a JobEvent by name so diagrams and traces read symbolically.
+func (e JobEvent) String() string {
+	switch e {
+	case Enqueue:
+		return "Enqueue"
+	case Begin:
+		return "Begin"
+	case Finish:
+		return "Finish"
+	case Cancel:
+		return "Cancel"
+	default:
+		return "JobEvent?"
+	}
+}
+
 // Job is the example entity for the hierarchical machine.
 type Job struct {
 	Status JobStatus
@@ -154,6 +170,28 @@ const (
 	FinishExecution
 	FinishTelemetry
 )
+
+// String renders a WorkerEvent by name so diagrams and traces read symbolically.
+func (e WorkerEvent) String() string {
+	switch e {
+	case Activate:
+		return "Activate"
+	case StartWork:
+		return "StartWork"
+	case StopWork:
+		return "StopWork"
+	case EnableReporting:
+		return "EnableReporting"
+	case DisableReporting:
+		return "DisableReporting"
+	case FinishExecution:
+		return "FinishExecution"
+	case FinishTelemetry:
+		return "FinishTelemetry"
+	default:
+		return "WorkerEvent?"
+	}
+}
 
 // Worker is the example entity for the orthogonal machine.
 type Worker struct {

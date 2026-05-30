@@ -12,8 +12,8 @@ digraph "job" {
     }
     "JobDone" [peripheries=2];
     "Canceled" [peripheries=2];
-    "Queued" -> "Running" [label="0"];
-    "Running" -> "Canceled" [label="3"];
-    "Executing" -> "JobDone" [label="2"];
-    "Starting" -> "Executing" [label="1"];
+    "Queued" -> "Running" [label="Enqueue"];
+    "Running" -> "Canceled" [label="Cancel"];
+    "Executing" -> "JobDone" [label="Finish"];
+    "Starting" -> "Executing" [label="Begin"];
 }

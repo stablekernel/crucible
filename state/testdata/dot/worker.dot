@@ -21,11 +21,11 @@ digraph "worker" {
             "TelemetryDone" [peripheries=2];
         }
     }
-    "Busy" -> "Idle" [label="2"];
-    "Busy" -> "ExecDone" [label="5"];
-    "Idle" -> "Busy" [label="1"];
-    "Reporting" -> "Silent" [label="4"];
-    "Reporting" -> "TelemetryDone" [label="6"];
-    "Silent" -> "Reporting" [label="3"];
-    "Offline" -> "Active" [label="0"];
+    "Busy" -> "ExecDone" [label="FinishExecution"];
+    "Busy" -> "Idle" [label="StopWork"];
+    "Idle" -> "Busy" [label="StartWork"];
+    "Reporting" -> "Silent" [label="DisableReporting"];
+    "Reporting" -> "TelemetryDone" [label="FinishTelemetry"];
+    "Silent" -> "Reporting" [label="EnableReporting"];
+    "Offline" -> "Active" [label="Activate"];
 }

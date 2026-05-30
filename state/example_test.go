@@ -18,7 +18,7 @@ func ExampleForge() {
 	fmt.Println("state:", res.NewState)
 	fmt.Println("effects:", res.Effects)
 	// Output:
-	// state: 1
+	// state: Submitted
 	// effects: [{submitted}]
 }
 
@@ -33,7 +33,7 @@ func ExampleInstance_FireSeq() {
 	fmt.Println("final:", batch.Steps[len(batch.Steps)-1].NewState)
 	// Output:
 	// steps: 3
-	// final: 3
+	// final: Published
 }
 
 // ExampleMachine_PlanPath finds the shortest event sequence that drives a

@@ -6,19 +6,19 @@ stateDiagram-v2
         Active_Execution__Busy
         Active_Execution__ExecDone
         Active_Execution__ExecDone --> [*]
-        Active_Execution__Busy --> Active_Execution__Idle: 2
-        Active_Execution__Busy --> Active_Execution__ExecDone: 5
-        Active_Execution__Idle --> Active_Execution__Busy: 1
+        Active_Execution__Busy --> Active_Execution__ExecDone: FinishExecution
+        Active_Execution__Busy --> Active_Execution__Idle: StopWork
+        Active_Execution__Idle --> Active_Execution__Busy: StartWork
         --
         [*] --> Active_Telemetry__Silent
         Active_Telemetry__Silent
         Active_Telemetry__Reporting
         Active_Telemetry__TelemetryDone
         Active_Telemetry__TelemetryDone --> [*]
-        Active_Telemetry__Reporting --> Active_Telemetry__Silent: 4
-        Active_Telemetry__Reporting --> Active_Telemetry__TelemetryDone: 6
-        Active_Telemetry__Silent --> Active_Telemetry__Reporting: 3
+        Active_Telemetry__Reporting --> Active_Telemetry__Silent: DisableReporting
+        Active_Telemetry__Reporting --> Active_Telemetry__TelemetryDone: FinishTelemetry
+        Active_Telemetry__Silent --> Active_Telemetry__Reporting: EnableReporting
     }
-    Offline --> Active: 0
+    Offline --> Active: Activate
     classDef owner_Supervisor fill:#cfe8ff
     class Active owner_Supervisor

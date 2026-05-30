@@ -4,13 +4,13 @@ stateDiagram-v2
         [*] --> Running__Starting
         Running__Starting
         Running__Executing
-        Running__Starting --> Running__Executing: 1
+        Running__Starting --> Running__Executing: Begin
     }
     JobDone --> [*]
     Canceled --> [*]
-    Queued --> Running: 0
-    Running --> Canceled: 3
-    Running__Executing --> JobDone: 2
+    Queued --> Running: Enqueue
+    Running --> Canceled: Cancel
+    Running__Executing --> JobDone: Finish
     classDef owner_Scheduler fill:#f0d9ff
     classDef owner_Worker fill:#d9f2f2
     class Queued owner_Scheduler
