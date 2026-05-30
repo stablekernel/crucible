@@ -174,6 +174,15 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 		}
 	}
 
+	// Auto-cancel/stop-on-exit: every exited region substate that armed an
+	// `after` timer, ran an invoked service, or ran an invoked actor emits the
+	// corresponding CancelScheduled/StopService/StopActor effect — identical to
+	// the normal exit cascade in commit, so lifecycle effects are symmetric on
+	// the region path.
+	effects = append(effects, i.afterEffectsOnExit(exits, tr)...)
+	effects = append(effects, i.invokeEffectsOnExit(exits, tr)...)
+	effects = append(effects, i.actorEffectsOnExit(exits, tr)...)
+
 	// Swap this region's leaf in the configuration.
 	i.replaceRegionLeaf(r, leaf, m.descendToLeaves(to))
 
@@ -187,6 +196,15 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 			effects = append(effects, eff...)
 		}
 	}
+
+	// On-entry lifecycle effects: every entered region substate that declares an
+	// `after` transition, an invoked service, or an invoked actor emits the
+	// corresponding ScheduleAfter/StartService/SpawnActor effect — identical to
+	// the normal entry cascade in commit. Without this, a state entered inside a
+	// parallel region would silently never start its timer/service/actor.
+	effects = append(effects, i.afterEffectsOnEntry(entries, tr)...)
+	effects = append(effects, i.invokeEffectsOnEntry(entries, tr)...)
+	effects = append(effects, i.actorEffectsOnEntry(entries, tr)...)
 	return effects
 }
 
