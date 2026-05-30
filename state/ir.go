@@ -119,6 +119,12 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 	for name, fn := range reg.services {
 		b.reg.services[name] = fn
 	}
+	// Carry the palette metadata over too, so a Provide'd machine surfaces the
+	// same Palette as a DSL-authored one.
+	for key, d := range reg.descriptors {
+		b.reg.descriptors[key] = d
+	}
+	b.reg.actorDescs = append(b.reg.actorDescs, reg.actorDescs...)
 
 	// The IR carries its hierarchy already nested. Register every state
 	// (top-level and nested) in the flat builder index so lint and indexing see

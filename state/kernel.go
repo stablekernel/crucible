@@ -256,26 +256,50 @@ type Registry[C any] struct {
 	guards   map[string]GuardFn[C]
 	actions  map[string]ActionFn[C]
 	services map[string]ServiceFn[C]
+
+	// descriptors holds the optional palette metadata attached at registration via
+	// the DescribeOption tail, keyed by kind+name (descriptorKey). A registration
+	// with no descriptor has no entry here and yields a minimal Descriptor from
+	// Palette. actorDescs records actor-behavior names declared on the registry for
+	// palette discovery; actor behaviors themselves bind at the ActorSystem, so the
+	// registry carries only their descriptor metadata.
+	descriptors map[string]Descriptor
+	actorDescs  []string
 }
 
 // NewRegistry returns an empty host registry.
 func NewRegistry[C any]() *Registry[C] {
 	return &Registry[C]{
-		guards:   map[string]GuardFn[C]{},
-		actions:  map[string]ActionFn[C]{},
-		services: map[string]ServiceFn[C]{},
+		guards:      map[string]GuardFn[C]{},
+		actions:     map[string]ActionFn[C]{},
+		services:    map[string]ServiceFn[C]{},
+		descriptors: map[string]Descriptor{},
 	}
 }
 
-// Guard registers a named guard implementation.
-func (r *Registry[C]) Guard(name string, fn GuardFn[C]) *Registry[C] {
+// describe records the palette descriptor for a registration when the option
+// tail supplied one, keyed by kind+name.
+func (r *Registry[C]) describe(kind DescriptorKind, name string, opts []DescribeOption) {
+	if spec, ok := resolveDescribe(opts); ok {
+		r.descriptors[descriptorKey(kind, name)] = descriptorFrom(kind, name, spec)
+	}
+}
+
+// Guard registers a named guard implementation. An optional Describe option adds
+// palette metadata (description, parameter schema, read/write hints); registering
+// without one still works and yields a minimal palette descriptor.
+func (r *Registry[C]) Guard(name string, fn GuardFn[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = fn
+	r.describe(KindGuard, name, opts)
 	return r
 }
 
-// Action registers a named action implementation.
-func (r *Registry[C]) Action(name string, fn ActionFn[C]) *Registry[C] {
+// Action registers a named action implementation. An optional Describe option
+// adds palette metadata; registering without one still works and yields a minimal
+// palette descriptor.
+func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption) *Registry[C] {
 	r.actions[name] = fn
+	r.describe(KindAction, name, opts)
 	return r
 }
 
@@ -283,8 +307,29 @@ func (r *Registry[C]) Action(name string, fn ActionFn[C]) *Registry[C] {
 // binds to it at Provide/Quench time exactly like a guard or action ref; an
 // unbound service ref fails Quench with the typed *ErrUnboundRef (Kind
 // "service"). The runner resolves and runs it when the owning state is entered.
-func (r *Registry[C]) Service(name string, fn ServiceFn[C]) *Registry[C] {
+// An optional Describe option adds palette metadata; registering without one
+// still works and yields a minimal palette descriptor.
+func (r *Registry[C]) Service(name string, fn ServiceFn[C], opts ...DescribeOption) *Registry[C] {
 	r.services[name] = fn
+	r.describe(KindService, name, opts)
+	return r
+}
+
+// Actor declares a named actor behavior in the registry's palette. Actor
+// behaviors bind at the host ActorSystem (Register), not at the registry, so this
+// records only the palette metadata a builder needs to enumerate and configure
+// the actor — it does not register a runnable behavior. An optional Describe
+// option adds description, parameter schema, and read/write hints; declaring
+// without one yields a minimal palette descriptor with just Kind and Name.
+func (r *Registry[C]) Actor(name string, opts ...DescribeOption) *Registry[C] {
+	for _, existing := range r.actorDescs {
+		if existing == name {
+			r.describe(KindActor, name, opts)
+			return r
+		}
+	}
+	r.actorDescs = append(r.actorDescs, name)
+	r.describe(KindActor, name, opts)
 	return r
 }
 
@@ -387,23 +432,34 @@ func Forge[S comparable, E comparable, C any](name string, opts ...ForgeOption) 
 	}
 }
 
-// Guard registers a named guard into the builder's palette.
-func (b *Builder[S, E, C]) Guard(name string, fn GuardFn[C]) *Builder[S, E, C] {
-	b.reg.Guard(name, fn)
+// Guard registers a named guard into the builder's palette. An optional Describe
+// option attaches palette metadata, mirroring Registry.Guard.
+func (b *Builder[S, E, C]) Guard(name string, fn GuardFn[C], opts ...DescribeOption) *Builder[S, E, C] {
+	b.reg.Guard(name, fn, opts...)
 	return b
 }
 
-// Action registers a named action into the builder's palette.
-func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C]) *Builder[S, E, C] {
-	b.reg.Action(name, fn)
+// Action registers a named action into the builder's palette. An optional
+// Describe option attaches palette metadata, mirroring Registry.Action.
+func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C], opts ...DescribeOption) *Builder[S, E, C] {
+	b.reg.Action(name, fn, opts...)
 	return b
 }
 
 // Service registers a named invoked-service implementation into the builder's
 // palette, bound by an invoke's Src ref. An unbound service ref fails Quench with
-// the typed *ErrUnboundRef, mirroring guards and actions.
-func (b *Builder[S, E, C]) Service(name string, fn ServiceFn[C]) *Builder[S, E, C] {
-	b.reg.Service(name, fn)
+// the typed *ErrUnboundRef, mirroring guards and actions. An optional Describe
+// option attaches palette metadata.
+func (b *Builder[S, E, C]) Service(name string, fn ServiceFn[C], opts ...DescribeOption) *Builder[S, E, C] {
+	b.reg.Service(name, fn, opts...)
+	return b
+}
+
+// Actor declares a named actor behavior in the builder's palette for discovery.
+// Like Registry.Actor it records palette metadata only — the runnable behavior
+// binds at the host ActorSystem — so it never affects Quench binding or lint.
+func (b *Builder[S, E, C]) Actor(name string, opts ...DescribeOption) *Builder[S, E, C] {
+	b.reg.Actor(name, opts...)
 	return b
 }
 
@@ -1012,8 +1068,15 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	for name, fn := range b.reg.services {
 		m.services[name] = fn
 	}
+	m.reg = b.reg
 	return m
 }
+
+// Palette returns the registry's discoverable descriptor set — every registered
+// guard, action, service, and declared actor behavior — sorted deterministically.
+// It is the Builder-side convenience for Registry.Palette, surfacing the palette
+// of a DSL-authored machine before Quench.
+func (b *Builder[S, E, C]) Palette() []Descriptor { return b.reg.Palette() }
 
 // Machine is the immutable, Quenched definition.
 type Machine[S comparable, E comparable, C any] struct {
@@ -1029,6 +1092,21 @@ type Machine[S comparable, E comparable, C any] struct {
 	actions        map[string]ActionFn[C]
 	services       map[string]ServiceFn[C]
 	middleware     []Middleware[S, E, C]
+	// reg is the registry the machine was Quenched from, retained so Palette can
+	// surface the discoverable descriptor set of a built machine. It is never
+	// consulted by Fire.
+	reg *Registry[C]
+}
+
+// Palette returns the discoverable descriptor set of the machine's registry —
+// every registered guard, action, service, and declared actor behavior — sorted
+// deterministically. It mirrors Registry.Palette for a Quenched machine so a
+// builder API can enumerate the host behavior a loaded machine binds against.
+func (m *Machine[S, E, C]) Palette() []Descriptor {
+	if m.reg == nil {
+		return nil
+	}
+	return m.reg.Palette()
 }
 
 // Services returns the machine's bound invoked-service palette by name, for a
