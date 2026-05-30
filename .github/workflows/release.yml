@@ -1,0 +1,100 @@
+name: Release
+
+# Cutting a release is a tag push. A bare `vX.Y.Z` tag releases the primary
+# module (state); a `module/vX.Y.Z` tag releases that submodule. The workflow
+# re-runs the full validation gate for the tagged module, then publishes a
+# GitHub release with generated notes.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "*/v*.*.*"
+
+# Read-only by default; the publish job opts into contents:write explicitly.
+permissions:
+  contents: read
+
+env:
+  GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+jobs:
+  # Resolve which module directory the tag targets, and the tag string itself,
+  # from the trusted github context (never from user-controlled input).
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      module: ${{ steps.resolve.outputs.module }}
+    env:
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Resolve module from tag
+        id: resolve
+        run: |
+          # "module/vX.Y.Z" -> module ; bare "vX.Y.Z" -> state (primary module).
+          if printf '%s' "$REF_NAME" | grep -q '/'; then
+            module="${REF_NAME%/*}"
+          else
+            module="state"
+          fi
+          echo "module=$module" >> "$GITHUB_OUTPUT"
+          echo "Releasing module '$module' from tag '$REF_NAME'." >> "$GITHUB_STEP_SUMMARY"
+
+  # Full validation gate for the tagged module: lint, race tests, vuln scan, and
+  # the per-module coverage threshold. A tag must not publish unless it is green.
+  validate:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.25.x", "1.26.x"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      MODULE: ${{ needs.resolve.outputs.module }}
+      THRESHOLD: "80"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: "**/go.sum"
+      - name: test -race
+        working-directory: ${{ env.MODULE }}
+        run: go test -race ./...
+      - name: govulncheck
+        working-directory: ${{ env.MODULE }}
+        run: go run "$GOVULNCHECK" ./...
+      - name: golangci-lint
+        working-directory: ${{ env.MODULE }}
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: coverage gate
+        working-directory: ${{ env.MODULE }}
+        shell: bash
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+
+  # Publish only after the gate is fully green. This is the single job granted
+  # contents:write, and the only one that touches the GitHub release API.
+  publish:
+    needs: [resolve, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Publish GitHub release
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
