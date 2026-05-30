@@ -103,6 +103,24 @@ func (e *ErrNoInitialState) Error() string {
 	return fmt.Sprintf("crucible/state: cannot Cast machine %q: no CurrentStateFn declared and no WithInitialState supplied", e.Machine)
 }
 
+// MultiRegionErr aggregates the errors raised by more than one orthogonal
+// region firing on a single event. Its Unwrap returns each region's error so
+// errors.As finds any region's typed error.
+type MultiRegionErr struct {
+	Errors []error
+}
+
+func (e *MultiRegionErr) Error() string {
+	msgs := make([]string, 0, len(e.Errors))
+	for _, err := range e.Errors {
+		msgs = append(msgs, err.Error())
+	}
+	return fmt.Sprintf("crucible/state: %d regions errored: %s", len(e.Errors), strings.Join(msgs, "; "))
+}
+
+// Unwrap exposes the per-region errors for errors.As / errors.Is traversal.
+func (e *MultiRegionErr) Unwrap() []error { return e.Errors }
+
 // AssayError aggregates one or more failing requirements found by Assay.
 type AssayError struct {
 	Failures []RequirementFailure
