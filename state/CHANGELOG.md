@@ -13,6 +13,18 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- History pseudo-states (shallow and deep). A history pseudo-state belongs to a
+  compound state and remembers that compound's last active configuration;
+  transitioning to it re-enters the remembered configuration instead of the
+  compound's initial child. Shallow restores the last active direct child; deep
+  restores the full nested leaf configuration. With no recorded history the
+  resolver falls back to the history state's declared default target, else the
+  compound's initial. Declared via `Builder.History(name, HistoryShallow|
+  HistoryDeep)` with optional `Builder.DefaultTo(target)`. The recorded
+  per-compound configuration is per-instance runtime state threaded through
+  `Fire` (which stays pure); the pseudo-states themselves serialize, so machines
+  with history round-trip losslessly through the IR. A Quench lint flags a
+  history state declared outside a compound state.
 - `state/evolution` package: classifies the difference between two machine
   definitions as additive or breaking per the Evolution Guide, and maps the
   result onto a semantic-version bump (`Diff`, `DiffJSON`, `DiffMachines`,

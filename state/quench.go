@@ -72,6 +72,21 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 				Message:  "state declares both substates and regions",
 			}})
 		}
+
+		// History pseudo-states (DSL path: tagged on a flat stateDef) must live
+		// directly in a compound state, carry no substructure, and any DefaultTo
+		// target must be declared.
+		if sd.isHistory || (sd.state.HistoryType != HistoryNone && sd.hasParent) {
+			b.checkHistoryFlat(&diags, sd)
+		}
+	}
+
+	// IR (prebuilt) path: history pseudo-states arrive nested under their parent
+	// compound, so walk the nested structure to validate them.
+	if b.prebuilt {
+		for _, sd := range b.states {
+			b.checkHistoryNested(&diags, &sd.state, nil)
+		}
 	}
 
 	// Missing initial state.
@@ -141,6 +156,78 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 	}
 
 	return diags
+}
+
+// checkHistoryFlat validates a history pseudo-state declared via the DSL, where
+// its placement is recorded on the flat stateDef. It must sit directly inside a
+// compound state, declare no substructure or transitions, and any DefaultTo
+// target must be a declared state.
+func (b *Builder[S, E, C]) checkHistoryFlat(diags *[]diagnostic, sd *stateDef[S, E, C]) {
+	s := &sd.state
+	if !sd.hasParent {
+		*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+			Severity: diagError,
+			Message:  fmt.Sprintf("history state %v is not contained in a compound state", s.Name),
+		}})
+	} else if parent, ok := b.stateIndex[sd.parent]; ok {
+		if sd.region != "" || len(parent.state.Regions) > 0 {
+			*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  fmt.Sprintf("history state %v must live in a compound (non-parallel) state", s.Name),
+			}})
+		}
+	}
+	b.checkHistoryShape(diags, s)
+}
+
+// checkHistoryNested validates a history pseudo-state reached by walking the
+// nested IR structure. parent is the immediately enclosing state (nil at top
+// level).
+func (b *Builder[S, E, C]) checkHistoryNested(diags *[]diagnostic, s *State[S, E, C], parent *State[S, E, C]) {
+	if s.HistoryType != HistoryNone {
+		switch {
+		case parent == nil:
+			*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  fmt.Sprintf("history state %v is not contained in a compound state", s.Name),
+			}})
+		case !isCompound(parent):
+			*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  fmt.Sprintf("history state %v must live in a compound (non-parallel) state", s.Name),
+			}})
+		}
+		b.checkHistoryShape(diags, s)
+	}
+	for i := range s.Children {
+		b.checkHistoryNested(diags, &s.Children[i], s)
+	}
+	for ri := range s.Regions {
+		for i := range s.Regions[ri].States {
+			// A region is parallel substructure: a history state nested here is in a
+			// region, not a compound — flag via the parent check above.
+			b.checkHistoryNested(diags, &s.Regions[ri].States[i], s)
+		}
+	}
+}
+
+// checkHistoryShape enforces that a history pseudo-state carries no substructure
+// (children, regions, transitions) and that its DefaultTo target is declared.
+func (b *Builder[S, E, C]) checkHistoryShape(diags *[]diagnostic, s *State[S, E, C]) {
+	if len(s.Children) > 0 || len(s.Regions) > 0 || len(s.Transitions) > 0 {
+		*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+			Severity: diagError,
+			Message:  fmt.Sprintf("history state %v must not declare substates, regions, or transitions", s.Name),
+		}})
+	}
+	if s.HistoryDefault != nil {
+		if _, ok := b.stateIndex[*s.HistoryDefault]; !ok {
+			*diags = append(*diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  fmt.Sprintf("history state %v default target %v was never declared", s.Name, *s.HistoryDefault),
+			}})
+		}
+	}
 }
 
 // refSrc optionally carries a source site for a ref check.

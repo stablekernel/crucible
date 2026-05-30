@@ -69,10 +69,18 @@ type State[S comparable, E comparable, C any] struct {
 	// exclusive with Children/InitialChild.
 	Regions []Region[S, E, C] `json:"regions,omitempty"`
 
+	// History. HistoryType marks this node as a history pseudo-state (shallow or
+	// deep) belonging to its parent compound; HistoryNone (the default) is an
+	// ordinary state. HistoryDefault names the target entered when the owning
+	// compound has no recorded history yet; nil falls back to the compound's
+	// InitialChild. Both serialize, so history pseudo-states round-trip through
+	// JSON; the per-instance recorded configuration is runtime state, not IR.
+	HistoryType    HistoryType `json:"historyType,omitempty"`
+	HistoryDefault *S          `json:"historyDefault,omitempty"`
+
 	// Reserved drop-in surface.
-	HistoryType HistoryType     `json:"historyType,omitempty"`
-	Invoke      []Ref           `json:"invoke,omitempty"`
-	Parent      *State[S, E, C] `json:"-"`
+	Invoke []Ref           `json:"invoke,omitempty"`
+	Parent *State[S, E, C] `json:"-"`
 }
 
 // Region is one orthogonal region of a parallel state: a self-contained set of
@@ -245,6 +253,7 @@ type stateDef[S comparable, E comparable, C any] struct {
 	hasParent bool
 	region    string // region name when nested directly in a Region block
 	order     int    // declaration order among siblings
+	isHistory bool   // true for a history pseudo-state (not a real substate/leaf)
 }
 
 // blockKind tags an open builder block.
@@ -657,6 +666,14 @@ type Instance[S comparable, E comparable, C any] struct {
 	// state it holds one leaf per region, in declaration order.
 	config  []S
 	history []Trace
+	// historyShallow and historyDeep record per-compound history for history
+	// pseudo-states: historyShallow maps a compound to its last active direct
+	// child, historyDeep maps a compound to its last active leaf configuration.
+	// Both are empty after Cast and are written on compound exit / read on
+	// history-targeted entry. They are part of the instance's runtime state,
+	// threaded through Fire — never global or IO-backed — so Fire stays pure.
+	historyShallow map[S]S
+	historyDeep    map[S][]S
 	// Reserved drop-in surface: actor mailbox.
 }
 
