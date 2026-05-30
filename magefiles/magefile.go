@@ -125,6 +125,51 @@ func Cover() error {
 	})
 }
 
+// coverThreshold is the minimum per-module statement coverage the CoverGate
+// target (and the CI coverage job) enforces.
+const coverThreshold = 80.0
+
+// CoverGate runs the tests for every module with coverage profiling and fails if
+// total coverage drops below the threshold, mirroring the CI coverage gate.
+func CoverGate() error {
+	return forEachModule("cover-gate", func(mod string) error {
+		profile := fmt.Sprintf("coverage-%s.out", strings.ReplaceAll(mod, "/", "-"))
+		if err := goCmd("test", "-coverprofile="+profile, "-covermode=atomic", "./..."); err != nil {
+			return err
+		}
+		out, err := sh.Output("go", "tool", "cover", "-func="+profile)
+		if err != nil {
+			return err
+		}
+		pct, err := totalCoverage(out)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("    total coverage: %.1f%% (threshold %.0f%%)\n", pct, coverThreshold)
+		if pct < coverThreshold {
+			return fmt.Errorf("coverage %.1f%% is below the %.0f%% threshold", pct, coverThreshold)
+		}
+		return nil
+	})
+}
+
+// totalCoverage extracts the total percentage from `go tool cover -func` output.
+func totalCoverage(funcOutput string) (float64, error) {
+	for _, line := range strings.Split(funcOutput, "\n") {
+		if !strings.HasPrefix(line, "total:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		pctStr := strings.TrimSuffix(fields[len(fields)-1], "%")
+		var pct float64
+		if _, err := fmt.Sscanf(pctStr, "%f", &pct); err != nil {
+			return 0, err
+		}
+		return pct, nil
+	}
+	return 0, fmt.Errorf("no total coverage line in cover output")
+}
+
 // Bench runs the benchmarks for every module.
 func Bench() error {
 	return forEachModule("bench", func(string) error {
