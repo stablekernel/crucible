@@ -340,6 +340,15 @@ func collectEdges[S comparable, E comparable, C any](states []State[S, E, C]) []
 				case !t.EventLess:
 					e.on = fmt.Sprint(t.On)
 				}
+				// A delayed (`after`) transition is annotated with its delay so the
+				// diagram distinguishes a timed edge from an event-driven one.
+				if t.After != nil {
+					label := "after(" + t.After.String() + ")"
+					if e.on != "" {
+						label += " " + e.on
+					}
+					e.on = label
+				}
 				for _, g := range t.Guards {
 					e.guards = append(e.guards, g.Name)
 				}

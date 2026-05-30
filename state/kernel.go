@@ -593,6 +593,23 @@ func (b *Builder[S, E, C]) Always() *Builder[S, E, C] {
 	return b
 }
 
+// After opens a delayed ("after") transition from the most-recent state: a
+// transition that the host's runtime fires once `delay` elapses while the source
+// state stays active. Chain On(event).GoTo(target) to name the delayed event the
+// host re-fires and the target it lands in (When/Do as usual). On entering the
+// source state the kernel emits a ScheduleAfter effect; on exiting it before the
+// delay elapses, a CancelScheduled effect (xstate v5 auto-cancel-on-exit). The
+// kernel never sleeps — the host owns the timer and feeds the delayed event back
+// through Fire. This is the DSL form of xstate v5 `after: { <delay>: ... }`.
+func (b *Builder[S, E, C]) After(delay time.Duration) *Builder[S, E, C] {
+	b.openTransition()
+	if b.curTransition != nil {
+		d := delay
+		b.curTransition.After = &d
+	}
+	return b
+}
+
 // Reenter marks the most-recent transition external: a self- or ancestor-
 // targeted transition that would otherwise be internal (the v5 default) instead
 // runs the full exit/entry cascade of its target. This is the DSL form of xstate
@@ -611,6 +628,21 @@ func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
 func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Raise = append(b.curTransition.Raise, events...)
+	}
+	return b
+}
+
+// Cancel attaches the kernel Cancel built-in to the most-recent transition: when
+// the transition fires, the kernel emits a CancelScheduled effect for the given
+// schedule id, so a machine can explicitly cancel a pending delayed (`after`)
+// event before its delay elapses. The id is the ScheduleAfter ID the host
+// received; ScheduleID derives it for a known source state and delayed-edge
+// index. Canceling an unknown id is a host-side no-op. The built-in needs no
+// host registration, mirroring the stateIn guard built-in.
+func (b *Builder[S, E, C]) Cancel(id string) *Builder[S, E, C] {
+	if b.curTransition != nil {
+		b.curTransition.Effects = append(b.curTransition.Effects,
+			Ref{Name: cancelBuiltinName, Params: map[string]any{cancelIDParam: id}})
 	}
 	return b
 }
@@ -801,7 +833,11 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 		panic(&ErrNoInitialState{Machine: m.name})
 	}
 
-	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current}
+	clock := cfg.clock
+	if clock == nil {
+		clock = systemClock{}
+	}
+	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock}
 	// If the starting state is itself compound or parallel, the active
 	// configuration is the set of leaves reached by descending into its initial
 	// children. The primary leaf becomes Current().
@@ -837,8 +873,18 @@ type Instance[S comparable, E comparable, C any] struct {
 	// drained by Fire's run-to-completion loop. It is never persisted and is empty
 	// between macrosteps, so Fire stays pure.
 	raised []E
+	// clock is the time seam a delayed-transition driver reads to schedule
+	// `after` timers. It is never consulted by the pure Fire step — only by a
+	// Scheduler/host driver wired to this instance — so Fire stays clock-free.
+	// Defaults to SystemClock() when no WithClock is supplied at Cast.
+	clock Clock
 	// Reserved drop-in surface: actor mailbox.
 }
+
+// Clock returns the time seam wired to this instance at Cast (SystemClock() by
+// default). A host driver reads it to schedule delayed (`after`) transitions;
+// the pure Fire step never consults it.
+func (i *Instance[S, E, C]) Clock() Clock { return i.clock }
 
 // Entity returns the entity this instance is bound to.
 func (i *Instance[S, E, C]) Entity() C { return i.entity }

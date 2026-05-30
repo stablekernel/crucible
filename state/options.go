@@ -26,6 +26,17 @@ type CastOption[S comparable] func(*castConfig[S])
 type castConfig[S comparable] struct {
 	initial    S
 	hasInitial bool
+	clock      Clock
+}
+
+// WithClock injects the time seam an instance's delayed-transition driver uses.
+// It is consumed only by a Scheduler / host driver wired to the instance — never
+// by the pure Fire step, which neither reads a clock nor sleeps. Supply
+// SystemClock() in production or a fake clock in a test to drive `after`
+// transitions deterministically. When omitted, an instance defaults to
+// SystemClock().
+func WithClock[S comparable](c Clock) CastOption[S] {
+	return func(cfg *castConfig[S]) { cfg.clock = c }
 }
 
 // WithInitialState supplies the instance's starting state explicitly. Use it

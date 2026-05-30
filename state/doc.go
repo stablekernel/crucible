@@ -104,6 +104,12 @@
 // pseudo-states serialize while the recorded per-instance configuration is
 // runtime state threaded through the pure Fire step.
 //
-// Invoked services, the actor model, and the after-scheduler runtime are
-// reserved-but-inert and not yet implemented.
+// Delayed (`after`) transitions are drivable: entering a state with an `after`
+// transition emits a ScheduleAfter effect and exiting it a CancelScheduled effect
+// (xstate v5 auto-cancel-on-exit), while Fire stays pure — a host Scheduler driver
+// owns the real timer and re-fires the delayed event, with a deterministic
+// FakeClock for testing.
+//
+// Invoked services and the actor model are reserved-but-inert and not yet
+// implemented.
 package state
