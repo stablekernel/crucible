@@ -189,6 +189,37 @@ func WithoutSrcPos() ToJSONOption {
 	return func(c *toJSONConfig) { c.withoutSrcPos = true }
 }
 
+// RestoreOption configures Machine.Restore.
+type RestoreOption[S comparable] func(*restoreConfig[S])
+
+type restoreConfig[S comparable] struct {
+	clock Clock
+}
+
+// WithRestoreClock wires the time seam a restored instance's delayed-transition
+// driver reads, mirroring WithClock at Cast. It is consumed only by a Scheduler /
+// host driver, never by the pure Fire step. When omitted, a restored instance
+// defaults to SystemClock().
+func WithRestoreClock[S comparable](c Clock) RestoreOption[S] {
+	return func(cfg *restoreConfig[S]) { cfg.clock = c }
+}
+
+// SnapshotCodecOption configures MarshalSnapshot / UnmarshalSnapshot.
+type SnapshotCodecOption[C any] func(*snapshotCodecConfig[C])
+
+type snapshotCodecConfig[C any] struct {
+	codec ContextCodec[C]
+}
+
+// WithContextCodec supplies a custom ContextCodec for a snapshot context that is
+// not directly JSON-marshalable (or needs a bespoke wire form). When omitted, the
+// default codec marshals the context with encoding/json, so the context type must
+// be JSON-marshalable by default. Pass it to MarshalSnapshot / UnmarshalSnapshot
+// to override the default.
+func WithContextCodec[C any](codec ContextCodec[C]) SnapshotCodecOption[C] {
+	return func(cfg *snapshotCodecConfig[C]) { cfg.codec = codec }
+}
+
 // TemperOption configures Temper.
 type TemperOption func(*temperConfig)
 

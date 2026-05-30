@@ -140,6 +140,26 @@ func (e *ErrUnboundActor) Error() string {
 	return fmt.Sprintf("crucible/state: unbound actor ref %q", e.Name)
 }
 
+// SnapshotError is returned by Restore / MarshalSnapshot / UnmarshalSnapshot when
+// an instance snapshot cannot be captured, serialized, or restored: a snapshot
+// whose Machine does not match the target, a configuration leaf that is not a
+// declared state, an empty configuration with an unknown current state, or a
+// context encode/decode failure. Op names the failing operation
+// ("restore" | "marshal" | "unmarshal"), State (when set) names the offending
+// configuration leaf, and Reason carries the detail.
+type SnapshotError struct {
+	Op     string
+	State  string
+	Reason string
+}
+
+func (e *SnapshotError) Error() string {
+	if e.State != "" {
+		return fmt.Sprintf("crucible/state: snapshot %s failed at %q: %s", e.Op, e.State, e.Reason)
+	}
+	return fmt.Sprintf("crucible/state: snapshot %s failed: %s", e.Op, e.Reason)
+}
+
 // MultiRegionErr aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.

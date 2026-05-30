@@ -13,6 +13,48 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- Deep persistence / snapshots: capture a running `Instance`'s full runtime state
+  and restore it to resume from exactly that point (xstate v5
+  `getPersistedSnapshot` / `createActor(logic, { snapshot })` parity). The IR's
+  `ToJSON` / `LoadFromJSON` persist the machine DEFINITION; a snapshot persists the
+  INSTANCE runtime state — a different thing.
+  - **`Instance.Snapshot()`** returns a serializable `Snapshot[S, E, C]` capturing
+    the active configuration (all active leaves + spine, parallel regions, nested),
+    the recorded per-compound history (shallow and deep), the bound context `C`, the
+    ordered `Fire` traces, the lifecycle `Status` (`StatusRunning` / `StatusDone`,
+    derived from whether the whole configuration is final; `StatusError` plus an
+    error/output is host-set), and a `Pending` inventory of the timer / service /
+    actor IDs armed for the configuration. It is a pure read — it never fires,
+    mutates, or consults a clock — so `Fire` stays pure.
+  - **`Machine.Restore(snap, ...)`** rebuilds an `Instance` resuming at the
+    snapshot's configuration, context, and history WITHOUT re-running entry actions
+    (resume, not re-enter — matching xstate). It validates the snapshot's machine
+    name and every configuration leaf, returning the typed `*SnapshotError` on a
+    mismatch, unknown leaf, or empty configuration. Wire a clock with
+    `WithRestoreClock`.
+  - **`Instance.ResumeEffects()`** emits the re-arm effects a host absorbs after
+    restore to re-establish pending children: a `ScheduleAfter` per pending `after`
+    timer, a `StartService` per invoked service, and a `SpawnActor` per
+    child-machine actor active in the restored configuration — routed through the
+    same `Scheduler` / `ServiceRunner` / `ActorSystem` the host drives for `Fire`.
+    It is the restore twin of `StartEffects` extended with delayed-timer re-arming;
+    entry actions are never re-run.
+  - **Context serialization.** A snapshot round-trips through JSON when `C` is
+    JSON-marshalable (the default requirement, via the snapshot's own
+    `MarshalJSON` / `UnmarshalJSON`). For a context that is not directly
+    JSON-marshalable, supply a `ContextCodec[C]` through `WithContextCodec` and
+    serialize with `MarshalSnapshot` / `UnmarshalSnapshot`.
+  - **Recursive actor-tree persistence.** `ActorSystem.SnapshotActors()` captures
+    every live child actor recursively (each actor's own spawned children beneath
+    it) keyed by id, and `RestoreActors(ctx, snaps)` re-spawns them from the palette
+    under their original ids and resumes each child in place via the `Snapshotter`
+    interface (which the standard `actorAdapter` satisfies). Deferred depth: an
+    actor whose `ActorInstance` does not implement `Snapshotter` is re-spawned fresh
+    rather than resumed (flagged on the snapshot's `Resumed` field), and a snapshot
+    is taken at a quiescent point so an undrained mailbox backlog is not persisted.
+  - The `state` package stays stdlib-only; snapshot capture and restore perform no
+    IO and keep `Fire` pure.
+
 - Invoked services (`invoke`): state-scoped service invocation with `onDone` /
   `onError` routing, host-driven so `Fire` stays pure.
   - **Start/stop effects.** Entering a state that declares an `invoke` emits a
