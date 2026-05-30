@@ -36,6 +36,44 @@ func (e *quenchError) Error() string {
 func (b *Builder[S, E, C]) lint() []diagnostic {
 	var diags []diagnostic
 
+	// HSM findings recorded during the chained build (SubState outside a block,
+	// missing region/superstate Initial, nested superstates).
+	diags = append(diags, b.hsmDiags...)
+
+	// Unclosed SuperState / Region blocks at Quench.
+	for _, blk := range b.blocks {
+		kind := "SuperState"
+		if blk.kind == blockRegion {
+			kind = "Region"
+		}
+		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+			Severity: diagError,
+			Message:  "unclosed " + kind + " block",
+			SrcFile:  blk.srcFile,
+			SrcLine:  blk.srcLine,
+		}})
+	}
+
+	// An outgoing transition on a Final state is a programmer error.
+	for _, sd := range b.states {
+		if sd.state.IsFinal && len(sd.state.Transitions) > 0 {
+			t := sd.state.Transitions[0]
+			diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  "final state declares an outgoing transition",
+				SrcFile:  t.SrcFile,
+				SrcLine:  t.SrcLine,
+			}})
+		}
+		// A state declaring both substates and regions is invalid.
+		if len(sd.state.Regions) > 0 && b.hasChildSubstates(sd) {
+			diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+				Severity: diagError,
+				Message:  "state declares both substates and regions",
+			}})
+		}
+	}
+
 	// Missing initial state.
 	if !b.hasInitial {
 		diags = append(diags, diagnostic{Diagnostic: Diagnostic{

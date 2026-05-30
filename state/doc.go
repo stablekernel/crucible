@@ -83,10 +83,20 @@
 //
 // # Status
 //
-// The flat kernel is implemented: the Forge/Temper/Quench build path,
-// Cast/Fire pure step semantics with guards, actions, typed errors and an
-// always-recorded Trace, Assay/Requirements, PlanPath (BFS), FireSeq/FireEach
-// batch helpers, and lossless ToJSON/LoadFromJSON/Provide round-trip.
-// Hierarchical (HSM) nesting, invoked services, the actor model, and the
-// after-scheduler runtime are reserved-but-inert and not yet implemented.
+// The kernel implements the Forge/Temper/Quench build path, Cast/Fire pure step
+// semantics with guards, actions, typed errors and an always-recorded Trace,
+// Assay/Requirements, PlanPath (BFS), FireSeq/FireEach batch helpers, and
+// lossless ToJSON/LoadFromJSON/Provide round-trip.
+//
+// Hierarchical and orthogonal states extend the same surface: a state may
+// declare nested substates with an initial child (compound states) or parallel
+// regions (orthogonal states). Events resolve child-first and bubble to
+// ancestors; orthogonal regions each receive the event and resolve
+// independently; transitions run the standard exit/entry cascade across the
+// hierarchy; and final states drive done-event completion, including the
+// all-regions-final join for parallel states. The hierarchy serializes, so a
+// nested machine round-trips through JSON losslessly.
+//
+// Invoked services, the actor model, history states, and the after-scheduler
+// runtime are reserved-but-inert and not yet implemented.
 package state

@@ -1,0 +1,230 @@
+package state
+
+// This file adds the hierarchical and orthogonal DSL surface: open/close pairs
+// for superstates and regions, substate declarations, final-state marking, and
+// the entry/exit/done action declarations. The block stack mirrors the chained
+// method grain so an unclosed block is caught by a single lint at Quench.
+
+// SuperState declares a compound (hierarchical) state and opens its block. The
+// substates declared until the matching EndSuperState become its children, and
+// Initial inside the block names the child entered when the superstate is
+// entered.
+func (b *Builder[S, E, C]) SuperState(name S) *Builder[S, E, C] {
+	// A superstate nested inside another block is a v1 lint (one level of
+	// hierarchy); the structs support deeper nesting and the gate lifts later.
+	if len(b.blocks) > 0 {
+		b.recordHSMDiag("nested superstates are not supported in v1")
+	}
+	b.declareState(name)
+	file, line := callerSite()
+	blk := &block[S, E, C]{kind: blockSuper, owner: b.curState, srcFile: file, srcLine: line}
+	b.blocks = append(b.blocks, blk)
+	b.curTransition = nil
+	return b
+}
+
+// SubState declares a substate of the current SuperState or Region block.
+func (b *Builder[S, E, C]) SubState(name S) *Builder[S, E, C] {
+	if len(b.blocks) == 0 {
+		b.recordHSMDiag("SubState called outside a SuperState block")
+		// Still declare it as a top-level state so the chain stays usable.
+		return b.declareState(name)
+	}
+	return b.declareState(name)
+}
+
+// EndSuperState closes the most-recent SuperState block.
+func (b *Builder[S, E, C]) EndSuperState() *Builder[S, E, C] {
+	if len(b.blocks) == 0 {
+		b.recordHSMDiag("EndSuperState without an open SuperState")
+		return b
+	}
+	top := b.blocks[len(b.blocks)-1]
+	if top.kind != blockSuper {
+		b.recordHSMDiag("EndSuperState while a Region block is still open")
+		return b
+	}
+	b.closeSuper(top)
+	b.blocks = b.blocks[:len(b.blocks)-1]
+	b.curTransition = nil
+	return b
+}
+
+// Region opens an orthogonal region inside the current SuperState block. States
+// declared until the matching EndRegion belong to the region, and Initial names
+// the region's initial state.
+func (b *Builder[S, E, C]) Region(name string) *Builder[S, E, C] {
+	if len(b.blocks) == 0 || b.blocks[len(b.blocks)-1].kind != blockSuper {
+		b.recordHSMDiag("Region called outside a SuperState block")
+	}
+	var owner *stateDef[S, E, C]
+	if len(b.blocks) > 0 {
+		owner = b.blocks[len(b.blocks)-1].owner
+	} else {
+		owner = b.curState
+	}
+	file, line := callerSite()
+	blk := &block[S, E, C]{kind: blockRegion, owner: owner, region: name, srcFile: file, srcLine: line}
+	b.blocks = append(b.blocks, blk)
+	b.curTransition = nil
+	return b
+}
+
+// EndRegion closes the most-recent Region block.
+func (b *Builder[S, E, C]) EndRegion() *Builder[S, E, C] {
+	if len(b.blocks) == 0 {
+		b.recordHSMDiag("EndRegion without an open Region")
+		return b
+	}
+	top := b.blocks[len(b.blocks)-1]
+	if top.kind != blockRegion {
+		b.recordHSMDiag("EndRegion while a SuperState block is still open")
+		return b
+	}
+	b.closeRegion(top)
+	b.blocks = b.blocks[:len(b.blocks)-1]
+	b.curTransition = nil
+	return b
+}
+
+// Final marks the most-recent state as terminal.
+func (b *Builder[S, E, C]) Final() *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.IsFinal = true
+	}
+	return b
+}
+
+// OnEntry attaches a named entry-action ref to the most-recent state.
+func (b *Builder[S, E, C]) OnEntry(actionName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.OnEntry = append(b.curState.state.OnEntry, Ref{Name: actionName, Params: firstParams(params)})
+	}
+	return b
+}
+
+// OnExit attaches a named exit-action ref to the most-recent state.
+func (b *Builder[S, E, C]) OnExit(actionName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.OnExit = append(b.curState.state.OnExit, Ref{Name: actionName, Params: firstParams(params)})
+	}
+	return b
+}
+
+// OnDone attaches a named done-action ref to the most-recent state. It runs when
+// the state completes — a compound state when its active leaf is final, a
+// parallel state when every region is final.
+func (b *Builder[S, E, C]) OnDone(actionName string, params ...map[string]any) *Builder[S, E, C] {
+	if b.curState != nil {
+		b.curState.state.OnDone = append(b.curState.state.OnDone, Ref{Name: actionName, Params: firstParams(params)})
+	}
+	return b
+}
+
+// closeSuper records the superstate's InitialChild from the block, leaving the
+// child assembly (nesting the substates) to assembleHierarchy at Quench.
+func (b *Builder[S, E, C]) closeSuper(blk *block[S, E, C]) {
+	if blk.hasInitial {
+		init := blk.initial
+		blk.owner.state.InitialChild = &init
+	} else if blk.childCount > 0 {
+		b.recordHSMDiagAt("superstate has substates but no Initial", blk.srcFile, blk.srcLine)
+	}
+}
+
+// closeRegion records the region's initial child; the region's States slice is
+// assembled at Quench from the flat registry.
+func (b *Builder[S, E, C]) closeRegion(blk *block[S, E, C]) {
+	owner := blk.owner
+	var init *S
+	if blk.hasInitial {
+		v := blk.initial
+		init = &v
+	} else if blk.childCount > 0 {
+		b.recordHSMDiagAt("region has states but no Initial", blk.srcFile, blk.srcLine)
+	}
+	// Reserve the region entry in declaration order; States are filled at Quench.
+	owner.state.Regions = append(owner.state.Regions, Region[S, E, C]{Name: blk.region, InitialChild: init})
+}
+
+// assembleHierarchy folds the builder's flat stateDef registry into the nested
+// top-level State slice: each substate is placed into its parent's Children or
+// the matching Region's States, in declaration order. States authored already
+// nested (via Provide) are returned as-is.
+func (b *Builder[S, E, C]) assembleHierarchy() []State[S, E, C] {
+	if b.prebuilt {
+		out := make([]State[S, E, C], 0, len(b.states))
+		for _, sd := range b.states {
+			out = append(out, sd.state)
+		}
+		return out
+	}
+
+	byName := map[S]*stateDef[S, E, C]{}
+	for _, sd := range b.states {
+		byName[sd.state.Name] = sd
+	}
+
+	// Group children by parent, preserving declaration order.
+	for _, sd := range b.states {
+		if !sd.hasParent {
+			continue
+		}
+		parent := byName[sd.parent]
+		if parent == nil {
+			continue
+		}
+		if sd.region != "" {
+			placeInRegion(parent, sd.region, sd.state)
+			continue
+		}
+		parent.state.Children = append(parent.state.Children, sd.state)
+	}
+
+	// Emit top-level states in declaration order.
+	var out []State[S, E, C]
+	for _, sd := range b.states {
+		if sd.hasParent {
+			continue
+		}
+		out = append(out, sd.state)
+	}
+	return out
+}
+
+// placeInRegion appends a substate into the named region's States slice.
+func placeInRegion[S comparable, E comparable, C any](parent *stateDef[S, E, C], region string, s State[S, E, C]) {
+	for ri := range parent.state.Regions {
+		if parent.state.Regions[ri].Name == region {
+			parent.state.Regions[ri].States = append(parent.state.Regions[ri].States, s)
+			return
+		}
+	}
+}
+
+// hasChildSubstates reports whether any declared state names sd as its
+// compound (non-region) parent.
+func (b *Builder[S, E, C]) hasChildSubstates(sd *stateDef[S, E, C]) bool {
+	for _, other := range b.states {
+		if other.hasParent && other.region == "" && other.parent == sd.state.Name {
+			return true
+		}
+	}
+	return false
+}
+
+// recordHSMDiag records an HSM lint finding (error severity) without a site.
+func (b *Builder[S, E, C]) recordHSMDiag(msg string) {
+	file, line := callerSite2()
+	b.recordHSMDiagAt(msg, file, line)
+}
+
+// recordHSMDiagAt records an HSM lint finding with an explicit site.
+func (b *Builder[S, E, C]) recordHSMDiagAt(msg, file string, line int) {
+	b.hsmDiags = append(b.hsmDiags, diagnostic{Diagnostic: Diagnostic{
+		Severity: diagError,
+		Message:  msg,
+		SrcFile:  file,
+		SrcLine:  line,
+	}})
+}

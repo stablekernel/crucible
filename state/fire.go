@@ -36,129 +36,261 @@ func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) Fir
 	return res
 }
 
-// fireCore is the pure transition step.
+// fireCore is the pure transition step. It resolves the event against the
+// active configuration child-first, bubbling up through ancestors, and routes
+// to every active orthogonal region. A flat machine collapses to a single leaf
+// with no parent, so this reduces to the flat behavior.
 func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S] {
 	m := i.machine
 	from := i.current
-	entity := i.entity
 
 	tr := Trace{
 		Machine:   m.name,
 		Event:     fmt.Sprint(event),
 		FromState: fmtState(from),
+		MatchedAt: fmtState(from),
 		Outcome:   OutcomeInvalidTransition,
 	}
 
-	src, ok := m.stateByName(from)
-	if !ok {
+	if _, ok := m.stateByName(from); !ok {
+		if _, ok := m.resolveNode(from); !ok {
+			err := &ErrInvalidTransition{
+				From:   fmtState(from),
+				Event:  fmt.Sprint(event),
+				Reason: "current state is not declared",
+			}
+			return FireResult[S]{NewState: from, Trace: tr, Err: err}
+		}
+	}
+
+	// Orthogonal routing: if the active configuration spans multiple regions of
+	// a common parallel ancestor, broadcast to every region first. This precedes
+	// the final-leaf check because one region reaching its final state must not
+	// block events still bound for the other regions.
+	if pa, ok := i.activeParallelAncestor(); ok {
+		return i.fireParallel(ctx, pa, event, tr)
+	}
+
+	// A transition out of a final leaf is rejected (runtime guard mirroring the
+	// builder lint, for machines loaded from JSON).
+	if n, ok := m.resolveNode(from); ok && n.state.IsFinal {
 		err := &ErrInvalidTransition{
 			From:   fmtState(from),
 			Event:  fmt.Sprint(event),
-			Reason: "current state is not declared",
+			Reason: "state is final",
 		}
 		return FireResult[S]{NewState: from, Trace: tr, Err: err}
 	}
 
-	// Collect candidates matching (current, event).
-	var candidates []*Transition[S, E, C]
-	for ti := range src.Transitions {
-		t := &src.Transitions[ti]
+	return i.fireSpine(ctx, event, tr)
+}
+
+// fireSpine resolves a single active spine child-first, bubbling up through
+// ancestors until a transition matches, then commits the cascade.
+func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) FireResult[S] {
+	m := i.machine
+	from := i.current
+	entity := i.entity
+
+	chain := m.ancestors(from)
+	var lastGuardErr error
+	sawGuardFail := false
+
+	for _, anc := range chain {
+		n, ok := m.resolveNode(anc)
+		if !ok {
+			continue
+		}
+		candidates := matchingTransitions(n.state, event)
+		if len(candidates) == 0 {
+			continue
+		}
+		for _, t := range candidates {
+			passed := true
+			for _, g := range t.Guards {
+				tr.GuardsEvaluated = append(tr.GuardsEvaluated, g.Name)
+				ok, gErr := m.evalGuard(g, entity)
+				if gErr != nil {
+					tr.Outcome = OutcomeGuardPanic
+					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
+				}
+				if !ok {
+					passed = false
+					sawGuardFail = true
+					lastGuardErr = &ErrGuardFailed{GuardName: g.Name, Reason: "predicate returned false"}
+					break
+				}
+			}
+			if passed {
+				tr.MatchedAt = fmtState(anc)
+				return i.commit(ctx, t, from, anc, entity, tr)
+			}
+		}
+	}
+
+	if sawGuardFail {
+		tr.Outcome = OutcomeGuardFailed
+		if lastGuardErr == nil {
+			lastGuardErr = &ErrGuardFailed{Reason: "all candidate transitions failed their guards"}
+		}
+		return FireResult[S]{NewState: from, Trace: tr, Err: lastGuardErr}
+	}
+
+	err := &ErrInvalidTransition{
+		From:   fmtState(from),
+		Event:  fmt.Sprint(event),
+		Reason: "no transition declared for this state and event",
+	}
+	return FireResult[S]{NewState: from, Trace: tr, Err: err}
+}
+
+// matchingTransitions returns the event-triggered (non-eventless) transitions of
+// a state in declaration order.
+func matchingTransitions[S comparable, E comparable, C any](s *State[S, E, C], event E) []*Transition[S, E, C] {
+	var out []*Transition[S, E, C]
+	for ti := range s.Transitions {
+		t := &s.Transitions[ti]
 		if t.EventLess {
 			continue
 		}
 		if t.On == event {
-			candidates = append(candidates, t)
+			out = append(out, t)
 		}
 	}
-	if len(candidates) == 0 {
-		err := &ErrInvalidTransition{
-			From:   fmtState(from),
-			Event:  fmt.Sprint(event),
-			Reason: "no transition declared for this state and event",
-		}
-		return FireResult[S]{NewState: from, Trace: tr, Err: err}
-	}
-
-	// Evaluate guards per candidate, left-to-right; first all-pass wins.
-	var lastGuardErr error
-	for _, t := range candidates {
-		passed := true
-		for _, g := range t.Guards {
-			tr.GuardsEvaluated = append(tr.GuardsEvaluated, g.Name)
-			ok, gErr := m.evalGuard(g, entity)
-			if gErr != nil {
-				// Guard panic recovered into a typed error.
-				tr.Outcome = OutcomeGuardPanic
-				return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
-			}
-			if !ok {
-				passed = false
-				lastGuardErr = &ErrGuardFailed{
-					GuardName: g.Name,
-					Reason:    "predicate returned false",
-				}
-				break
-			}
-		}
-		if passed {
-			return i.commit(ctx, t, from, entity, tr)
-		}
-	}
-
-	// No candidate passed its guards.
-	tr.Outcome = OutcomeGuardFailed
-	if lastGuardErr == nil {
-		lastGuardErr = &ErrGuardFailed{Reason: "all candidate transitions failed their guards"}
-	}
-	return FireResult[S]{NewState: from, Trace: tr, Err: lastGuardErr}
+	return out
 }
 
-// commit advances the state (before running actions, per the locked decision)
-// and runs the transition's bound actions, building effects and recording the
-// trace.
+// commit advances the configuration (before running actions, per the locked
+// decision) and runs the exit cascade, the transition's bound actions, and the
+// entry cascade — building effects and recording the trace. matchedAt is the
+// ancestor whose transition fired (equal to the source leaf for a flat machine).
 func (i *Instance[S, E, C]) commit(
 	ctx context.Context,
 	t *Transition[S, E, C],
 	from S,
+	matchedAt S,
 	entity C,
 	tr Trace,
 ) FireResult[S] {
 	_ = ctx
-	to := t.To
-	if t.Internal {
-		to = from
-	}
+	m := i.machine
 
 	tr.SelectedTransition = projectTransition(t)
 
-	// State advances before actions run.
-	if !t.Internal {
-		i.current = to
-	}
-
-	var effects []Effect
-	for _, a := range t.Effects {
-		eff, err := i.machine.evalAction(a, entity)
+	if t.Internal {
+		// Internal transitions run effects without changing state or cascading.
+		effects, errName, err := i.runActions(t.Effects, entity, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
-			tr.EffectsEmitted = append(tr.EffectsEmitted, a.Name)
 			return FireResult[S]{
-				NewState: i.current,
-				Effects:  effects,
-				Trace:    tr,
+				NewState: i.current, Effects: effects, Trace: tr,
 				Err: &ErrActionFailed{
-					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(to)),
-					ActionName:     a.Name,
-					Cause:          err,
+					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
+					ActionName:     errName, Cause: err,
 				},
 			}
 		}
-		effects = append(effects, eff)
-		tr.EffectsEmitted = append(tr.EffectsEmitted, fmt.Sprintf("%s:%s", a.Name, typeName(eff)))
+		tr.Outcome = OutcomeSuccess
+		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+	}
+
+	to := t.To
+
+	// Compute the exit/entry cascade across the hierarchy.
+	exits, entries := m.cascade(from, to)
+
+	var effects []Effect
+
+	// Exit actions: innermost -> outermost.
+	for _, s := range exits {
+		tr.ExitedStates = append(tr.ExitedStates, fmtState(s))
+		n, ok := m.resolveNode(s)
+		if !ok {
+			continue
+		}
+		eff, errName, err := i.runActions(n.state.OnExit, entity, &tr)
+		effects = append(effects, eff...)
+		if err != nil {
+			tr.Outcome = OutcomeEffectError
+			return FireResult[S]{
+				NewState: i.current, Effects: effects, Trace: tr,
+				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+			}
+		}
+	}
+
+	// Advance the configuration before transition/entry actions run.
+	i.current = to
+	i.config = m.descendToLeaves(to)
+	if len(i.config) > 0 {
+		i.current = i.config[0]
+	} else {
+		i.config = []S{to}
+	}
+
+	// Transition effects.
+	eff, errName, err := i.runActions(t.Effects, entity, &tr)
+	effects = append(effects, eff...)
+	if err != nil {
+		tr.Outcome = OutcomeEffectError
+		return FireResult[S]{
+			NewState: i.current, Effects: effects, Trace: tr,
+			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+		}
+	}
+
+	// Entry actions: outermost -> innermost.
+	for _, s := range entries {
+		tr.EnteredStates = append(tr.EnteredStates, fmtState(s))
+		n, ok := m.resolveNode(s)
+		if !ok {
+			continue
+		}
+		eff, errName, err := i.runActions(n.state.OnEntry, entity, &tr)
+		effects = append(effects, eff...)
+		if err != nil {
+			tr.Outcome = OutcomeEffectError
+			return FireResult[S]{
+				NewState: i.current, Effects: effects, Trace: tr,
+				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+			}
+		}
+	}
+
+	// Done-event semantics: entering a final leaf may complete its parent.
+	doneEff, dname, derr := i.settleDone(to, entity, &tr)
+	effects = append(effects, doneEff...)
+	if derr != nil {
+		tr.Outcome = OutcomeEffectError
+		return FireResult[S]{
+			NewState: i.current, Effects: effects, Trace: tr,
+			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: dname, Cause: derr},
+		}
 	}
 
 	tr.Outcome = OutcomeSuccess
 	return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+}
+
+// transName renders a transition label for diagnostics.
+func transName[S comparable](from, to S) string {
+	return fmt.Sprintf("%s->%s", fmtState(from), fmtState(to))
+}
+
+// runActions resolves and runs a list of action refs, appending effect names to
+// the trace. On the first failure it returns the effects gathered so far, the
+// failing action's name, and the cause.
+func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects []Effect, name string, err error) {
+	for _, a := range refs {
+		e, aerr := i.machine.evalAction(a, entity)
+		if aerr != nil {
+			tr.EffectsEmitted = append(tr.EffectsEmitted, a.Name)
+			return effects, a.Name, aerr
+		}
+		effects = append(effects, e)
+		tr.EffectsEmitted = append(tr.EffectsEmitted, fmt.Sprintf("%s:%s", a.Name, typeName(e)))
+	}
+	return effects, "", nil
 }
 
 // evalGuard resolves and runs a guard ref, recovering panics into ErrGuardPanic.

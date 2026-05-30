@@ -67,11 +67,17 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 		b.reg.actions[name] = fn
 	}
 
+	// The IR carries its hierarchy already nested. Register every state
+	// (top-level and nested) in the flat builder index so lint and indexing see
+	// them, and mark the builder prebuilt so Quench keeps the nested structure
+	// verbatim rather than re-assembling it.
+	b.prebuilt = true
 	for i := range ir.States {
-		s := ir.States[i]
-		sd := &stateDef[S, E, C]{state: s}
+		s := &ir.States[i]
+		sd := &stateDef[S, E, C]{state: *s}
 		b.states = append(b.states, sd)
 		b.stateIndex[s.Name] = sd
+		indexNestedIR(b, s)
 	}
 
 	if ir.HasInitial {
@@ -80,4 +86,22 @@ func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder
 	}
 
 	return b
+}
+
+// indexNestedIR registers a state's nested children and region states in the
+// builder's flat index so transition-target lints resolve them. It does not add
+// them to b.states: only top-level states are emitted by Quench when prebuilt.
+func indexNestedIR[S comparable, E comparable, C any](b *Builder[S, E, C], s *State[S, E, C]) {
+	for i := range s.Children {
+		c := &s.Children[i]
+		b.stateIndex[c.Name] = &stateDef[S, E, C]{state: *c}
+		indexNestedIR(b, c)
+	}
+	for ri := range s.Regions {
+		for i := range s.Regions[ri].States {
+			c := &s.Regions[ri].States[i]
+			b.stateIndex[c.Name] = &stateDef[S, E, C]{state: *c}
+			indexNestedIR(b, c)
+		}
+	}
 }

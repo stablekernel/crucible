@@ -44,6 +44,10 @@ const (
 )
 
 // State is a node in the machine graph.
+//
+// A state is one of three shapes: a leaf (no Children, no Regions), a compound
+// (hierarchical) state declaring Children plus an InitialChild, or a parallel
+// state declaring Regions. A state is never both compound and parallel.
 type State[S comparable, E comparable, C any] struct {
 	Name        S                     `json:"name"`
 	OwnedBy     string                `json:"ownedBy,omitempty"`
@@ -54,11 +58,30 @@ type State[S comparable, E comparable, C any] struct {
 	IsFinal bool  `json:"isFinal,omitempty"`
 	OnDone  []Ref `json:"onDone,omitempty"`
 
+	// Hierarchy. Children holds the nested substates of a compound state, and
+	// InitialChild names the substate entered transitively when the compound
+	// state is entered. Both serialize, so the hierarchy round-trips through
+	// JSON. Parent is a runtime-only back-pointer rebuilt after Quench/Provide.
+	Children     []State[S, E, C] `json:"children,omitempty"`
+	InitialChild *S               `json:"initialChild,omitempty"`
+
+	// Regions holds the orthogonal regions of a parallel state. Mutually
+	// exclusive with Children/InitialChild.
+	Regions []Region[S, E, C] `json:"regions,omitempty"`
+
 	// Reserved drop-in surface.
-	HistoryType HistoryType       `json:"historyType,omitempty"`
-	Invoke      []Ref             `json:"invoke,omitempty"`
-	Parent      *State[S, E, C]   `json:"-"`
-	Children    []*State[S, E, C] `json:"-"`
+	HistoryType HistoryType     `json:"historyType,omitempty"`
+	Invoke      []Ref           `json:"invoke,omitempty"`
+	Parent      *State[S, E, C] `json:"-"`
+}
+
+// Region is one orthogonal region of a parallel state: a self-contained set of
+// substates with its own initial child. When the owning parallel state is
+// active, every region is active simultaneously, each tracking its own leaf.
+type Region[S comparable, E comparable, C any] struct {
+	Name         string           `json:"name"`
+	States       []State[S, E, C] `json:"states,omitempty"`
+	InitialChild *S               `json:"initialChild,omitempty"`
 }
 
 // Transition is a directed edge.
@@ -77,6 +100,10 @@ type Transition[S comparable, E comparable, C any] struct {
 
 	SrcFile string `json:"srcFile,omitempty"`
 	SrcLine int    `json:"srcLine,omitempty"`
+
+	// set is builder-only bookkeeping: true once On has assigned this edge's
+	// event, so a following On opens a fresh transition. Never serialized.
+	set bool `json:"-"`
 }
 
 // Effect is an abstract, domain-defined payload. The kernel never inspects it.
@@ -107,7 +134,17 @@ type Trace struct {
 	PoliciesEvaluated  []string                   `json:"policiesEvaluated,omitempty"`
 	EffectsEmitted     []string                   `json:"effectsEmitted,omitempty"`
 	Microsteps         []string                   `json:"microsteps,omitempty"`
-	Outcome            Outcome                    `json:"outcome"`
+
+	// MatchedAt names the state whose transition actually fired. For a flat
+	// machine it equals FromState; for an HSM it may be an ancestor reached by
+	// the child-first bubble.
+	MatchedAt string `json:"matchedAt,omitempty"`
+	// ExitedStates and EnteredStates record the transition's exit/entry cascade
+	// in execution order (exit innermost-first, entry outermost-first).
+	ExitedStates  []string `json:"exitedStates,omitempty"`
+	EnteredStates []string `json:"enteredStates,omitempty"`
+
+	Outcome Outcome `json:"outcome"`
 }
 
 // FireResult is the result of a single Fire.
@@ -197,10 +234,37 @@ type Diagnostic struct {
 }
 
 // stateDef is the builder's mutable record of a declared state, including the
-// declarative requirements attached via Requires.
+// declarative requirements attached via Requires and its place in the hierarchy.
 type stateDef[S comparable, E comparable, C any] struct {
 	state        State[S, E, C]
 	requirements []Requirement[C]
+
+	// Hierarchy placement, set when the state is declared inside a SuperState or
+	// Region block. topLevel states have hasParent false.
+	parent    S
+	hasParent bool
+	region    string // region name when nested directly in a Region block
+	order     int    // declaration order among siblings
+}
+
+// blockKind tags an open builder block.
+type blockKind int
+
+const (
+	blockSuper blockKind = iota
+	blockRegion
+)
+
+// block is one open SuperState/Region context on the builder's stack.
+type block[S comparable, E comparable, C any] struct {
+	kind       blockKind
+	owner      *stateDef[S, E, C] // the superstate this block belongs to
+	region     string             // region name, for blockRegion
+	initial    S
+	hasInitial bool
+	childCount int
+	srcFile    string
+	srcLine    int
 }
 
 // Builder is the Forge DSL front-end. It builds the IR and registers
@@ -223,6 +287,16 @@ type Builder[S comparable, E comparable, C any] struct {
 	curState      *stateDef[S, E, C]
 	curTransition *Transition[S, E, C] // points into curTransState.state.Transitions
 	curTransState *stateDef[S, E, C]
+
+	// HSM block stack and a monotonic sibling-order counter.
+	blocks   []*block[S, E, C]
+	orderSeq int
+	// prebuilt is set when the builder's states already carry their nested
+	// structure (e.g. from Provide), so Quench skips hierarchy re-assembly.
+	prebuilt bool
+	// hsmDiags carries HSM-specific lint findings recorded during the chained
+	// build (e.g. SubState outside a SuperState), surfaced at Temper/Quench.
+	hsmDiags []diagnostic
 }
 
 // Forge opens a builder.
@@ -250,17 +324,42 @@ func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C]) *Builder[S, E, C]
 	return b
 }
 
-// State declares a state node.
+// State declares a state node. Inside a SuperState or Region block it declares a
+// substate of that block (equivalent to SubState); at the top level it declares
+// a top-level state.
 func (b *Builder[S, E, C]) State(name S) *Builder[S, E, C] {
+	return b.declareState(name)
+}
+
+// declareState creates or selects the stateDef for name, placing it under the
+// current open block (if any) and assigning sibling order.
+func (b *Builder[S, E, C]) declareState(name S) *Builder[S, E, C] {
 	sd, ok := b.stateIndex[name]
 	if !ok {
-		sd = &stateDef[S, E, C]{state: State[S, E, C]{Name: name}}
+		sd = &stateDef[S, E, C]{state: State[S, E, C]{Name: name}, order: b.orderSeq}
+		b.orderSeq++
+		b.placeState(sd)
 		b.states = append(b.states, sd)
 		b.stateIndex[name] = sd
 	}
 	b.curState = sd
 	b.curTransition = nil
 	return b
+}
+
+// placeState records the hierarchy placement of a freshly-declared state based
+// on the current open block.
+func (b *Builder[S, E, C]) placeState(sd *stateDef[S, E, C]) {
+	if len(b.blocks) == 0 {
+		return
+	}
+	top := b.blocks[len(b.blocks)-1]
+	sd.parent = top.owner.state.Name
+	sd.hasParent = true
+	if top.kind == blockRegion {
+		sd.region = top.region
+	}
+	top.childCount++
 }
 
 // OwnedBy tags the most-recent state's ownership.
@@ -279,8 +378,15 @@ func (b *Builder[S, E, C]) Requires(req Requirement[C]) *Builder[S, E, C] {
 	return b
 }
 
-// Initial sets the entry state.
+// Initial sets the entry state. At the top level it sets the machine's initial
+// state; inside a SuperState or Region block it sets that block's initial child.
 func (b *Builder[S, E, C]) Initial(name S) *Builder[S, E, C] {
+	if len(b.blocks) > 0 {
+		top := b.blocks[len(b.blocks)-1]
+		top.initial = name
+		top.hasInitial = true
+		return b
+	}
 	b.initial = name
 	b.hasInitial = true
 	return b
@@ -296,7 +402,9 @@ func (b *Builder[S, E, C]) CurrentStateFn(fn func(C) S) *Builder[S, E, C] {
 func (b *Builder[S, E, C]) ensureState(name S) *stateDef[S, E, C] {
 	sd, ok := b.stateIndex[name]
 	if !ok {
-		sd = &stateDef[S, E, C]{state: State[S, E, C]{Name: name}}
+		sd = &stateDef[S, E, C]{state: State[S, E, C]{Name: name}, order: b.orderSeq}
+		b.orderSeq++
+		b.placeState(sd)
 		b.states = append(b.states, sd)
 		b.stateIndex[name] = sd
 	}
@@ -318,10 +426,29 @@ func (b *Builder[S, E, C]) Transition(from S) *Builder[S, E, C] {
 	return b
 }
 
-// On sets the triggering event of the most-recent transition.
+// On sets the triggering event of the most-recent transition. When no
+// transition is currently open — or the open one already has its event set (a
+// completed `.On(...).GoTo(...)` clause) — On opens a fresh transition from the
+// most-recent state. This lets the hierarchical DSL read
+// `.SubState(X).On(e1).GoTo(Y).On(e2).GoTo(Z)` and `.SubState(X).On(e).GoTo(Y)`
+// without an explicit Transition call.
 func (b *Builder[S, E, C]) On(event E) *Builder[S, E, C] {
+	needNew := b.curState != nil && (b.curTransition == nil ||
+		b.curTransState != b.curState || b.curTransition.set)
+	if needNew {
+		sd := b.curState
+		file, line := callerSite()
+		sd.state.Transitions = append(sd.state.Transitions, Transition[S, E, C]{
+			From:    sd.state.Name,
+			SrcFile: file,
+			SrcLine: line,
+		})
+		b.curTransState = sd
+		b.curTransition = &sd.state.Transitions[len(sd.state.Transitions)-1]
+	}
 	if b.curTransition != nil {
 		b.curTransition.On = event
+		b.curTransition.set = true
 	}
 	return b
 }
@@ -383,6 +510,15 @@ func callerSite() (string, int) {
 	return "", 0
 }
 
+// callerSite2 is callerSite for one extra intermediate frame (a Builder method
+// that calls a recordHSMDiag helper).
+func callerSite2() (string, int) {
+	if _, file, line, ok := runtime.Caller(3); ok {
+		return file, line
+	}
+	return "", 0
+}
+
 // Temper runs a non-failing diagnostics pass over the builder's current
 // definition, returning the same findings Quench would panic on — as data.
 func (b *Builder[S, E, C]) Temper(opts ...TemperOption) []Diagnostic {
@@ -412,10 +548,9 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 		}
 	}
 
-	states := make([]State[S, E, C], 0, len(b.states))
+	states := b.assembleHierarchy()
 	reqs := map[S][]Requirement[C]{}
 	for _, sd := range b.states {
-		states = append(states, sd.state)
 		if len(sd.requirements) > 0 {
 			reqs[sd.state.Name] = sd.requirements
 		}
@@ -436,6 +571,7 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	for i := range m.states {
 		m.stateIndex[m.states[i].Name] = i
 	}
+	m.indexHierarchy()
 	for name, fn := range b.reg.guards {
 		m.guards[name] = fn
 	}
@@ -450,6 +586,7 @@ type Machine[S comparable, E comparable, C any] struct {
 	name           string
 	states         []State[S, E, C]
 	stateIndex     map[S]int
+	nodes          map[S]*node[S, E, C]
 	initial        S
 	hasInitial     bool
 	currentStateFn func(C) S
@@ -496,7 +633,18 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 		panic(&ErrNoInitialState{Machine: m.name})
 	}
 
-	return &Instance[S, E, C]{machine: m, entity: entity, current: current}
+	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current}
+	// If the starting state is itself compound or parallel, the active
+	// configuration is the set of leaves reached by descending into its initial
+	// children. The primary leaf becomes Current().
+	leaves := m.descendToLeaves(current)
+	if len(leaves) > 0 {
+		inst.config = leaves
+		inst.current = leaves[0]
+	} else {
+		inst.config = []S{current}
+	}
+	return inst
 }
 
 // Instance binds a Machine to one entity and carries trace history.
@@ -504,6 +652,10 @@ type Instance[S comparable, E comparable, C any] struct {
 	machine *Machine[S, E, C]
 	entity  C
 	current S
+	// config holds all currently-active leaves. For a flat or single-spine
+	// machine len(config)==1 and config[0]==current; for an active parallel
+	// state it holds one leaf per region, in declaration order.
+	config  []S
 	history []Trace
 	// Reserved drop-in surface: actor mailbox.
 }
@@ -511,8 +663,19 @@ type Instance[S comparable, E comparable, C any] struct {
 // Entity returns the entity this instance is bound to.
 func (i *Instance[S, E, C]) Entity() C { return i.entity }
 
-// Current returns the instance's current state.
+// Current returns the primary (first) active leaf — the common "what state am I
+// really in?" answer, back-compatible with flat machines.
 func (i *Instance[S, E, C]) Current() S { return i.current }
+
+// Configuration returns all currently-active leaves, in declaration order.
+// len == 1 for a flat or single-spine machine; len == N when N regions are
+// active in parallel.
+func (i *Instance[S, E, C]) Configuration() []S {
+	if len(i.config) == 0 {
+		return []S{i.current}
+	}
+	return append([]S(nil), i.config...)
+}
 
 // History returns the ordered traces recorded on this instance.
 func (i *Instance[S, E, C]) History() []Trace {
