@@ -187,7 +187,7 @@ func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte,
 // json.RawMessage payloads within entries/effects are immutable by convention,
 // so the slice headers are copied without cloning each payload's bytes.
 func cloneRecord(rec Record) Record {
-	out := Record{Step: rec.Step}
+	out := Record{Step: rec.Step, Tick: rec.Tick, TickSteps: rec.TickSteps}
 	if rec.Event != nil {
 		out.Event = append([]byte(nil), rec.Event...)
 	}

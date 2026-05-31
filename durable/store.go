@@ -23,9 +23,21 @@
 // database drivers never burden this core module's dependency or vulnerability
 // surface.
 //
-// This scaffold establishes the Store contract and its reference
-// implementation; the recorder, replayer, and durable Runner that drive Store
-// are layered on top in later work.
+// # Durable timers (the clock seam)
+//
+// A running instance reads time only through its host driver — the
+// state.Scheduler the durable Handle arms and ticks for delayed (`after`)
+// transitions — never through the kernel's pure Fire step. The Runner wraps the
+// real clock (WithRunnerClock, defaulting to state.SystemClock) in a recording
+// clock on the live path: every reading the scheduler consumes, when arming a
+// timer's absolute deadline or testing which deadlines are due, is journaled as a
+// JournalClockRead in Record.Entries, in read order. On recovery the Runner
+// installs a replay clock that returns those recorded readings back in order
+// instead of reading the wall clock, so the recovered scheduler re-derives
+// identical deadlines and fires the same timers at the same recorded instants —
+// replay is wall-clock-independent. A purely event-driven machine reads no clock
+// and records no clock entries. Drive timers with Handle.Tick (a host from its
+// own timer loop, a test after advancing a fake clock).
 package durable
 
 import (
@@ -78,6 +90,21 @@ type Record struct {
 	// state.MarshalSnapshot and consumed by state.UnmarshalSnapshot; the Store
 	// treats it as opaque bytes.
 	Snapshot []byte
+
+	// Tick marks a scheduler-tick barrier rather than an externally fired step: a
+	// Record produced when the durable Handle ticked its delayed-transition
+	// scheduler, carrying the clock readings that tick consumed (in Entries) and
+	// the count of timer steps it produced (TickSteps). Replay re-derives the
+	// timers by re-ticking the recovered scheduler against those recorded
+	// readings rather than re-firing the events directly, so each timer fires at
+	// its recorded instant. It is false for externally fired steps, which carry a
+	// driving Event instead.
+	Tick bool
+
+	// TickSteps is the number of timer transitions the tick at this barrier fired
+	// (zero for a tick that found nothing due). It lets replay advance its step
+	// accounting across a re-derived tick without a recorded Event per timer.
+	TickSteps int
 }
 
 // Store is the durable-execution persistence seam. It records an instance's
