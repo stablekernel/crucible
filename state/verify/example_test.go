@@ -174,6 +174,33 @@ func ExampleCoverage() {
 	// uncovered transitions: [open -abandon-> canceled]
 }
 
+// ExampleCoveringSuite generates a covering suite — a set of event sequences that
+// together exercise every reachable state and transition — and confirms it by
+// feeding it straight back into [Coverage], which reports full coverage. The suite
+// is the seed for a conformance test set built from the machine's structure alone.
+func ExampleCoveringSuite() {
+	m := state.Forge[string, string, any]("order").
+		State("open").
+		Transition("open").On("pay").GoTo("paid").
+		Transition("open").On("abandon").GoTo("canceled").
+		State("paid").
+		Transition("paid").On("ship").GoTo("shipped").
+		State("canceled").Final().
+		State("shipped").Final().
+		Initial("open").
+		Quench()
+
+	suite := verify.CoveringSuite(m)
+	rep, _ := verify.Verify(m, verify.Coverage(suite...)).Coverage()
+	fmt.Printf("suite: %v\n", suite)
+	fmt.Printf("covers states: %.0f%%, transitions: %.0f%%\n",
+		rep.StateCoverage()*100, rep.TransitionCoverage()*100)
+
+	// Output:
+	// suite: [[pay ship] [abandon]]
+	// covers states: 100%, transitions: 100%
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").
