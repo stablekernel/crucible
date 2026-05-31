@@ -550,17 +550,25 @@ func (i *Instance[S, E, C]) commit(
 		cur = next
 	}
 
+	// Lifecycle cleanup spans every leaf actually leaving the configuration, not just
+	// the from-chain in the structural exit cascade. Exiting a parallel superstate
+	// abandons the orthogonal regions too, so their armed `after` timers, in-flight
+	// services, and running actors must be canceled/stopped alongside the primary
+	// leaf's — otherwise a cross-cutting exit from a parallel state would leak the
+	// sibling regions' timers and drivers.
+	cleanupExits := i.lifecycleExits(exits)
+
 	// Auto-cancel-on-exit: every exited state that armed a delayed (`after`)
 	// timer emits a CancelScheduled effect so the host drops the pending timer.
-	effects = append(effects, i.afterEffectsOnExit(exits, &tr)...)
+	effects = append(effects, i.afterEffectsOnExit(cleanupExits, &tr)...)
 
 	// Auto-stop-on-exit: every exited state with an in-flight invoked service
 	// emits a StopService effect so the host stops the service.
-	effects = append(effects, i.invokeEffectsOnExit(exits, &tr)...)
+	effects = append(effects, i.invokeEffectsOnExit(cleanupExits, &tr)...)
 
 	// Auto-stop-on-exit: every exited state running a child-machine actor emits a
 	// StopActor effect so the host's ActorSystem stops the actor (and its children).
-	effects = append(effects, i.actorEffectsOnExit(exits, &tr)...)
+	effects = append(effects, i.actorEffectsOnExit(cleanupExits, &tr)...)
 
 	// Advance the configuration before transition/entry actions run. A history
 	// restore pins the configuration to the remembered leaves; otherwise descend

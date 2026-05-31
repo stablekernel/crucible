@@ -224,49 +224,59 @@ func workerBehavior() state.ActorBehavior {
 // realistic machine the e2e test and the BenchmarkE2E benchmark drive through the
 // wired runtime (ActorSystem + Scheduler + ServiceRunner).
 //
-// run and sys are indirected through pointers so the onDone action can read the
-// dial service's result and the worker actor's output from the host drivers at
-// Fire time — the same late-binding idiom the invoke and actor unit tests use.
-func buildConnMachine(
-	run **state.ServiceRunner[Conn, ConnEvent, *Link],
-	sys **state.ActorSystem[Conn, ConnEvent, *Link],
-) *state.Machine[Conn, ConnEvent, *Link] {
-	return state.Forge[Conn, ConnEvent, *Link]("connection").
+// It models the recommended v1 patterns: the context is a value (Link, not *Link),
+// and every context change flows through an Assign reducer — the sole writer — so
+// guards and the kernel observe context read-only. The dial service's token and the
+// worker actor's output reach their onDone reducers through AssignCtx.Event (the
+// re-fired done event's payload), not a host side channel; no run/sys back-reference
+// is needed.
+func buildConnMachine() *state.Machine[Conn, ConnEvent, Link] {
+	return state.Forge[Conn, ConnEvent, Link]("connection").
 		// The dial service: a host-run unit of work whose result routes through
 		// the Dialed event. This fn is the production implementation a real host
 		// would resolve and run; the e2e test settles the in-flight dial
 		// deterministically to drive the success and failure edges explicitly.
-		Service("dial", func(_ context.Context, in state.ServiceCtx[*Link]) (any, error) {
+		Service("dial", func(_ context.Context, in state.ServiceCtx[Link]) (any, error) {
 			if in.Entity.Dials < 2 {
 				return nil, errors.New("transient dial failure")
 			}
 			return "session-token", nil
 		}).
 		// canAdmit gates the Dialed -> Connected edge inside a guard combinator.
-		Guard("canAdmit", func(c state.GuardCtx[*Link]) bool { return c.Entity.Admitted }).
-		Guard("isHealthy", func(c state.GuardCtx[*Link]) bool { return c.Entity.Healthy }).
-		Action("countDial", func(c state.ActionCtx[*Link]) (state.Effect, error) {
-			c.Entity.Dials++
-			c.Entity.Notes = append(c.Entity.Notes, "dial")
-			return nil, nil
+		Guard("canAdmit", func(c state.GuardCtx[Link]) bool { return c.Entity.Admitted }).
+		Guard("isHealthy", func(c state.GuardCtx[Link]) bool { return c.Entity.Healthy }).
+		// countDial is a pure reducer: it folds a dial attempt into the next context
+		// value (the sole context-mutation site under the value-semantics contract).
+		Reducer("countDial", func(in state.AssignCtx[Link]) Link {
+			c := in.Entity
+			c.Dials++
+			c.Notes = append(c.Notes, "dial")
+			return c
 		}).
-		Action("captureToken", func(c state.ActionCtx[*Link]) (state.Effect, error) {
-			if r, ok := (*run).LastResult(); ok {
-				c.Entity.Notes = append(c.Entity.Notes, "token:"+r.(string))
+		// captureToken reads the dial service's result from the done-event payload
+		// (AssignCtx.Event), with no host side channel: the runner re-fires Dialed
+		// carrying the token.
+		Reducer("captureToken", func(in state.AssignCtx[Link]) Link {
+			c := in.Entity
+			if r, ok := in.Event.(string); ok {
+				c.Notes = append(c.Notes, "token:"+r)
 			}
-			return nil, nil
+			return c
 		}).
-		Action("captureWork", func(c state.ActionCtx[*Link]) (state.Effect, error) {
-			if o, ok := (*sys).LastOutput(); ok {
-				c.Entity.Notes = append(c.Entity.Notes, "work:"+o.(string))
+		// captureWork reads the worker actor's output from the done-event payload:
+		// the ActorSystem re-fires Completed carrying the worker output.
+		Reducer("captureWork", func(in state.AssignCtx[Link]) Link {
+			c := in.Entity
+			if o, ok := in.Event.(string); ok {
+				c.Notes = append(c.Notes, "work:"+o)
 			}
-			return nil, nil
+			return c
 		}).
 		// Disconnected: the resting state; Connect begins a fresh dial, while
 		// Reconnect resumes a previously-dropped session through Connected's deep
 		// history (restoring the last Live configuration rather than re-dialing).
 		State(Disconnected).
-		Transition(Disconnected).On(Connect).GoTo(Connecting).Do("countDial").
+		Transition(Disconnected).On(Connect).GoTo(Connecting).Assign("countDial").
 		Transition(Disconnected).On(Reconnect).GoTo(Resume).
 		// Connecting invokes the dial service. On dial success it fires Dialed; on
 		// failure it falls back to Backoff to wait out a retry delay.
@@ -276,7 +286,7 @@ func buildConnMachine(
 		// Backoff waits out a connect-timeout delay, then the delayed Retry edge
 		// re-enters Connecting (re-arming the dial). This is the retry/backoff loop.
 		State(Backoff).
-		Transition(Backoff).After(ConnectTimeout).On(Retry).GoTo(Connecting).Do("countDial").
+		Transition(Backoff).After(ConnectTimeout).On(Retry).GoTo(Connecting).Assign("countDial").
 		// The Dialed edge is guarded by a combinator: admit only when the link is
 		// admitted AND (healthy OR not yet in the Connected configuration). The
 		// stateIn leaf reads the live active spine.
@@ -285,7 +295,7 @@ func buildConnMachine(
 			state.Guard[Conn]("canAdmit"),
 			state.Or(state.Guard[Conn]("isHealthy"), state.Not(state.StateIn(Connected))),
 		)).
-		GoTo(Connected).Do("captureToken").
+		GoTo(Connected).Assign("captureToken").
 		// Connected is a compound state nesting a deep-history pseudo-state (Resume)
 		// and the Live parallel superstate. Entering Connected normally descends to
 		// Live; targeting Resume on a reconnect restores Live's full nested leaf
@@ -316,7 +326,7 @@ func buildConnMachine(
 		Spawn("worker", workerID,
 			state.WithSpawnOnDone(Completed), state.WithSpawnOnError(DialFailed)).
 		SubState(Processing).
-		On(Completed).GoTo(Drained).Do("captureWork").
+		On(Completed).GoTo(Drained).Assign("captureWork").
 		SubState(Drained).Final().
 		EndRegion().
 		EndSuperState().
@@ -331,7 +341,7 @@ func buildConnMachine(
 		Transition(Closing).Always().GoTo(Closed).
 		State(Closed).Final().
 		Initial(Disconnected).
-		CurrentStateFn(func(l *Link) Conn { return Disconnected }).
+		CurrentStateFn(func(Link) Conn { return Disconnected }).
 		Quench()
 }
 
@@ -340,27 +350,25 @@ func buildConnMachine(
 // ActorSystem (worker actors). It is the realistic runtime the e2e test and the
 // e2e benchmark drive every Fire's effects through.
 type connHarness struct {
-	inst *state.Instance[Conn, ConnEvent, *Link]
-	run  *state.ServiceRunner[Conn, ConnEvent, *Link]
-	sch  *state.Scheduler[Conn, ConnEvent, *Link]
-	sys  *state.ActorSystem[Conn, ConnEvent, *Link]
+	inst *state.Instance[Conn, ConnEvent, Link]
+	run  *state.ServiceRunner[Conn, ConnEvent, Link]
+	sch  *state.Scheduler[Conn, ConnEvent, Link]
+	sys  *state.ActorSystem[Conn, ConnEvent, Link]
 	clk  *state.FakeClock
 }
 
 // newConnHarness casts a fresh connection instance and wires all three drivers,
-// arming the initial configuration's effects. The runner and system pointers the
-// machine closed over are bound here so the capture actions read live driver
-// state at Fire time.
+// arming the initial configuration's effects. Each onDone reducer reads its result
+// from the re-fired done event's payload, so no back-reference to the drivers is
+// needed.
 func newConnHarness() *connHarness {
-	var run *state.ServiceRunner[Conn, ConnEvent, *Link]
-	var sys *state.ActorSystem[Conn, ConnEvent, *Link]
-	m := buildConnMachine(&run, &sys)
+	m := buildConnMachine()
 
 	clk := state.NewFakeClock(time.Unix(0, 0))
-	inst := m.Cast(&Link{Admitted: true, Healthy: true},
+	inst := m.Cast(Link{Admitted: true, Healthy: true},
 		state.WithInitialState(Disconnected), state.WithClock[Conn](clk))
-	run = state.NewServiceRunner(inst, nil)
-	sys = state.NewActorSystem(inst).Register("worker", workerBehavior())
+	run := state.NewServiceRunner(inst, nil)
+	sys := state.NewActorSystem(inst).Register("worker", workerBehavior())
 	sch := state.NewScheduler(inst)
 
 	h := &connHarness{inst: inst, run: run, sch: sch, sys: sys, clk: clk}
