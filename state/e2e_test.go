@@ -150,16 +150,14 @@ func TestE2E_SnapshotRestoreMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)
 	}
-	var snap state.Snapshot[Conn, ConnEvent, *Link]
+	var snap state.Snapshot[Conn, ConnEvent, Link]
 	if err = json.Unmarshal(data, &snap); err != nil {
 		t.Fatalf("unmarshal snapshot: %v", err)
 	}
 
 	// Restore into a fresh machine bound to a new driver set, as a recovering host
 	// would after a restart.
-	var run *state.ServiceRunner[Conn, ConnEvent, *Link]
-	var sys *state.ActorSystem[Conn, ConnEvent, *Link]
-	m := buildConnMachine(&run, &sys)
+	m := buildConnMachine()
 	clk := state.NewFakeClock(time.Unix(0, 0))
 	restored, err := m.Restore(snap, state.WithRestoreClock[Conn](clk))
 	if err != nil {
@@ -173,8 +171,8 @@ func TestE2E_SnapshotRestoreMidRun(t *testing.T) {
 
 	// The restored instance resumes identically: a Ping advances the Heartbeat
 	// region exactly as it would have on the original instance.
-	run = state.NewServiceRunner(restored, nil)
-	sys = state.NewActorSystem(restored).Register("worker", workerBehavior())
+	run := state.NewServiceRunner(restored, nil)
+	sys := state.NewActorSystem(restored).Register("worker", workerBehavior())
 	sch := state.NewScheduler(restored)
 	resume := restored.ResumeEffects()
 	run.Absorb(ctx, resume)

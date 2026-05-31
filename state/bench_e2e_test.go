@@ -178,8 +178,8 @@ func BenchmarkInvoke(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			h := newConnHarness()
 			h.fire(ctx, Connect) // start the dial service
-			// Pre-count a second attempt so the deterministic settle routes onDone.
-			h.inst.Entity().Dials = 2
+			// settleDial drives SettleDone directly, so the in-flight dial routes
+			// onDone deterministically regardless of the attempt count.
 			h.settleDial(ctx, true)
 		}
 	})
@@ -201,8 +201,7 @@ func BenchmarkSnapshotRestore(b *testing.B) {
 	ctx := context.Background()
 	h := connectedHarness(ctx)
 	h.fire(ctx, Assign) // live parallel configuration with history to capture
-	m := buildConnMachine(new(*state.ServiceRunner[Conn, ConnEvent, *Link]),
-		new(*state.ActorSystem[Conn, ConnEvent, *Link]))
+	m := buildConnMachine()
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -211,7 +210,7 @@ func BenchmarkSnapshotRestore(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		var snap state.Snapshot[Conn, ConnEvent, *Link]
+		var snap state.Snapshot[Conn, ConnEvent, Link]
 		if err = json.Unmarshal(data, &snap); err != nil {
 			b.Fatal(err)
 		}

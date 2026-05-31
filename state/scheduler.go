@@ -129,6 +129,39 @@ func (i *Instance[S, E, C]) afterEffectsOnEntry(entries []S, tr *Trace) []Effect
 	return out
 }
 
+// lifecycleExits expands the structural exit cascade to cover every leaf actually
+// leaving the active configuration. The cascade is computed from the primary leaf's
+// ancestor chain, so when a transition exits a parallel superstate it names only one
+// region's spine; the orthogonal regions' active leaves leave the configuration too.
+// This adds any active configuration leaf that descends from an exited state but is
+// not already in the exit set, so auto-cancel/auto-stop-on-exit reaches the sibling
+// regions' armed timers, in-flight services, and running actors. The structural
+// exits keep their order; the extra orthogonal leaves are appended after them.
+func (i *Instance[S, E, C]) lifecycleExits(exits []S) []S {
+	if len(i.config) <= 1 {
+		return exits
+	}
+	exiting := make(map[S]bool, len(exits))
+	for _, s := range exits {
+		exiting[s] = true
+	}
+	out := exits
+	m := i.machine
+	for _, leaf := range i.config {
+		if exiting[leaf] {
+			continue
+		}
+		for _, s := range exits {
+			if leaf != s && m.isDescendant(leaf, s) {
+				out = append(out, leaf)
+				exiting[leaf] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
 // afterEffectsOnExit returns the CancelScheduled effects for every delayed
 // (`after`) transition declared on the exited states, in exit order. Emitting a
 // cancel for a state that may not have an armed timer is safe: the host treats an

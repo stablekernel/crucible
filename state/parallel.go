@@ -56,13 +56,20 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 	anyHandled := false
 	tr.MatchedAt = fmtState(parallel)
 
+	// The triggering event's payload (WithEventData) is broadcast to every region:
+	// resolve it once, before the region loop, so the region that actually handles
+	// the event sees it. eventData is consume-once, so calling it per region would
+	// hand the payload to whichever region is visited first and strip it from the
+	// rest — masking a service/actor onDone result from the region that routes it.
+	eventData := i.eventData(event)
+
 	for ri := range pn.state.Regions {
 		r := &pn.state.Regions[ri]
 		leaf, ok := i.activeLeafIn(r.Name, parallel)
 		if !ok {
 			continue
 		}
-		handled, eff, err := i.fireRegion(parallel, r, leaf, event, entity, i.eventData(event), &tr)
+		handled, eff, err := i.fireRegion(parallel, r, leaf, event, entity, eventData, &tr)
 		if handled {
 			anyHandled = true
 			effects = append(effects, eff...)
@@ -75,8 +82,10 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 
 	if !anyHandled {
 		// No region consumed the event: offer it to the parallel state and its
-		// ancestors as a cross-cutting transition.
-		return i.fireFromState(ctx, parallel, event, tr)
+		// ancestors as a cross-cutting transition, carrying the same resolved payload
+		// (the regions did not consume it, so a cross-cutting Assign — e.g. an actor
+		// onDone that exits the parallel state — still sees the done result).
+		return i.fireFromState(ctx, parallel, event, eventData, tr)
 	}
 
 	switch len(regionErrs) {
@@ -286,8 +295,11 @@ func (i *Instance[S, E, C]) settleParallelDone(parallel S, entity C, tr *Trace) 
 }
 
 // fireFromState resolves the event from an explicit state up through its
-// ancestors (used when no region handled the event in a parallel state).
-func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E, tr Trace) FireResult[S] {
+// ancestors (used when no region handled the event in a parallel state). eventData
+// is the already-resolved payload the matched transition's Assign reads from
+// AssignCtx.Event, passed through from fireParallel so a cross-cutting Assign sees
+// the same payload the regions were offered.
+func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E, eventData any, tr Trace) FireResult[S] {
 	m := i.machine
 	entity := i.entity
 	from := i.current
@@ -329,7 +341,7 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 			}
 			if pass {
 				tr.MatchedAt = fmtState(anc)
-				return i.commit(ctx, t, start, anc, entity, i.eventData(event), tr)
+				return i.commit(ctx, t, start, anc, entity, eventData, tr)
 			}
 		}
 	}
