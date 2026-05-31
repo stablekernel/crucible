@@ -21,14 +21,24 @@ var updateGolden = flag.Bool("update-golden", false, "rewrite golden verify repo
 type goldenCase struct {
 	name    string
 	machine *state.Machine[string, string, any]
+	opts    []verify.Option
 }
 
 func goldenCases() []goldenCase {
 	return []goldenCase{
-		{"linear", linearChain()},
-		{"branching", branching()},
-		{"island", withUnreachable()},
-		{"parallel", parallelMachine()},
+		{name: "linear", machine: linearChain()},
+		{name: "branching", machine: branching()},
+		{name: "island", machine: withUnreachable()},
+		{name: "parallel", machine: parallelMachine()},
+		{
+			name:    "reach_avoiding",
+			machine: branchingAvoid(),
+			opts: []verify.Option{
+				verify.ReachAvoiding("goal", "hazard"), // satisfiable via the clean arm
+				verify.ReachAvoiding("hazard", "calm"), // satisfiable: hazard is on its own arm
+				verify.ReachAvoiding("calm", "start"),  // unsatisfiable: start gates every route
+			},
+		},
 	}
 }
 
@@ -44,7 +54,7 @@ func TestGoldenReport(t *testing.T) {
 	}
 	for _, gc := range goldenCases() {
 		t.Run(gc.name, func(t *testing.T) {
-			got := verify.Verify(gc.machine).String() + "\n"
+			got := verify.Verify(gc.machine, gc.opts...).String() + "\n"
 			path := filepath.Join(dir, gc.name+".txt")
 			if *updateGolden {
 				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {

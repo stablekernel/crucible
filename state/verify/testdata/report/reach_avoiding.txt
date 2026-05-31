@@ -1,0 +1,7 @@
+conditional_reachability calm: unsatisfiable
+conditional_reachability goal: satisfiable via [safe step]
+conditional_reachability hazard: satisfiable via [open]
+reachability             calm: reachable via [safe]
+reachability             goal: reachable via [open step]
+reachability             hazard: reachable via [open]
+reachability             start: reachable via []
