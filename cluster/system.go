@@ -137,6 +137,16 @@ func (s *System[S, E, C]) SpawnLocal(ctx context.Context, src, id string, input 
 	return ref, nil
 }
 
+// Respawn replaces the actor registered under id with a fresh instance from src:
+// it first tears down any existing actor with that id (a failed actor stays
+// registered as done until removed), then spawns anew. It is the primitive a
+// supervisor's Restart decision drives, satisfying Respawner. Stopping a missing
+// id is a no-op, so Respawn also works as a plain spawn.
+func (s *System[S, E, C]) Respawn(ctx context.Context, src, id string, input map[string]any) (state.ActorRef, error) {
+	s.local.Stop(state.ActorRef{ID: id})
+	return s.SpawnLocal(ctx, src, id, input)
+}
+
 // Ref resolves a local actor id to its ref, reporting whether this node runs it.
 func (s *System[S, E, C]) Ref(id string) (state.ActorRef, bool) {
 	return s.local.Ref(id)
