@@ -17,6 +17,7 @@ func TestErrorMessages(t *testing.T) {
 		want string
 	}{
 		{&state.ErrInvalidTransition{From: "Draft", Event: "Submit", Reason: "no match"}, "invalid transition"},
+		{&state.ErrInvalidTransition{From: "Draft", To: "Approved", Event: "Approve", Reason: "guards failed"}, "from \"Draft\" to \"Approved\""},
 		{&state.ErrGuardFailed{GuardName: "hasReviewer", Reason: "nil"}, "guard \"hasReviewer\" failed"},
 		{&state.ErrGuardPanic{GuardName: "g", Recovered: "boom"}, "panicked"},
 		{&state.ErrPolicyDenied{PolicyName: "p", Reason: "denied"}, "policy \"p\" denied"},
@@ -31,6 +32,30 @@ func TestErrorMessages(t *testing.T) {
 	for _, c := range cases {
 		if got := c.err.Error(); !strings.Contains(got, c.want) {
 			t.Errorf("%T.Error() = %q, want substring %q", c.err, got, c.want)
+		}
+	}
+}
+
+// TestOutcomeString asserts every Outcome renders its stable discriminant and an
+// unknown value falls back to a parenthesized form, so the logging seam and
+// tooling have a locked string for each outcome.
+func TestOutcomeString(t *testing.T) {
+	cases := []struct {
+		o    state.Outcome
+		want string
+	}{
+		{state.OutcomeSuccess, "success"},
+		{state.OutcomeInvalidTransition, "invalidTransition"},
+		{state.OutcomeGuardFailed, "guardFailed"},
+		{state.OutcomeGuardPanic, "guardPanic"},
+		{state.OutcomePolicyDenied, "policyDenied"},
+		{state.OutcomeEffectError, "effectError"},
+		{state.OutcomeAssignFailed, "assignFailed"},
+		{state.Outcome(99), "outcome(99)"},
+	}
+	for _, c := range cases {
+		if got := c.o.String(); got != c.want {
+			t.Errorf("Outcome(%d).String() = %q, want %q", c.o, got, c.want)
 		}
 	}
 }

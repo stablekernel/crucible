@@ -7,7 +7,12 @@ import (
 )
 
 // ErrInvalidTransition is returned when no transition matched (current, event),
-// or all matching transitions had failing guards.
+// or all matching transitions had failing guards. From names the state the event
+// was fired in, Event the rejected event, and Reason the specific cause (no
+// declared transition, a final-state exit, an undeclared current state, ...). To
+// names the intended target when the rejected transition had one (a targeted
+// transition whose guards all failed); it is empty for an unmatched event with no
+// candidate target.
 type ErrInvalidTransition struct {
 	From   string
 	To     string
@@ -16,6 +21,9 @@ type ErrInvalidTransition struct {
 }
 
 func (e *ErrInvalidTransition) Error() string {
+	if e.To != "" {
+		return fmt.Sprintf("crucible/state: invalid transition from %q to %q on %q: %s", e.From, e.To, e.Event, e.Reason)
+	}
 	return fmt.Sprintf("crucible/state: invalid transition from %q on %q: %s", e.From, e.Event, e.Reason)
 }
 

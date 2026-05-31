@@ -26,7 +26,7 @@ func TestAssay_FailFast(t *testing.T) {
 	}
 }
 
-// TestAssay_Aggregate asserts WithAggregate collects all failing requirements
+// TestAssay_Aggregate asserts Aggregate collects all failing requirements
 // and that the error type is uniform (*AssayError) across both modes.
 func TestAssay_Aggregate(t *testing.T) {
 	m, rec := safeBuild(t)
@@ -34,7 +34,7 @@ func TestAssay_Aggregate(t *testing.T) {
 		t.Skipf("build not implemented yet: %v", rec)
 	}
 	doc := &Document{}
-	err := m.Assay(Approved, doc, state.WithAggregate())
+	err := m.Assay(Approved, doc, state.Aggregate())
 	var ae *state.AssayError
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %v, want *AssayError", err)

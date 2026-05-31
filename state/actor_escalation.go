@@ -98,6 +98,13 @@ func (s *ActorSystem[S, E, C]) WithEscalationHandler(handler EscalationHandler) 
 // when no child failure has escalated. It is the always-on observable record of the
 // escalate-to-parent default: even with no inspector and no handler wired, an
 // unhandled child failure is retrievable here rather than silently lost.
+//
+// It is LAST-WRITTEN-WINS, including across a single escalation that climbs the
+// supervision chain: a child -> parent -> grandparent climb rewrites this field at
+// each level, so after the climb it holds the topmost level reached, not the
+// originating failure. Wire an inspector (or an EscalationHandler) when you need the
+// FULL record — the inspector stream observes every level of every escalation in
+// order; LastEscalation is the convenience snapshot of the most recent one.
 func (s *ActorSystem[S, E, C]) LastEscalation() *ActorEscalation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,6 +186,11 @@ func (s *ActorSystem[S, E, C]) escalateToActorParent(ctx context.Context, parent
 // parentOf returns the id of the actor that owns childID as a nested child, or
 // empty when childID is a direct child of the parent instance (the system root).
 // It must be called with the system mutex held.
+//
+// It scans every actor's children, so it is O(actors x children-per-actor) per
+// call and a climb up a deep chain is quadratic in the system size. That is fine
+// for the small actor counts a single instance supervises today; revisit (e.g. a
+// child->parent index) when supervision trees grow large.
 func (s *ActorSystem[S, E, C]) parentOf(childID string) string {
 	for id, ra := range s.actors {
 		for _, c := range ra.children {

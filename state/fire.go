@@ -63,6 +63,10 @@ func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) Fir
 	// snapshot observations. The call is gated on a non-nil inspector inside
 	// emitInspection, so an un-inspected Fire is unchanged and performs no IO.
 	i.emitInspection(res)
+	// Write the settled outcome to the optional structured-logging seam. Like
+	// emitInspection it is gated on a nil logger inside emitLog, so an un-logged
+	// Fire is unchanged and performs no IO.
+	i.emitLog(res)
 	return res
 }
 

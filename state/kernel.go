@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"time"
@@ -300,20 +301,62 @@ type Effect = any
 type Outcome int
 
 // Outcomes recorded in a Trace, one per Fire: success or the specific failure
-// class that stopped the transition.
+// class that stopped the transition. The values are a stable, ordered enumeration
+// — new outcomes are appended, never reordered — so a recorded Trace stays
+// comparable across versions and a consumer may switch on them safely.
 const (
+	// OutcomeSuccess marks a Fire that matched a transition and settled cleanly.
 	OutcomeSuccess Outcome = iota
+	// OutcomeInvalidTransition marks a Fire where no transition matched (current,
+	// event), or every matching transition had a failing guard.
 	OutcomeInvalidTransition
+	// OutcomeGuardFailed marks a Fire stopped because a named guard returned false.
 	OutcomeGuardFailed
+	// OutcomeGuardPanic marks a Fire stopped because a guard panicked and was
+	// recovered.
 	OutcomeGuardPanic
+	// OutcomePolicyDenied marks a Fire stopped because a policy returned Deny.
 	OutcomePolicyDenied
+	// OutcomeEffectError marks a Fire stopped because a bound action returned an
+	// error while emitting its effect.
 	OutcomeEffectError
+	// OutcomeAssignFailed marks a Fire stopped because an assign reducer panicked or
+	// its ref did not resolve, so the context fold could not commit.
 	OutcomeAssignFailed
 )
 
-// Trace is the kernel's canonical observability surface — pure data recorded
-// on every Fire.
+// String renders the Outcome as its stable, lower-camel discriminant
+// ("success", "invalidTransition", "guardFailed", ...) for logs, the structured-
+// logging seam, and tooling. An unrecognized value renders as "outcome(N)".
+func (o Outcome) String() string {
+	switch o {
+	case OutcomeSuccess:
+		return "success"
+	case OutcomeInvalidTransition:
+		return "invalidTransition"
+	case OutcomeGuardFailed:
+		return "guardFailed"
+	case OutcomeGuardPanic:
+		return "guardPanic"
+	case OutcomePolicyDenied:
+		return "policyDenied"
+	case OutcomeEffectError:
+		return "effectError"
+	case OutcomeAssignFailed:
+		return "assignFailed"
+	default:
+		return fmt.Sprintf("outcome(%d)", int(o))
+	}
+}
+
+// Trace is the kernel's canonical observability surface — pure data recorded on
+// every Fire and surfaced live on an InspectTransition event. Consumers pattern-
+// match and serialize it, so its field NAMES and JSON tags are stable: fields are
+// added, never renamed or repurposed, and the per-step slices are always in
+// emission order (the order frozen by the determinism contract; see the package
+// overview). A field that does not apply to a given Fire is left zero/empty.
 type Trace struct {
+	// Machine names the machine the traced instance was cast from.
 	Machine string `json:"machine,omitempty"`
 	// Event is the human-readable label of the event that drove this Fire — the
 	// event's string rendering — kept for diagnostics, visualization, and the
@@ -326,14 +369,26 @@ type Trace struct {
 	// EventPayload carries the machine-readable value. It is omitted when the event
 	// has no JSON form (e.g. an internal "always"/raise microstep marker), so the
 	// field is additive and the trace stays deterministic across a JSON round-trip.
-	EventPayload       json.RawMessage            `json:"eventPayload,omitempty"`
-	FromState          string                     `json:"fromState,omitempty"`
+	EventPayload json.RawMessage `json:"eventPayload,omitempty"`
+	// FromState is the primary active leaf the event was fired in, before the step.
+	FromState string `json:"fromState,omitempty"`
+	// SelectedTransition is the transition that fired, for in-process tooling. It is
+	// not serialized (json:"-") because behavior is bound, not embedded in the IR;
+	// the serializable record of what happened is the other fields.
 	SelectedTransition *Transition[any, any, any] `json:"-"`
-	GuardsEvaluated    []string                   `json:"guardsEvaluated,omitempty"`
-	PoliciesEvaluated  []string                   `json:"policiesEvaluated,omitempty"`
-	EffectsEmitted     []string                   `json:"effectsEmitted,omitempty"`
-	AssignsApplied     []string                   `json:"assignsApplied,omitempty"`
-	Microsteps         []string                   `json:"microsteps,omitempty"`
+	// GuardsEvaluated names each guard the step evaluated, in evaluation order.
+	GuardsEvaluated []string `json:"guardsEvaluated,omitempty"`
+	// PoliciesEvaluated names each policy the step evaluated, in evaluation order.
+	PoliciesEvaluated []string `json:"policiesEvaluated,omitempty"`
+	// EffectsEmitted names each effect the step emitted, in emission order — the
+	// human-readable companion to FireResult.Effects (the effect data itself).
+	EffectsEmitted []string `json:"effectsEmitted,omitempty"`
+	// AssignsApplied names each assign reducer the step folded, in fold order.
+	AssignsApplied []string `json:"assignsApplied,omitempty"`
+	// Microsteps records the run-to-completion interleave — each raised internal
+	// event and eventless ("always") step, plus per-region markers — in the order it
+	// occurred within the macrostep.
+	Microsteps []string `json:"microsteps,omitempty"`
 
 	// MatchedAt names the state whose transition actually fired. For a flat
 	// machine it equals FromState; for an HSM it may be an ancestor reached by
@@ -344,6 +399,8 @@ type Trace struct {
 	ExitedStates  []string `json:"exitedStates,omitempty"`
 	EnteredStates []string `json:"enteredStates,omitempty"`
 
+	// Outcome classifies how the Fire settled — success or the specific failure
+	// class that stopped it. It is always set (OutcomeSuccess on a clean step).
 	Outcome Outcome `json:"outcome"`
 }
 
@@ -464,6 +521,11 @@ func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption
 // a transition's exit/transition/entry phases to produce the instance's context.
 // An optional Describe option adds palette metadata; registering without one still
 // works and yields a minimal palette descriptor.
+//
+// Naming: the assign verb appears three times with distinct roles. Registry.Assign
+// (here) and its builder alias Builder.Reducer both REGISTER a reducer impl under a
+// name; Builder.Assign WIRES a registered reducer (by name) onto a transition. So
+// you register once (Reducer / Registry.Assign) and wire each use (.Assign(name)).
 func (r *Registry[C]) Assign(name string, fn AssignFn[C], opts ...DescribeOption) *Registry[C] {
 	r.assigns[name] = fn
 	r.bindAssign(name, inProcessAssign(fn))
@@ -508,12 +570,20 @@ type Middleware[S comparable, E comparable, C any] func(next FireFunc[S, E, C]) 
 // FireFunc is the inner step the middleware chain wraps.
 type FireFunc[S comparable, E comparable, C any] func(ctx context.Context, event E) FireResult[S]
 
-// Diagnostic is a non-failing finding from Temper.
+// Diagnostic is a non-failing finding from Temper — a lint/static-analysis result
+// surfaced before Quench. Consumers pattern-match on it, so its field names are
+// stable.
 type Diagnostic struct {
+	// Severity is the finding's level ("warning" | "error"); under Strict, Quench
+	// rejects any finding, otherwise only "error".
 	Severity string
-	Message  string
-	SrcFile  string
-	SrcLine  int
+	// Message is the human-readable description of the finding.
+	Message string
+	// SrcFile and SrcLine point at the builder call site that produced the finding,
+	// captured via runtime.Caller. They are diagnostic-only and may be empty for a
+	// finding with no single source position.
+	SrcFile string
+	SrcLine int
 }
 
 // stateDef is the builder's mutable record of a declared state, including the
@@ -1182,7 +1252,9 @@ func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Buil
 // Assign attaches a named context-reducer ref with params to the most-recent
 // transition. The reducer folds onto the instance's context when the transition
 // fires — the sole context-mutation site under the value-semantics contract. It is
-// distinct from Do: Do emits an effect, Assign computes the next context.
+// distinct from Do: Do emits an effect, Assign computes the next context. The
+// referenced reducer is registered separately by Builder.Reducer (alias of
+// Registry.Assign); this WIRES a registered reducer by name onto the transition.
 func (b *Builder[S, E, C]) Assign(assignName string, params ...map[string]any) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
@@ -1397,7 +1469,7 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	if clock == nil {
 		clock = systemClock{}
 	}
-	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock, inspector: cfg.inspector}
+	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock, inspector: cfg.inspector, logger: cfg.logger}
 	// If the starting state is itself compound or parallel, the active
 	// configuration is the set of leaves reached by descending into its initial
 	// children. The primary leaf becomes Current().
@@ -1453,6 +1525,12 @@ type Instance[S comparable, E comparable, C any] struct {
 	// the pure Fire step performs no IO when one is absent. Wired with
 	// WithInspector at Cast.
 	inspector Inspector
+	// logger is the optional structured-logging seam written to as each Fire
+	// settles — the conventional *slog.Logger a host already threads through, kept
+	// distinct from the event-shaped inspector. It is nil by default: an instance
+	// with no WithLogger never logs, so the pure Fire step performs no IO when one
+	// is absent. Wired with WithLogger at Cast.
+	logger *slog.Logger
 	// The actor model's per-instance mailbox lives on the host ActorSystem, which
 	// runs this instance as a child actor and routes events into its mailbox; the
 	// pure Fire step neither owns a mailbox nor sends messages. InFinal reports when

@@ -14,7 +14,7 @@ func (m *Machine[S, E, C]) Requirements(s S) []Requirement[C] {
 
 // Assay checks that an externally-constructed entity legally satisfies a
 // state's declarative requirements, without firing. The default mode is
-// fail-fast (the returned *AssayError carries the first failure); WithAggregate
+// fail-fast (the returned *AssayError carries the first failure); Aggregate
 // collects every failure in one pass. The error type is uniform across modes.
 func (m *Machine[S, E, C]) Assay(s S, entity C, opts ...AssayOption) error {
 	cfg := assayConfig{}

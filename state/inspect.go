@@ -1,5 +1,7 @@
 package state
 
+import "log/slog"
+
 // This file ships the inspection API — a live observer sink for an instance's
 // runtime activity. The
 // kernel stays pure: an inspector is an injected observer registered at Cast and
@@ -191,6 +193,29 @@ func (i *Instance[S, E, C]) emitInspection(res FireResult[S]) {
 		Configuration: fmtStates(i.config),
 		Status:        i.status(),
 	})
+}
+
+// emitLog writes the settled Fire result to the optional structured-logging seam
+// wired with WithLogger — a terse, fixed-shape record (machine, event, from, to,
+// outcome) on the host's own *slog.Logger, distinct from the typed inspection
+// stream. It short-circuits on the nil-logger default so an un-logged Fire performs
+// no IO, and logs at debug level so a noisy hot path stays opt-in at the host's log
+// level. A failing outcome additionally carries the error message under "err".
+func (i *Instance[S, E, C]) emitLog(res FireResult[S]) {
+	if i.logger == nil {
+		return
+	}
+	attrs := []any{
+		slog.String("machine", i.machine.name),
+		slog.String("event", res.Trace.Event),
+		slog.String("from", res.Trace.FromState),
+		slog.String("to", fmtState(res.NewState)),
+		slog.String("outcome", res.Trace.Outcome.String()),
+	}
+	if res.Err != nil {
+		attrs = append(attrs, slog.String("err", res.Err.Error()))
+	}
+	i.logger.Debug("crucible/state: fire", attrs...)
 }
 
 // fmtStates renders a configuration to its string leaves for an inspection event.
