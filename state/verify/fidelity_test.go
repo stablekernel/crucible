@@ -53,6 +53,83 @@ func assertModelFidelity[S comparable, E comparable, C any](t *testing.T, label 
 	}
 }
 
+// configGraphReachableLeaves returns the leaves the configuration-product
+// explorer reaches: the union of active leaves across every reachable
+// configuration. A leaf is reachable iff some reachable configuration contains it.
+func configGraphReachableLeaves[S comparable, E comparable, C any](m *state.Machine[S, E, C]) map[string]bool {
+	g := buildConfigGraph(m)
+	exp := g.explore()
+	leaves := map[string]bool{}
+	for _, key := range exp.order {
+		for _, l := range exp.leaves[key] {
+			leaves[l] = true
+		}
+	}
+	return leaves
+}
+
+// analysisReachableLeaves returns the analysis-proven reachable states restricted
+// to leaves — the authority the configuration-product explorer's reachable-leaf
+// set must equal. A non-leaf (composite/parallel) is active only as an ancestor of
+// an active leaf, so the leaf set is the exact fidelity anchor for the product
+// model.
+func analysisReachableLeaves[S comparable, E comparable, C any](m *state.Machine[S, E, C]) map[string]bool {
+	reach := analysisReachable(m)
+	g := buildConfigGraph(m)
+	leaves := map[string]bool{}
+	for name := range reach {
+		if g.leaf[name] {
+			leaves[name] = true
+		}
+	}
+	return leaves
+}
+
+// assertConfigModelFidelity fails the test if the configuration-product explorer's
+// reachable-leaf set diverges from the analysis authority. The product explorer
+// powers invariant checking, and its negative verdicts (holds) are only as
+// trustworthy as the configurations it enumerates, so it must agree with analysis.
+func assertConfigModelFidelity[S comparable, E comparable, C any](t *testing.T, label string, m *state.Machine[S, E, C]) {
+	t.Helper()
+	want := analysisReachableLeaves(m)
+	got := configGraphReachableLeaves(m)
+	if !sameSet(got, want) {
+		t.Errorf("config-model fidelity divergence for %s:\n product reachable leaves: %v\n analysis reachable leaves: %v",
+			label, sortedKeys(got), sortedKeys(want))
+	}
+}
+
+func TestFidelity_ConfigModel_Fixtures(t *testing.T) {
+	cases := []struct {
+		name    string
+		machine *state.Machine[string, string, any]
+	}{
+		{"linear", fxLinear()},
+		{"branching", fxBranching()},
+		{"island", fxIsland()},
+		{"parallel", fxParallel()},
+		{"liveToGoal", fxLiveToGoal()},
+		{"trapBeforeGoal", fxTrap()},
+		{"zFreeCycle", fxZFreeCycle()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertConfigModelFidelity(t, tc.name, tc.machine)
+		})
+	}
+}
+
+// TestFidelity_ConfigModel_Generated fuzzes randomized flat machines and asserts
+// the product explorer's reachable-leaf set agrees with analysis on every one.
+func TestFidelity_ConfigModel_Generated(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	const samples = 400
+	for i := 0; i < samples; i++ {
+		m := generateMachine(rng, i)
+		assertConfigModelFidelity(t, fmt.Sprintf("generated#%d", i), m)
+	}
+}
+
 func TestFidelity_Fixtures_ModelMatchesAnalysis(t *testing.T) {
 	cases := []struct {
 		name    string
