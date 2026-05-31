@@ -95,12 +95,17 @@ func (t *Transport) conn(node string) (grpc.ClientConnInterface, bool) {
 	return c, ok
 }
 
+// errNodeUnreachable wraps cluster.ErrNodeUnreachable with the offending node.
+func errNodeUnreachable(node string) error {
+	return fmt.Errorf("%w: %q", cluster.ErrNodeUnreachable, node)
+}
+
 // Deliver routes event to the actor named by ref on its owning node over gRPC. The
 // event is JSON-encoded here and decoded into the owning node's event type there.
 func (t *Transport) Deliver(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
 	conn, ok := t.conn(ref.Node)
 	if !ok {
-		return false, fmt.Errorf("%w: %q", cluster.ErrNodeUnreachable, ref.Node)
+		return false, errNodeUnreachable(ref.Node)
 	}
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
@@ -118,7 +123,7 @@ func (t *Transport) Deliver(ctx context.Context, ref state.ActorRef, event any) 
 func (t *Transport) Spawn(ctx context.Context, node, src, id string, input map[string]any) (state.ActorRef, error) {
 	conn, ok := t.conn(node)
 	if !ok {
-		return state.ActorRef{}, fmt.Errorf("%w: %q", cluster.ErrNodeUnreachable, node)
+		return state.ActorRef{}, errNodeUnreachable(node)
 	}
 	var inputJSON []byte
 	if input != nil {
