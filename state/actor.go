@@ -105,8 +105,9 @@ type StopActor struct {
 // stays the system's job. This keeps the ref remote-ready: a future ref that
 // denotes an actor in another system, process, or host carries additional locator
 // data (a system name, a transport address) additively, without breaking any
-// holder that already treats the ref opaquely. The current {ID, SystemID} is the
-// in-process projection of that fuller locator shape.
+// holder that already treats the ref opaquely. {ID, SystemID, Node} is the
+// in-process projection of that fuller locator shape; Node is empty for a
+// local actor and names the owning node for a remote one.
 type ActorRef struct {
 	// ID is the actor's registry key in the ActorSystem.
 	ID string
@@ -115,6 +116,14 @@ type ActorRef struct {
 	SystemID string
 	// Src is the actor ref name the actor was spawned from, for diagnostics.
 	Src string
+	// Node is the locator of the host that owns the actor: empty for an actor in
+	// the holder's own in-process ActorSystem, and the owning node's identifier
+	// for an actor on another host. The in-process ActorSystem leaves it empty;
+	// a distributed host (crucible/cluster) stamps it when it mints a remote ref
+	// and routes delivery by it. It is the additive locator the opaque-ref
+	// contract reserves, so adding it breaks no holder that treats the ref
+	// opaquely.
+	Node string
 }
 
 // spawnBuiltinName is the reserved action ref name for the spawn built-in. Like
