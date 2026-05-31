@@ -57,6 +57,11 @@ type memInstance struct {
 	// explicit WithIdempotencyKey value) to the seq assigned on first append, so
 	// a re-append is a no-op returning that seq.
 	applied map[string]int64
+	// dispatched is the set of effect ids the Runner has applied through its
+	// effect handler. It backs the exactly-once dedup: an effect whose id is
+	// present is skipped on (re)dispatch. It survives checkpoint compaction so a
+	// delayed redispatch of an already-applied effect stays a no-op.
+	dispatched map[string]struct{}
 }
 
 // NewMemStore returns an in-memory Store. Construction is configured through
@@ -78,6 +83,7 @@ func (s *MemStore) instanceLocked(id InstanceID) *memInstance {
 			throughStep: noCheckpoint,
 			maxStep:     noRecord,
 			applied:     make(map[string]int64),
+			dispatched:  make(map[string]struct{}),
 		}
 		if s.cfg.initialCapacity > 0 {
 			inst.tail = make([]Record, 0, s.cfg.initialCapacity)
@@ -180,6 +186,44 @@ func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte,
 		inst.maxStep = throughStep
 	}
 	return nil
+}
+
+// MarkDispatched records that the effects named by effectIDs have been applied
+// for the instance, so a subsequent (re)dispatch skips them. It is atomic and
+// idempotent: re-marking an already-marked id is a no-op, and a partially marked
+// batch is completed without error. It satisfies the DispatchStore seam.
+func (s *MemStore) MarkDispatched(_ context.Context, id InstanceID, effectIDs ...string) error {
+	if len(effectIDs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inst := s.instanceLocked(id)
+	for _, eid := range effectIDs {
+		inst.dispatched[eid] = struct{}{}
+	}
+	return nil
+}
+
+// Dispatched returns the set of effect ids already applied for the instance, as
+// a membership map. An instance never written reports an empty (non-nil) set
+// rather than an error: the dedup query is a pure read of "what has landed",
+// orthogonal to whether any Record exists yet. It satisfies the DispatchStore
+// seam.
+func (s *MemStore) Dispatched(_ context.Context, id InstanceID) (map[string]bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	inst, ok := s.instances[id]
+	if !ok {
+		return map[string]bool{}, nil
+	}
+	out := make(map[string]bool, len(inst.dispatched))
+	for eid := range inst.dispatched {
+		out[eid] = true
+	}
+	return out, nil
 }
 
 // cloneRecord returns a deep-enough copy of rec so a stored Record is insulated

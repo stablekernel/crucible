@@ -81,6 +81,30 @@
 // AssignCtx.Event observes the JSON-decoded shape on the replayed onDone. A
 // typed-codec option to record and replay the concrete Go value is reserved for a
 // later, additive change.
+//
+// # Idempotent effect dispatch (the effect seam)
+//
+// A transition may emit a domain effect — a side effect the machine cannot
+// perform itself, such as sending an email, charging a card, or publishing a
+// message — as an Effect value the kernel routes out through FireResult.Effects
+// without applying. The Runner applies it through the caller-supplied
+// EffectHandler (WithEffectHandler), exactly once over the instance's lifetime
+// (the live run plus any number of recoveries), even though the runtime's
+// replay/retry is at-least-once.
+//
+// Each emitted domain effect is stamped with a deterministic EffectID derived
+// from its step, its emission ordinal within the step, and its kind — every
+// component a pure function of the recorded run, so the same effect is stamped
+// identically on the live path and on every recovery. The Runner write-ahead
+// appends the step Record (carrying those ids) BEFORE dispatching, then applies
+// each effect whose id is not already in the Store's dispatched set and marks it
+// as it succeeds. A crash between append and dispatch leaves the effect recorded
+// but un-marked, so recovery redispatches it; a crash after dispatch finds the id
+// marked and skips it. The dedup set is held by the Store through the optional
+// DispatchStore seam (the in-tree MemStore implements it), so it shares the
+// Record's durability and survives checkpoint compaction. Kernel driver effects
+// (services, timers, actors) are absorbed by their host drivers and never reach
+// the handler. Wire the seam with WithEffectHandler.
 package durable
 
 import (
