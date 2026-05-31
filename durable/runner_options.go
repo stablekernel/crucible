@@ -31,6 +31,12 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// event-driven or timer-driven machine invokes no service and needs none. A
 	// machine that declares `invoke` states supplies it with WithServiceRegistry.
 	serviceReg *state.Registry[C]
+	// actorPalette binds the child-machine actor behaviors (ActorBehavior) the
+	// Runner spawns and runs on the live path, keyed by the actor src name. It is
+	// nil by default: a machine that spawns no child actor needs none. A machine
+	// that declares `InvokeActor` (or spawns actors dynamically) supplies it with
+	// WithActorPalette.
+	actorPalette map[string]state.ActorBehavior
 }
 
 // WithCheckpointEvery sets the checkpoint policy: the Runner persists a full
@@ -85,6 +91,23 @@ func WithServiceRegistry[S comparable, E comparable, C any](reg *state.Registry[
 	return func(c *runnerConfig[S, E, C]) {
 		if reg != nil {
 			c.serviceReg = reg
+		}
+	}
+}
+
+// WithActorPalette binds the child-machine actor behaviors the Runner spawns and
+// runs on the live path and resolves on recovery, keyed by the actor src name (the
+// name passed to InvokeActor or the Spawn built-in). A durable actor's behavior
+// runs exactly once — live — and its done-data, error, or parent-driving message is
+// recorded; on recovery the recorded result is replayed back through the same parent
+// transition and the behavior is never re-instantiated, so the palette is consulted
+// only to run an actor the first time. Supply it for any machine that spawns child
+// actors; a machine that spawns none needs none. Each behavior is the actor-model
+// analog of a ServiceFn, registered by the same src name the machine declares.
+func WithActorPalette[S comparable, E comparable, C any](palette map[string]state.ActorBehavior) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if len(palette) > 0 {
+			c.actorPalette = palette
 		}
 	}
 }
