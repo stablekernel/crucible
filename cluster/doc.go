@@ -22,8 +22,27 @@
 //
 // # Transport
 //
-// Transport is the seam that moves a delivery to the node that owns the target
-// actor. It is host-supplied, so the kernel and this package's core carry no
-// network dependency: an in-memory transport drives multi-node tests, and a real
-// network transport (gRPC) lives behind the same interface.
+// Transport is the seam that moves an actor operation (deliver, spawn) to the node
+// that owns the target actor. It is host-supplied, so the kernel and this package's
+// core carry no network dependency: the in-tree InMemoryTransport drives multi-node
+// tests and single-process development, and a real network transport (gRPC) lives
+// behind the same interface.
+//
+// # Supervision
+//
+// Supervisor turns the kernel's typed ActorEscalation into a per-source supervision
+// policy. Each failed actor is routed to a Decision by the src it was spawned from:
+// Escalate forwards the failure to a sink up the hierarchy, Stop contains it,
+// Restart re-spawns the actor through a Respawner within a per-source budget, and
+// Backoff defers the re-spawn behind an exponentially growing delay applied by the
+// host through Tick. It plugs into the seam with ActorSystem.WithEscalationHandler.
+//
+// # Migration
+//
+// Capture snapshots a running instance, its actor tree, and its machine definition
+// into a wire-shippable Checkpoint; Restore rebuilds it on another node, resuming in
+// place. Restore gates the move on schema compatibility — it diffs the source and
+// target machine definitions with state/evolution and refuses a breaking target with
+// ErrIncompatibleMigration — so an instance never resumes against a definition that
+// would misread its persisted configuration.
 package cluster
