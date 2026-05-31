@@ -252,8 +252,10 @@ representative hot-path numbers.
     `WithSystemID`) declares a child-machine actor whose `src` binds at the
     `ActorSystem` actor palette, not the service registry. Dynamic `Spawn(src, id,
     ...)` takes `WithSpawnInput`, `WithSpawnSystemID`, `WithSpawnOnDone`,
-    `WithSpawnOnError`. An `ActorRef` (id + optional systemId) is a runtime handle a
-    machine stores in its context to address an actor; refs are runtime, never IR.
+    `WithSpawnOnError`. An `ActorRef` is an opaque runtime handle a machine stores
+    in its context to address an actor (id, optional systemId, src, and a `Node`
+    locator that is empty for a local actor and names the owning host for a remote
+    one); refs are runtime, never IR.
   - **Host-driver harness.** A reusable, exported `ActorSystem` driver consumes the
     spawn/stop effects, runs each child machine as an actor with its own mailbox via
     `NewActor`, and re-fires the parent's `onDone` (carrying the child's `output`) or

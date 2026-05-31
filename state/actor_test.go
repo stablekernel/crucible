@@ -138,6 +138,12 @@ func TestActor_SpawnYieldsUsableRef(t *testing.T) {
 	if ref.ID != "worker-1" || ref.Src != "child" {
 		t.Fatalf("ref = %+v, want ID=worker-1 Src=child", ref)
 	}
+	// A locally-spawned actor's ref is local: its Node locator is empty. Empty
+	// Node is the in-process projection of the opaque-locator shape; a remote
+	// host stamps Node additively without changing any local-ref holder.
+	if ref.Node != "" {
+		t.Fatalf("local ref Node = %q, want empty", ref.Node)
+	}
 	if sys.Running() != 1 {
 		t.Fatalf("running = %d, want 1", sys.Running())
 	}
