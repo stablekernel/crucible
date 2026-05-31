@@ -85,6 +85,41 @@ if err != nil {
 // travel.EarlierConfig is an earlier configuration, distinct from travel.FinalConfig.
 ```
 
-Later capabilities build on this proven, durable core — running the saga across a
-cluster, over a transport, and under observation — each added without disturbing the
-proof.
+## Distributed execution
+
+The next capability hosts the same proven fulfillment actors across a cluster, driven
+over real gRPC. Where the durable runtime runs the kitchen and courier as in-process
+actors of one order instance, `RunDistributedFulfillment` runs the *same* behaviors —
+`fooddelivery.KitchenBehavior` and `fooddelivery.CourierBehavior` — as **remote cluster
+actors** on separate worker nodes, dispatched from a coordinator node. It proves the
+fulfillment actors are location-transparent: the coordinator never knows or cares where
+they run.
+
+The flow stands up a three-node cluster wired over gRPC, carried in-memory by a
+`bufconn` listener so the whole cluster runs inside one process (and inside the
+`Example`) without binding a TCP port:
+
+- the coordinator **spawns** the kitchen on `worker-a` and the courier on `worker-b`,
+  each over the gRPC wire, addressing them only by an opaque `state.ActorRef`;
+- `worker-a` runs a `cluster.Supervisor` (`cluster.WithRestart("kitchen", 2)`) that,
+  when its freshly-spawned kitchen actor crashes, **restarts** it within budget;
+- the coordinator then **delivers** the `KitchenCook` and `CourierDrive` signals across
+  the wire, driving the restarted kitchen and the courier each to completion.
+
+Each worker node is typed to the signal of the actor it hosts — the kitchen and courier
+advance on distinct event types, so the node's host machine decodes each wire-delivered
+signal into the exact type its actor expects. The coordinator, which only marshals the
+raw signal it is handed, drives both workers regardless of its own type.
+
+```go
+report, err := dispatch.RunDistributedFulfillment(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+// report.Spawned places the kitchen on worker-a and the courier on worker-b;
+// report.SupervisorDecision is cluster.Restart with report.Restarts == 1;
+// report.Delivered counts the signals driven across the wire after the restart.
+```
+
+Later capabilities build on this proven, durable, distributed core — adding observation
+— each added without disturbing the proof.

@@ -20,7 +20,18 @@
 // read-only. Both reuse the saga wholesale — its model, payment services, and
 // kitchen/courier actor behaviors — driven through the durable Handle API.
 //
-// Later capabilities build on this proven, durable core — running the saga across a
-// cluster, over a transport, and under observation — each layered on as an additive
-// addition without disturbing the proof.
+// The next capability runs the proven fulfillment actors across a cluster, over real
+// gRPC. [RunDistributedFulfillment] hosts the same kitchen and courier behaviors the
+// durable runtime runs in-process — [fooddelivery.KitchenBehavior] and
+// [fooddelivery.CourierBehavior] — as remote cluster actors on separate worker nodes,
+// dispatched from a coordinator node: the coordinator spawns the kitchen on one worker
+// and the courier on another over the wire, a worker-side supervisor restarts a crashed
+// kitchen actor within budget, and the coordinator then delivers the
+// [fooddelivery.KitchenCook] / [fooddelivery.CourierDrive] signals across the wire to
+// drive each remote actor to completion — proving the fulfillment actors are
+// location-transparent and survive a worker-side failure. The gRPC transport is carried
+// in-memory by a bufconn listener so the whole cluster runs inside one process.
+//
+// Later capabilities build on this proven, durable, distributed core — adding
+// observation — each layered on as an additive addition without disturbing the proof.
 package dispatch
