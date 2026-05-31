@@ -26,6 +26,11 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
 	clock state.Clock
+	// serviceReg binds the invoked-service implementations (ServiceFn) the Runner
+	// resolves and runs on the live path. It is nil by default: a purely
+	// event-driven or timer-driven machine invokes no service and needs none. A
+	// machine that declares `invoke` states supplies it with WithServiceRegistry.
+	serviceReg *state.Registry[C]
 }
 
 // WithCheckpointEvery sets the checkpoint policy: the Runner persists a full
@@ -64,6 +69,22 @@ func WithRunnerClock[S comparable, E comparable, C any](c state.Clock) Option[S,
 	return func(cfg *runnerConfig[S, E, C]) {
 		if c != nil {
 			cfg.clock = c
+		}
+	}
+}
+
+// WithServiceRegistry binds the invoked-service implementations the Runner runs on
+// the live path and resolves on recovery. A durable service runs exactly once —
+// live — and its result is recorded; on recovery the recorded result is replayed
+// through the same settle seam and the service is never re-invoked, so the registry
+// is consulted only to execute a service the first time. Supply it for any machine
+// that declares `invoke` states; a purely event-driven or timer-driven machine
+// needs none. The registry binds the same ServiceFns the machine declares, by name
+// (state.NewRegistry().Service(name, fn)).
+func WithServiceRegistry[S comparable, E comparable, C any](reg *state.Registry[C]) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if reg != nil {
+			c.serviceReg = reg
 		}
 	}
 }
