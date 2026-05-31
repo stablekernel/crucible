@@ -67,6 +67,29 @@ func ExampleReachAvoiding() {
 	// shipped without canceling: true via [pay ship]
 }
 
+// ExampleAlwaysEventually checks a liveness property: from every reachable
+// configuration, can the order still eventually reach "delivered"? Here a parcel
+// can be marked "lost", a terminal that delivered can never follow — so the
+// property fails and the counterexample names the stuck configuration.
+func ExampleAlwaysEventually() {
+	m := state.Forge[string, string, any]("parcel").
+		State("shipped").
+		Transition("shipped").On("arrive").GoTo("delivered").
+		Transition("shipped").On("misroute").GoTo("lost").
+		State("lost").Final(). // a terminal from which delivered is unreachable
+		State("delivered").Final().
+		Initial("shipped").
+		Quench()
+
+	result := verify.Verify(m, verify.AlwaysEventually("delivered"))
+	f, _ := result.Liveness("delivered")
+	fmt.Printf("always delivered: %t; stuck at %q via %v\n",
+		f.Reachable, f.Witness.Target, f.Witness.Events())
+
+	// Output:
+	// always delivered: false; stuck at "lost" via [misroute]
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").

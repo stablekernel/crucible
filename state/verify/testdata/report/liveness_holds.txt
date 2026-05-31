@@ -1,0 +1,5 @@
+liveness                 done: always eventually reachable
+reachability             done: reachable via [begin finish]
+reachability             resting: reachable via [begin rest]
+reachability             start: reachable via []
+reachability             working: reachable via [begin]

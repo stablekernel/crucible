@@ -1,0 +1,4 @@
+liveness                 goal: stuck at trapped via [trap]
+reachability             goal: reachable via [go]
+reachability             start: reachable via []
+reachability             trapped: reachable via [trap]

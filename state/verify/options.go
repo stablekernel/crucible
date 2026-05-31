@@ -14,6 +14,9 @@ type config struct {
 	// reachAvoiding holds the requested conditional-reachability queries: for each
 	// target, the set of states a witnessing run must never pass through.
 	reachAvoiding []avoidQuery
+	// alwaysEventually holds the requested liveness targets: for each, check that
+	// from every reachable configuration the target is still eventually reachable.
+	alwaysEventually []string
 }
 
 // avoidQuery is one conditional-reachability request: reach target along a run
@@ -64,5 +67,31 @@ func ReachAvoiding(target string, avoid ...string) Option {
 			q.avoid[a] = true
 		}
 		c.reachAvoiding = append(c.reachAvoiding, q)
+	}
+}
+
+// AlwaysEventually adds a liveness check: from every reachable configuration, is
+// the target state still eventually reachable? This is the CTL eventuality
+// AG EF target — the property "no matter where a run has gone, it can always
+// still make progress to target". The pass adds one [Finding] of [KindLiveness]
+// for target.
+//
+// The finding holds (its Reachable field is true, with the zero [Witness]) when
+// every reachable configuration retains some run that reaches target. It fails
+// (Reachable false) when some reachable configuration can never reach target —
+// a configuration parked in a target-free terminal or a target-free cycle. A
+// failing finding carries a counterexample witness: the shortest event sequence
+// from the initial state to that stuck configuration, whose Target names the
+// stuck state. Replaying the witness drives an instance into the trap.
+//
+// Liveness is exact in the same guard-agnostic sense as reachability: a guard can
+// only ever prune an edge at run time, never add one, so a configuration from
+// which the structural graph offers no route to target has no run to target in
+// any instance, and a holding verdict means every reachable configuration keeps a
+// structural route to target. A target that is not a declared state yields no
+// finding. Repeated AlwaysEventually calls each add their own check.
+func AlwaysEventually(target string) Option {
+	return func(c *config) {
+		c.alwaysEventually = append(c.alwaysEventually, target)
 	}
 }
