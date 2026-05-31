@@ -13,6 +13,16 @@ import (
 // so it is for tests, examples, and single-process development — not durable
 // across process restarts. Use a persistent backend for production durability.
 //
+// Per-instance sentinels for a MemStore's "nothing yet" bookkeeping. They sit
+// below the start baseline (baselineStep == -1) so the baseline checkpoint and
+// the baseline append both advance past them.
+const (
+	// noCheckpoint marks an instance with no checkpoint taken yet.
+	noCheckpoint = -2
+	// noRecord marks an instance with no Record appended yet.
+	noRecord = -2
+)
+
 // MemStore satisfies Store and is safe for concurrent use by multiple
 // goroutines.
 type MemStore struct {
@@ -29,7 +39,8 @@ type memInstance struct {
 	// checkpoint is the latest marshaled Snapshot, or nil if never checkpointed.
 	checkpoint []byte
 	// throughStep is the Step the checkpoint was taken through; tail holds only
-	// Records with a greater Step. -1 means no checkpoint yet.
+	// Records with a greater Step. noCheckpoint means no checkpoint yet — set
+	// below the start baseline (baselineStep) so the baseline checkpoint advances.
 	throughStep int
 	// tail is the post-checkpoint Records, in Step order.
 	tail []Record
@@ -64,8 +75,8 @@ func (s *MemStore) instanceLocked(id InstanceID) *memInstance {
 	inst, ok := s.instances[id]
 	if !ok {
 		inst = &memInstance{
-			throughStep: -1,
-			maxStep:     -1,
+			throughStep: noCheckpoint,
+			maxStep:     noRecord,
 			applied:     make(map[string]int64),
 		}
 		if s.cfg.initialCapacity > 0 {
@@ -177,6 +188,9 @@ func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte,
 // so the slice headers are copied without cloning each payload's bytes.
 func cloneRecord(rec Record) Record {
 	out := Record{Step: rec.Step}
+	if rec.Event != nil {
+		out.Event = append([]byte(nil), rec.Event...)
+	}
 	if len(rec.Entries) > 0 {
 		out.Entries = append(out.Entries, rec.Entries...)
 	}

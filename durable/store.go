@@ -51,6 +51,16 @@ type Record struct {
 	// Store treats a second Append at the same Step as already-applied.
 	Step int
 
+	// Event is the structured, JSON form of the driving event the Fire at this
+	// Step consumed — the kernel's Trace.EventPayload, captured verbatim. Replay
+	// reconstructs the exact event from this payload and re-Fires it to advance
+	// the restored instance one step, so the recorded run reaches byte-identical
+	// state without re-deriving the event from its human-readable label. It is
+	// empty for a Record that carries only a checkpoint or only nondeterministic
+	// Entries (an event with no JSON form is omitted, matching the kernel's
+	// additive EventPayload contract).
+	Event []byte
+
 	// Entries are the nondeterministic results recorded during this step — the
 	// invoked-service done/error payloads, actor messages, clock reads, and
 	// randomness draws the kernel consumed — in the order they resolved. Replay
