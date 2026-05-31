@@ -120,6 +120,11 @@ func (rt *recordingTransport) Deliver(_ context.Context, ref state.ActorRef, eve
 	return rt.delivered, rt.err
 }
 
+func (rt *recordingTransport) Spawn(_ context.Context, node, _, id string, _ map[string]any) (state.ActorRef, error) {
+	rt.calls++
+	return state.ActorRef{ID: id, Node: node}, rt.err
+}
+
 func TestSystem_RemoteRefRoutesToTransport(t *testing.T) {
 	ctx := context.Background()
 	rt := &recordingTransport{delivered: true}

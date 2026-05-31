@@ -13,12 +13,13 @@ import (
 // cannot reach: for the in-memory transport, a node that was never registered.
 var ErrNodeUnreachable = errors.New("cluster: target node is unreachable")
 
-// Deliverer is a node's local delivery endpoint as a transport sees it: given a
-// ref the node owns, it delivers an event to the addressed actor. A *System
-// satisfies it, so registering a node with an InMemoryTransport is just handing
-// it that node's System.
-type Deliverer interface {
+// Endpoint is a node's local endpoint as a transport sees it: it delivers events
+// to, and spawns actors in, that node's local ActorSystem. A *System satisfies it,
+// so registering a node with an InMemoryTransport is just handing it that node's
+// System.
+type Endpoint interface {
 	Deliver(ctx context.Context, ref state.ActorRef, event any) (bool, error)
+	SpawnLocal(ctx context.Context, src, id string, input map[string]any) (state.ActorRef, error)
 }
 
 // InMemoryTransport routes deliveries between node-scoped Systems living in the
@@ -28,21 +29,29 @@ type Deliverer interface {
 // interface out of tree. It is safe for concurrent use.
 type InMemoryTransport struct {
 	mu    sync.RWMutex
-	nodes map[string]Deliverer
+	nodes map[string]Endpoint
 }
 
 // NewInMemoryTransport returns an empty transport. Register each node's System
 // before routing to it.
 func NewInMemoryTransport() *InMemoryTransport {
-	return &InMemoryTransport{nodes: make(map[string]Deliverer)}
+	return &InMemoryTransport{nodes: make(map[string]Endpoint)}
 }
 
-// Register wires node's local delivery endpoint into the transport, so a ref whose
-// Node is node routes to d. Registering a node again replaces its endpoint.
-func (t *InMemoryTransport) Register(node string, d Deliverer) {
+// Register wires node's local endpoint into the transport, so an operation
+// targeting node routes to e. Registering a node again replaces its endpoint.
+func (t *InMemoryTransport) Register(node string, e Endpoint) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.nodes[node] = d
+	t.nodes[node] = e
+}
+
+// endpoint resolves a node identifier to its registered endpoint.
+func (t *InMemoryTransport) endpoint(node string) (Endpoint, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	e, ok := t.nodes[node]
+	return e, ok
 }
 
 // Deliver routes event to the node that owns ref and delegates to that node's
@@ -50,11 +59,19 @@ func (t *InMemoryTransport) Register(node string, d Deliverer) {
 // registered node that has no such actor returns (false, nil) — reached, but
 // nothing to deliver to.
 func (t *InMemoryTransport) Deliver(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
-	t.mu.RLock()
-	d, ok := t.nodes[ref.Node]
-	t.mu.RUnlock()
+	e, ok := t.endpoint(ref.Node)
 	if !ok {
 		return false, fmt.Errorf("%w: %q", ErrNodeUnreachable, ref.Node)
 	}
-	return d.Deliver(ctx, ref, event)
+	return e.Deliver(ctx, ref, event)
+}
+
+// Spawn routes a spawn request to node's local endpoint, returning a ref to the
+// new actor. A request for an unregistered node returns ErrNodeUnreachable.
+func (t *InMemoryTransport) Spawn(ctx context.Context, node, src, id string, input map[string]any) (state.ActorRef, error) {
+	e, ok := t.endpoint(node)
+	if !ok {
+		return state.ActorRef{}, fmt.Errorf("%w: %q", ErrNodeUnreachable, node)
+	}
+	return e.SpawnLocal(ctx, src, id, input)
 }
