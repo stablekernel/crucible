@@ -10,7 +10,27 @@ package state
 // ForgeOption configures Forge.
 type ForgeOption func(*forgeConfig)
 
-type forgeConfig struct{}
+type forgeConfig struct {
+	version string
+	id      string
+}
+
+// WithMachineVersion stamps the machine DEFINITION version (the IR Version, a
+// semver label) onto a Forge-built machine, so a Snapshot taken from it carries the
+// version a restored instance self-identifies by — the precondition for live
+// migration. It mirrors the version a machine rehydrated from a versioned IR
+// already carries. When omitted, a Forge-built machine has no definition version.
+func WithMachineVersion(version string) ForgeOption {
+	return func(c *forgeConfig) { c.version = version }
+}
+
+// WithMachineID stamps the machine DEFINITION id (the IR ID) onto a Forge-built
+// machine, carried alongside the version so a migrator can resolve the source
+// definition unambiguously. When omitted, a Forge-built machine has no definition
+// id.
+func WithMachineID(id string) ForgeOption {
+	return func(c *forgeConfig) { c.id = id }
+}
 
 // QuenchOption configures Quench.
 type QuenchOption func(*quenchConfig)
@@ -224,7 +244,18 @@ func WithoutSrcPos() ToJSONOption {
 type RestoreOption[S comparable] func(*restoreConfig[S])
 
 type restoreConfig[S comparable] struct {
-	clock Clock
+	clock                Clock
+	rejectMachineVersion bool
+}
+
+// RejectMachineVersionMismatch makes Restore enforce the machine DEFINITION
+// version strictly: a snapshot whose MachineVersion differs from the target
+// machine's version is rejected with a typed *SnapshotVersionError instead of the
+// default advisory (accept) posture. Use it when an instance must only resume
+// against the exact machine version it was snapshotted from. The snapshot-format
+// schema version is always validated regardless of this option.
+func RejectMachineVersionMismatch[S comparable]() RestoreOption[S] {
+	return func(cfg *restoreConfig[S]) { cfg.rejectMachineVersion = true }
 }
 
 // WithRestoreClock wires the time seam a restored instance's delayed-transition
