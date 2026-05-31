@@ -39,6 +39,21 @@
 // and records no clock entries. Drive timers with Handle.Tick (a host from its
 // own timer loop, a test after advancing a fake clock).
 //
+// A timer survives checkpoint compaction. A delayed transition armed before a
+// checkpoint keeps its arming ScheduleAfter in the journal tail — but a checkpoint
+// that compacts the tail through the arming step discards it, so tail replay alone
+// could not re-arm the timer. The Runner therefore persists, alongside each
+// checkpoint, the absolute fire deadline of every timer armed at that instant (the
+// recorded arming clock read plus the declared `after` Delay). On recovery a timer
+// the compacted tail no longer carries is re-armed from its persisted deadline:
+// the remaining delay is that deadline minus the resumed clock's now, so the timer
+// fires at its recorded instant regardless of the wall clock at recovery time and
+// the recovered run is byte-identical to one that never crashed. An already-elapsed
+// deadline arms as immediately due and fires on the next Tick; a timer the tail
+// still carries is re-armed by replay and not re-armed again. The deadlines ride in
+// a durable checkpoint envelope around the kernel snapshot, opaque to the Store, so
+// no kernel change is needed.
+//
 // # Invoked services (the service seam)
 //
 // An invoked service (`invoke`) produces whatever the host's ServiceFn computes —
