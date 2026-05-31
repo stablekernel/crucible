@@ -39,6 +39,15 @@
 // co-active leaves (so orthogonal parallel regions advancing independently are
 // modeled faithfully); a violation carries the shortest route to the nearest
 // configuration that breaks the predicate, whose Target names that configuration.
+// [SimulateBounded] adds bounded exhaustive simulation — it enumerates the
+// machine's event sequences up to a depth bound over that same
+// configuration-product space, evaluates a caller-supplied [Oracle] at every
+// reached configuration, and reports the shortest trace whose configuration the
+// oracle rejects. Unlike the other checks it is bounded, not exact: "no violation
+// within the bound" guarantees only that the oracle held across the configurations
+// reachable in at most the given number of events, never that the property holds
+// in every run — a violation may still exist in a longer trace. A violation it
+// does report, by contrast, is real and replayable.
 // Each decided property becomes a [Finding]; a finding that holds carries a
 // [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
 // Events are the sequence a driver fires to drive an instance from the initial

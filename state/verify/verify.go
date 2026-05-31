@@ -68,6 +68,18 @@ const (
 	// configuration that violates the predicate, whose Target names that
 	// configuration.
 	KindInvariant FindingKind = "invariant"
+
+	// KindBoundedViolation is the verdict of a bounded exhaustive simulation: a
+	// caller-supplied oracle was evaluated at every configuration reachable within a
+	// depth bound, and either held throughout (Reachable true, zero Witness) or was
+	// rejected by some reachable configuration (Reachable false), in which case the
+	// Witness is the shortest trace — the event sequence that drives the machine
+	// into the rejected configuration, whose Target names it. Unlike the other
+	// kinds it is NOT exact: a holding verdict means only that the oracle held
+	// across the configurations reachable within the bound, never that it holds in
+	// every run. A violation, by contrast, is real: the reported trace is replayable
+	// and the oracle genuinely fails at the reached configuration.
+	KindBoundedViolation FindingKind = "bounded_violation"
 )
 
 // Finding is one decided property about one state. Kind names the property,
@@ -173,6 +185,22 @@ func (r *Result) Invariant(label string) (Finding, bool) {
 	return Finding{}, false
 }
 
+// BoundedSim returns the bounded-simulation finding for a label and whether one
+// exists. A finding exists only for a label a [SimulateBounded] option requested.
+// Its Reachable field is the bounded verdict — true when the oracle held across
+// every configuration reachable within the depth bound — and its Witness, when the
+// verdict is false, is the shortest trace to the rejected configuration, whose
+// Target names that configuration. A holding verdict is a bounded guarantee only,
+// not a proof of absence.
+func (r *Result) BoundedSim(label string) (Finding, bool) {
+	for _, f := range r.Findings {
+		if f.Kind == KindBoundedViolation && f.State == label {
+			return f, true
+		}
+	}
+	return Finding{}, false
+}
+
 // Unreachable returns the names of every declared state that cannot be entered,
 // in sorted order. An empty result means every checked state is reachable.
 func (r *Result) Unreachable() []string {
@@ -215,7 +243,7 @@ func (r *Result) String() string {
 // configuration the counterexample path reaches.
 func renderFinding(f Finding) string {
 	hit, miss := findingVerbs(f.Kind)
-	if f.Kind == KindLiveness || f.Kind == KindInvariant {
+	if f.Kind == KindLiveness || f.Kind == KindInvariant || f.Kind == KindBoundedViolation {
 		if f.Reachable {
 			return fmt.Sprintf("%-24s %s: %s", f.Kind, f.State, hit)
 		}
@@ -238,6 +266,8 @@ func findingVerbs(k FindingKind) (hit, miss string) {
 		return "always eventually reachable", "stuck at"
 	case KindInvariant:
 		return "holds", "violated at"
+	case KindBoundedViolation:
+		return "no violation within bound", "violation at"
 	default:
 		return "reachable via", "unreachable"
 	}
@@ -339,14 +369,19 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 		}
 	}
 
-	// Configuration invariants reason about whole configurations of co-active
-	// leaves, so they run their own configuration-product exploration — built once
-	// and shared across every requested invariant.
-	if len(cfg.invariants) > 0 {
+	// Configuration invariants and bounded simulation both reason about whole
+	// configurations of co-active leaves over the configuration-product space, so
+	// they share one configGraph, built once when either is requested.
+	if len(cfg.invariants) > 0 || len(cfg.boundedSims) > 0 {
 		cg := buildConfigGraph(m)
-		exp := cg.explore()
-		for _, inv := range cfg.invariants {
-			res.Findings = append(res.Findings, invariantFor(cg, exp, inv))
+		if len(cfg.invariants) > 0 {
+			exp := cg.explore()
+			for _, inv := range cfg.invariants {
+				res.Findings = append(res.Findings, invariantFor(cg, exp, inv))
+			}
+		}
+		for _, q := range cfg.boundedSims {
+			res.Findings = append(res.Findings, boundedSimFor(cg, q))
 		}
 	}
 

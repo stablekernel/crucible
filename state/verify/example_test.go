@@ -121,6 +121,31 @@ func ExampleCheckInvariant() {
 	// mutex(held,paid) holds: false; violated at "held|paid" via [dispatch pay]
 }
 
+// ExampleSimulateBounded explores every trace up to a depth bound and reports the
+// shortest one whose reached configuration a caller-supplied oracle rejects. Here
+// the oracle flags any configuration where the order is "shipped", so the bounded
+// search returns the shortest trace that drives the machine there.
+func ExampleSimulateBounded() {
+	m := state.Forge[string, string, any]("order").
+		State("open").
+		Transition("open").On("pay").GoTo("paid").
+		State("paid").
+		Transition("paid").On("ship").GoTo("shipped").
+		State("shipped").Final().
+		Initial("open").
+		Quench()
+
+	// The oracle holds (true) until the order is shipped.
+	oracle := func(active map[string]bool) bool { return !active["shipped"] }
+	result := verify.Verify(m, verify.SimulateBounded("never-shipped", 5, oracle))
+	f, _ := result.BoundedSim("never-shipped")
+	fmt.Printf("held within bound: %t; violation at %q via %v\n",
+		f.Reachable, f.Witness.Target, f.Witness.Events())
+
+	// Output:
+	// held within bound: false; violation at "shipped" via [pay ship]
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").

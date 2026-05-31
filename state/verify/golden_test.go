@@ -65,6 +65,31 @@ func goldenCases() []goldenCase {
 				),
 			},
 		},
+		{
+			name:    "bounded_sim",
+			machine: parallelMachine(),
+			opts: []verify.Option{
+				// co-active busy|loud is reachable within the bound: a violation with the
+				// shortest trace to that compound configuration.
+				verify.SimulateBounded("co-active", 8, goldenActiveContains("busy", "loud")),
+				// idle and busy are leaves of the same Exec region, never co-active: the
+				// oracle holds within the bound.
+				verify.SimulateBounded("never-co", 8, goldenActiveContains("idle", "busy")),
+			},
+		},
+	}
+}
+
+// goldenActiveContains builds an oracle violated by any configuration whose active
+// set contains every named state, used by the bounded-simulation golden.
+func goldenActiveContains(states ...string) verify.Oracle {
+	return func(active map[string]bool) bool {
+		for _, s := range states {
+			if !active[s] {
+				return true
+			}
+		}
+		return false
 	}
 }
 
