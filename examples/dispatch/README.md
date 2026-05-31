@@ -13,7 +13,24 @@ import "github.com/stablekernel/crucible/examples/dispatch"
 `dispatch` takes the order-lifecycle statechart from the
 [`fooddelivery`](../fooddelivery) example — a rich machine with hierarchy, parallel
 regions, actors, invoked services, a timed SLA watchdog, and a compensation saga —
-and runs it under the whole Crucible suite, one capability at a time.
+and runs that one machine under the whole Crucible suite. The same order saga is shown
+to be, in turn, proven, durable, distributed, polyglot, and observable.
+
+## What it demonstrates
+
+- **Proof** — `Prove` establishes the order saga is well-formed before any order is
+  dispatched: key stages reachable, Watchdog leaves mutually exclusive, no dead guard.
+- **Durable execution** — `RunCrashRecovery` runs the saga across a process crash and
+  reconstructs it from the store alone; `RunTimeTravel` replays its lifecycle read-only.
+- **Distributed fulfillment** — `RunDistributedFulfillment` runs the kitchen and courier
+  as remote cluster actors over real gRPC, with a worker-side supervisor restarting a
+  crashed actor.
+- **Polyglot guard** — `RunPolyglotEquivalence` proves the "generous order" guard decides
+  identically in the in-tree CEL engine and in a WebAssembly guest.
+- **Observability** — `RunObservedSaga` drives the saga to `Delivered` while emitting a
+  span and a metric per transition through Crucible's vendor-neutral telemetry seam.
+
+## Proof
 
 This first capability proves the machine. Before any order is dispatched, `Prove`
 establishes that the saga is well-formed:
@@ -155,5 +172,40 @@ if err != nil {
 // were observed — proof the WebAssembly guard and the CEL guard decide identically.
 ```
 
-Later capabilities build on this proven, durable, distributed, polyglot core — adding
-observation — each added without disturbing the proof.
+## Observability
+
+The final capability runs the proven, durable saga while **observing** every
+transition through Crucible's [`telemetry`](../../telemetry) seam — a vendor-neutral
+tracing and metrics interface with no backend baked in. There is no kernel hook into
+the state machine; the host wraps its own drive calls, opening a span and incrementing
+a counter around each transition.
+
+`RunObservedSaga` drives the order to `Delivered` and, for each transition, emits an
+`order.transition` span and an `order.transitions` counter increment, each tagged with
+the `from`/`to` stage — so the telemetry narrates the order's path. Telemetry arrives as
+an injected `telemetry.Provider`: a host wires an slog, otel, or datadog adapter, while
+the default `telemetry.Nop()` runs the saga silently and allocation-free. The function
+returns an `ObservedReport` of the observed facts (transition count, path, final stage),
+so the run is verifiable from its return value with the emitted telemetry as the
+human-facing trace.
+
+```go
+logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+tel := telemetry.Nop().Apply(
+	telemetry.WithTracer(crucibleslog.NewTracer(crucibleslog.WithLogger(logger))),
+	telemetry.WithMeter(crucibleslog.NewMeter(crucibleslog.WithLogger(logger))),
+)
+
+report, err := dispatch.RunObservedSaga(ctx, tel)
+if err != nil {
+	log.Fatal(err)
+}
+// report.Transitions is 3; report.FinalStage is Delivered; the logger captured a span
+// and a metric per transition, tagged with the from/to stage.
+```
+
+## The capstone
+
+`TestCapstone_*` ties the whole story together: it runs the same order machine through
+all five capabilities in sequence — proven, durable, distributed, polyglot, observed —
+asserting each stage's headline result, so the showcase reads as a single narrative.
