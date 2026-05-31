@@ -97,3 +97,21 @@ func resolveMemStore(opts ...MemStoreOption) memStoreConfig {
 	}
 	return c
 }
+
+// FileStoreOption configures FileStore construction. It keeps NewFileStore
+// extensible — new construction-time knobs (on-disk encoding, sync policy,
+// retention) arrive as additive options rather than new positional parameters.
+type FileStoreOption func(*fileStoreConfig)
+
+// fileStoreConfig holds resolved FileStoreOption state. It is presently empty:
+// the working baseline (per-record fsync durability, atomic checkpoints) needs no
+// tuning, and the type reserves a stable seam for additive options.
+type fileStoreConfig struct{}
+
+func resolveFileStore(opts ...FileStoreOption) fileStoreConfig {
+	var c fileStoreConfig
+	for _, opt := range opts {
+		opt(&c)
+	}
+	return c
+}
