@@ -53,6 +53,11 @@ const (
 	// ActorStopped marks an actor stopped (completed, errored, or auto-stopped on
 	// exit).
 	ActorStopped ActorPhase = "stopped"
+	// ActorEscalated marks an unhandled child-actor failure escalating to the parent
+	// because no onError was wired for it (the escalate-to-parent default). The
+	// event's ActorID/ActorSrc name the failed actor; the typed failure itself is
+	// retrievable through the ActorSystem's LastEscalation.
+	ActorEscalated ActorPhase = "escalated"
 )
 
 // MessagePhase distinguishes the lifecycle point of an InspectMessage event: a

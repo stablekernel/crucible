@@ -97,6 +97,16 @@ type StopActor struct {
 // system's API, never through the IR — refs are runtime, not serializable
 // definition. A ref carries the actor's ID (and optional system-scoped SystemID)
 // so the holder can Deliver events to it or read its snapshot through the system.
+//
+// A ref is an OPAQUE, structured handle, not a raw index or positional slot: a
+// holder must treat it as opaque and resolve it only through the ActorSystem API
+// (Ref / RefBySystemID / Deliver / Stop), never by constructing one from a slice
+// position or relying on its ID as an externally-meaningful integer. Construction
+// stays the system's job. This keeps the ref remote-ready: a future ref that
+// denotes an actor in another system, process, or host carries additional locator
+// data (a system name, a transport address) additively, without breaking any
+// holder that already treats the ref opaquely. The current {ID, SystemID} is the
+// in-process projection of that fuller locator shape.
 type ActorRef struct {
 	// ID is the actor's registry key in the ActorSystem.
 	ID string

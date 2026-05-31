@@ -133,6 +133,18 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// transition's action through LastOutput / LastError.
 	lastOutcome actorOutcome
 
+	// lastEscalation holds the most recent unhandled child-actor failure that
+	// escalated to the parent because no onError was wired for it (the G3
+	// escalate-to-parent default). It is the always-on observable record a failure
+	// surfaces through even when no inspector and no handler are wired, so a crash is
+	// never silently swallowed. Read through LastEscalation.
+	lastEscalation *ActorEscalation
+
+	// escalationHandler is the optional host policy invoked for each escalation. It
+	// is nil by default — the default escalation behavior (record + inspect) needs no
+	// handler — and wired with WithEscalationHandler.
+	escalationHandler EscalationHandler
+
 	// parentSender records the id of the actor whose message the parent instance is
 	// currently handling, so a RespondToSender the parent emits resolves back to that
 	// actor. Empty when the parent is handling a host-injected event with no actor
@@ -323,10 +335,15 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 	s.absorbChildren(ctx, e.ID, nil, inst.ChildEffects())
 }
 
-// routeError fires the parent's onError for a spawn that could not start.
-func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, _ error) {
+// routeError fires the parent's onError for a spawn that could not start (an
+// unbound Src or a behavior that returned an error). When the parent declared a
+// usable onError the failure routes there (unchanged); when it did not, the spawn
+// failure escalates to the parent as a typed ActorEscalation rather than being
+// silently swallowed (the G3 default), so a spawn that cannot start is never lost.
+func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
 	ev, ok := e.OnError.(E)
 	if !ok {
+		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}
 	res := s.parent.Fire(ctx, ev)
@@ -465,7 +482,19 @@ func (s *ActorSystem[S, E, C]) Step(ctx context.Context, id string) []FireResult
 		inst := ra.inst
 		s.mu.Unlock()
 
-		done, output := inst.DeliverFire(ctx, env.event)
+		done, output, panicErr := deliverFireGuarded(ctx, inst, env.event)
+		if panicErr != nil {
+			if p, ok := panicErr.(*ErrActorPanic); ok {
+				p.ActorID = id
+			}
+			// A child that panicked while stepping is a failure: settle it as an error
+			// so its onError routes, or — with no onError — escalate to the parent. The
+			// panic never crashes the host driver.
+			if res, ok := s.settle(ctx, id, nil, panicErr); ok {
+				out = append(out, res)
+			}
+			return out
+		}
 		// Spawn/stop the actor's own children and route the messages it sent. The
 		// actor is the sender for any message it emits, and the event it is handling
 		// is what a ForwardEvent forwards verbatim.
@@ -607,7 +636,12 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 // settle marks the actor done and routes its completion through the parent: on
 // success the parent's onDone fires (carrying output via LastOutput), on failure
 // onError. It returns the parent FireResult and true when a routing event fired,
-// or false when the actor routes no completion (fire-and-forget) or is unknown.
+// or false when the actor routes no completion or is unknown.
+//
+// When the actor FAILED and no onError was wired, settle does not silently swallow
+// the failure: it escalates to the parent as a typed, observable ActorEscalation
+// (the G3 escalate-to-parent default), so an unhandled child crash always surfaces.
+// A clean completion with no onDone remains a fire-and-forget no-op.
 func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any, err error) (FireResult[S], bool) {
 	s.mu.Lock()
 	ra, ok := s.actors[id]
@@ -617,6 +651,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	}
 	ra.done = true
 	children := append([]string(nil), ra.children...)
+	parentID := s.parentOf(id)
 	var ev E
 	var route bool
 	if err != nil {
@@ -632,6 +667,13 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		s.stop(c)
 	}
 	if !route {
+		// G3 default: an unhandled child FAILURE (no onError wired) escalates to the
+		// parent as a typed, observable ActorEscalation rather than being silently
+		// swallowed. A clean completion with no onDone is still a fire-and-forget
+		// no-op — only a failure escalates.
+		if err != nil {
+			s.escalate(ctx, ra, parentID, err)
+		}
 		return FireResult[S]{}, false
 	}
 	// Deliver the child's output/error to the parent's onDone/onError transition's
@@ -651,7 +693,10 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 
 // SettleError fails the running actor under id explicitly (e.g. a host-detected
 // child crash), routing the parent's onError. It returns the parent FireResult and
-// true, or false when id is not running or routes no onError.
+// true, or false when id is not running or routes no onError. When no onError was
+// wired, the failure escalates to the parent as a typed ActorEscalation rather than
+// being swallowed (the G3 default), so the returned false still means "no onError
+// event fired" — not "the failure was lost".
 func (s *ActorSystem[S, E, C]) SettleError(ctx context.Context, id string, err error) (FireResult[S], bool) {
 	return s.settle(ctx, id, nil, err)
 }
