@@ -104,6 +104,31 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 	return out
 }
 
+// absorbDrivers feeds a transition's effects into every wired host driver so the
+// durable seams compose: the scheduler arms or cancels delayed (`after`) timers (and
+// the Handle's timer table mirrors their deadlines for checkpointing), the service
+// runner starts or stops invoked services, and the actor system spawns or stops
+// child-machine actors. It is the shared absorb the live seam methods (Fire,
+// RunService, DeliverToActor, Tick) call for the effects they produced, so a state a
+// settle or delivery enters arms whatever it declares — a service whose onDone spawns
+// an actor, an actor whose onDone arms a timer, and so on. Absorbing a driver's
+// effects is a no-op when that driver is not wired or the effects name none of its
+// kind.
+func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, effects []state.Effect) {
+	// Arm or cancel timers only when the effects actually schedule or cancel one: the
+	// kernel Scheduler reads the clock unconditionally on Absorb, so skipping the call
+	// for a timer-free transition keeps a non-timer machine free of clock reads.
+	if hasTimerEffect(effects) {
+		h.absorbTimers(ctx, effects)
+	}
+	if h.svc != nil {
+		h.svc.Absorb(ctx, effects)
+	}
+	if h.actors != nil {
+		h.actors.Absorb(ctx, effects)
+	}
+}
+
 // absorbTimers arms or cancels the step's delayed (`after`) timers on the kernel
 // scheduler and mirrors the same arming into the Handle's own timer table, so each
 // armed timer's absolute deadline is available to persist at a checkpoint. It must
@@ -328,21 +353,12 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 		return res, res.Err
 	}
 
-	// Arm or cancel the step's delayed (`after`) timers, which reads the recording
-	// clock; the readings land in clockBuf and are flushed into this step's Record.
-	// Absorb only when the step actually scheduled or canceled a timer: the kernel
-	// Scheduler reads the clock unconditionally, so skipping the call for an
-	// effect-free step keeps a purely event-driven machine free of clock reads.
-	if hasTimerEffect(res.Effects) {
-		h.absorbTimers(ctx, res.Effects)
-	}
-
-	// Arm or stop this step's invoked services so a service the step entered is in
-	// flight for a subsequent RunService. The kernel emits StartService / StopService
-	// as pure data; the host driver turns them into runnable services.
-	if h.svc != nil {
-		h.svc.Absorb(ctx, res.Effects)
-	}
+	// Absorb the step's driver effects into every host driver — timers, services, and
+	// actors — so a transition that enters a state declaring any combination of them
+	// arms each for the seam method that settles it next. The seams compose: a Fire
+	// may enter a state that both invokes a service and spawns an actor and arms a
+	// timer, and each driver must see its effects.
+	h.absorbDrivers(ctx, res.Effects)
 
 	step := h.nextStep
 	// Stamp this step's domain effects with their deterministic ids and carry them
@@ -354,7 +370,11 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 		return res, err
 	}
 	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), Entries: h.drainClock(), Effects: effEnvs}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
+	// Write-ahead append the step Record (with its effect ids) BEFORE dispatching, but
+	// hold off compacting it: dispatch happens between the append and the checkpoint so
+	// a crash mid-dispatch leaves the effect recorded in the still-present tail for
+	// recovery to redispatch — never orphaned behind the compaction.
+	if err := h.appendStep(ctx, step, &rec); err != nil {
 		return res, err
 	}
 	h.nextStep++
@@ -362,6 +382,11 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	// but un-marked, so recovery redispatches it (at-least-once), deduped by id to
 	// exactly-once once it lands.
 	if err := h.dispatchEffects(ctx, des); err != nil {
+		return res, err
+	}
+	// Compact through this step only now that its effects are dispatched, so the
+	// checkpoint never discards a not-yet-dispatched effect.
+	if err := h.checkpointStep(ctx, step, &rec); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -408,8 +433,25 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 // before the step is acknowledged to the caller. The checkpoint is taken at the
 // barrier's own step so a Load after it returns this Snapshot plus the later tail.
 func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record) error {
-	due := h.runner.cfg.checkpointEvery > 0 && (step+1)%h.runner.cfg.checkpointEvery == 0
-	if due {
+	if err := h.appendStep(ctx, step, rec); err != nil {
+		return err
+	}
+	return h.checkpointStep(ctx, step, rec)
+}
+
+// checkpointDue reports whether the checkpoint policy lands a checkpoint at step.
+func (h *Handle[S, E, C]) checkpointDue(step int) bool {
+	return h.runner.cfg.checkpointEvery > 0 && (step+1)%h.runner.cfg.checkpointEvery == 0
+}
+
+// appendStep marshals the due checkpoint snapshot into rec (so the Record carries it)
+// and write-ahead appends rec, WITHOUT compacting the tail yet. Splitting the append
+// from the compaction lets the effect-bearing Fire path dispatch a step's domain
+// effects after the durable append but before the checkpoint compacts that step away
+// — so a crash between append and dispatch leaves the effect recoverable from the
+// still-present tail rather than orphaned behind the compaction.
+func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record) error {
+	if h.checkpointDue(step) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint at step %d for %q: %w", step, h.id, err)
@@ -426,10 +468,19 @@ func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record
 	if _, err := h.runner.store.Append(ctx, h.id, *rec); err != nil {
 		return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
 	}
-	if due {
-		if err := h.runner.store.Checkpoint(ctx, h.id, rec.Snapshot, step); err != nil {
-			return fmt.Errorf("durable: checkpointing step %d for %q: %w", step, h.id, err)
-		}
+	return nil
+}
+
+// checkpointStep compacts the journal tail through step when the checkpoint policy is
+// due, using the snapshot appendStep already stamped into rec. It is called after a
+// step's domain effects have been dispatched, so the compaction never discards a
+// not-yet-dispatched effect.
+func (h *Handle[S, E, C]) checkpointStep(ctx context.Context, step int, rec *Record) error {
+	if !h.checkpointDue(step) {
+		return nil
+	}
+	if err := h.runner.store.Checkpoint(ctx, h.id, rec.Snapshot, step); err != nil {
+		return fmt.Errorf("durable: checkpointing step %d for %q: %w", step, h.id, err)
 	}
 	return nil
 }

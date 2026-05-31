@@ -40,21 +40,22 @@ func resolveAppend(opts ...AppendOption) appendConfig {
 }
 
 // CheckpointOption configures a single Store.Checkpoint call. It is the additive
-// extension point for per-checkpoint policy the durable runner layers on later
-// (for example, retaining the compacted tail for time-travel reads instead of
-// discarding it).
+// extension point for per-checkpoint policy a backend may layer on.
 type CheckpointOption func(*checkpointConfig)
 
 // checkpointConfig holds resolved CheckpointOption state for one Checkpoint.
 type checkpointConfig struct {
-	// retainTail keeps the pre-checkpoint Records instead of compacting them
-	// away, so a later time-travel reader can replay through earlier steps.
+	// retainTail requested keeping the pre-checkpoint Records instead of compacting
+	// them away. Time-travel retention is now a store-level capability (the
+	// HistoryStore seam, MemStore's WithHistory), so this per-checkpoint flag no
+	// longer changes what Load returns; it is preserved for API compatibility.
 	retainTail bool
 }
 
-// WithRetainTail keeps the Records a Checkpoint would otherwise compact away, so
-// a later time-travel reader can still replay through the pre-checkpoint steps.
-// The default compacts the tail through the checkpoint to bound storage growth.
+// WithRetainTail requested that a Checkpoint keep the Records it would otherwise
+// compact away. Time-travel retention is now a store-level capability — construct a
+// MemStore WithHistory and read through StateAt — so this per-checkpoint option no
+// longer changes Load's view and is retained only for API compatibility.
 func WithRetainTail() CheckpointOption {
 	return func(c *checkpointConfig) { c.retainTail = true }
 }
@@ -77,6 +78,10 @@ type memStoreConfig struct {
 	// initialCapacity pre-sizes the per-instance Record slice to reduce
 	// reallocation for instances with a known step count.
 	initialCapacity int
+	// history retains each instance's start baseline snapshot and full ordered
+	// Record log (surviving checkpoint compaction) so the time-travel reader can
+	// reconstruct any recorded step. It implements the HistoryStore seam.
+	history bool
 }
 
 // WithInitialCapacity pre-sizes each instance's Record buffer to the given
@@ -88,6 +93,15 @@ func WithInitialCapacity(steps int) MemStoreOption {
 			c.initialCapacity = steps
 		}
 	}
+}
+
+// WithHistory makes a MemStore retain each instance's start baseline snapshot and
+// full ordered Record log, even across checkpoint compaction, so the time-travel
+// reader (StateAt) can reconstruct the instance's state as of any recorded step. It
+// implements the HistoryStore seam. The default discards compacted Records to bound
+// memory; enable this for audit, debugging, or replay-inspection workloads.
+func WithHistory() MemStoreOption {
+	return func(c *memStoreConfig) { c.history = true }
 }
 
 func resolveMemStore(opts ...MemStoreOption) memStoreConfig {

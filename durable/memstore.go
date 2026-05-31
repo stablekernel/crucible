@@ -44,9 +44,15 @@ type memInstance struct {
 	throughStep int
 	// tail is the post-checkpoint Records, in Step order.
 	tail []Record
-	// retained holds pre-checkpoint Records kept by WithRetainTail, in Step
-	// order, preserved for later time-travel reads.
-	retained []Record
+	// baseline is the instance's start baseline checkpoint snapshot (the
+	// BaselineStep checkpoint), captured once when WithHistory is set so a
+	// time-travel read can restore the pre-event cast even after later checkpoints
+	// overwrote the live checkpoint. It is nil when history is disabled.
+	baseline []byte
+	// history holds every Record ever appended, in Step order, preserved when
+	// WithHistory is set so a time-travel read reaches a step a checkpoint compacted
+	// out of the live tail. It is nil when history is disabled.
+	history []Record
 	// maxStep is the highest Step ever appended (across checkpoint and tail), for
 	// the strict-ordering check. -1 means nothing appended yet.
 	maxStep int
@@ -121,6 +127,9 @@ func (s *MemStore) Append(_ context.Context, id InstanceID, rec Record, opts ...
 	}
 
 	inst.tail = append(inst.tail, cloneRecord(rec))
+	if s.cfg.history {
+		inst.history = append(inst.history, cloneRecord(rec))
+	}
 	inst.maxStep = rec.Step
 	inst.seq++
 	inst.applied[key] = inst.seq
@@ -150,11 +159,46 @@ func (s *MemStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, err
 	return snapshot, tail, nil
 }
 
-// Checkpoint implements Store. It persists snapshot as the instance's checkpoint
-// at throughStep and compacts the tail through that step (unless WithRetainTail
-// keeps it). throughStep must advance beyond the current checkpoint.
+// History implements HistoryStore for a MemStore constructed WithHistory: it returns
+// the instance's start baseline snapshot and its full ordered Record log, including
+// Records a checkpoint compacted out of the live tail, so a time-travel read can
+// reconstruct any recorded step. Without WithHistory the baseline is nil and the
+// returned log is the live (compacted) tail, sufficient only for steps at or after
+// the latest checkpoint. It reports ErrInstanceNotFound for an unknown instance.
+func (s *MemStore) History(_ context.Context, id InstanceID) ([]byte, []Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	inst, ok := s.instances[id]
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: %q", ErrInstanceNotFound, id)
+	}
+
+	var baseline []byte
+	src := inst.history
+	if !s.cfg.history {
+		// History was not retained; fall back to the live view (latest checkpoint
+		// baseline plus the compacted tail), which reaches post-checkpoint steps.
+		baseline = cloneBytes(inst.checkpoint)
+		src = inst.tail
+	} else {
+		baseline = cloneBytes(inst.baseline)
+	}
+
+	records := make([]Record, len(src))
+	for i, rec := range src {
+		records[i] = cloneRecord(rec)
+	}
+	return baseline, records, nil
+}
+
+// Checkpoint implements Store. It persists snapshot as the instance's checkpoint at
+// throughStep and compacts the tail through that step. throughStep must advance
+// beyond the current checkpoint. Time-travel retention is a store-level capability
+// (NewMemStore with WithHistory), so the per-checkpoint CheckpointOptions do not
+// change what Load returns here.
 func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error {
-	cfg := resolveCheckpoint(opts...)
+	_ = resolveCheckpoint(opts...) // retainTail is superseded by store-level WithHistory
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,14 +210,19 @@ func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte,
 			ErrCheckpointNotAdvancing, throughStep, inst.throughStep, id)
 	}
 
-	// Split the tail at throughStep: keep Records strictly after it, optionally
-	// retaining the compacted prefix for time-travel reads.
+	// Capture the start baseline snapshot once, when history is retained: it is the
+	// BaselineStep checkpoint, and a later checkpoint would otherwise overwrite the
+	// only copy a time-travel read needs to restore the pre-event cast from.
+	if s.cfg.history && inst.baseline == nil && throughStep == baselineStep {
+		inst.baseline = append([]byte(nil), snapshot...)
+	}
+
+	// Split the tail at throughStep: keep Records strictly after it. The compacted
+	// prefix is discarded from the live tail; WithHistory preserves it independently
+	// in the full history log for time-travel reads.
 	kept := inst.tail[:0:0]
 	for _, rec := range inst.tail {
 		if rec.Step <= throughStep {
-			if cfg.retainTail {
-				inst.retained = append(inst.retained, rec)
-			}
 			continue
 		}
 		kept = append(kept, rec)
@@ -224,6 +273,15 @@ func (s *MemStore) Dispatched(_ context.Context, id InstanceID) (map[string]bool
 		out[eid] = true
 	}
 	return out, nil
+}
+
+// cloneBytes returns a copy of b, or nil for a nil input, so a returned snapshot is
+// insulated from later mutation of the caller's slice (and vice versa).
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	return append([]byte(nil), b...)
 }
 
 // cloneRecord returns a deep-enough copy of rec so a stored Record is insulated

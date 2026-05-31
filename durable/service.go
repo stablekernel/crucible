@@ -100,6 +100,12 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 
+	// The settle re-fired the invocation's onDone / onError, which may enter a state
+	// that arms a timer, starts another service, or spawns an actor. Absorb those
+	// effects into every driver so the next seam method finds them armed — the service
+	// seam composes with the timer and actor seams in one instance.
+	h.absorbDrivers(ctx, res.Effects)
+
 	entry, err := recordServiceOutcome(id, h.svc.LastResult, h.svc.LastError())
 	if err != nil {
 		return res, true, fmt.Errorf("durable: recording service %q result for %q: %w", id, h.id, err)
