@@ -14,9 +14,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
 The first stable release. The data model and contracts are now fixed: a machine
 definition, its serialized IR, the context model, the effect envelope, and the
 emission-ordering contract are all frozen so that future capabilities arrive as
-additive packages, modules, and options rather than breaking changes. See
-[MIGRATION.md](./MIGRATION.md) for the concrete steps to upgrade from `v0.2.0`,
-and the "Performance baseline (v1.0.0)" note at the end of this section for the
+additive packages, modules, and options rather than breaking changes. See the
+"Performance baseline (v1.0.0)" note at the end of this section for the
 representative hot-path numbers.
 
 ### Added
@@ -411,7 +410,7 @@ representative hot-path numbers.
   inside an action must move those writes into an `AssignFn` registered with
   `Registry.Assign`/`Builder.Reducer` and wired with `Builder.Assign(name)`. This
   is the central change for clean serialization, deterministic replay, and
-  cross-stack evaluation. See [MIGRATION.md](./MIGRATION.md).
+  cross-stack evaluation.
 - **BREAKING — the reserved `ContextDelta` slot on the action result is removed.**
   Under the value-semantics contract, a context change is the value an assign
   reducer returns (`AssignResult.Context`), not a delta carried back from an
