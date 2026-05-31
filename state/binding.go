@@ -162,6 +162,41 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 	r.bindings[bindingKey(KindGuard, name)] = boundBehavior[C]{guard: b}
 }
 
+// BindGuard registers a guard under name from a GuardBinding directly, instead of
+// from a plain GuardFn. It is the additive seam an opt-in expression module uses
+// to register a guard whose verdict comes from a compiled expression program
+// rather than a hand-written Go predicate: the module compiles its source once and
+// hands the resulting evaluator in as the binding.
+//
+// The binding is wired into the same name path Guard uses, so a guard registered
+// this way is indistinguishable to the kernel from a Go-func guard — it resolves
+// by name at Provide/Quench, evaluates synchronously inside the pure Fire step, and
+// surfaces a panic as the same typed ErrGuardPanic. The binding's EvalGuard is
+// adapted to a GuardFn over the in-process context view so the fire-time fast path
+// (which reads r.guards) finds it; the binding is also recorded on the parallel
+// binding seam so a future out-of-process transport can swap it under the same name.
+//
+// EvalGuard is called with a background context and the in-process context view;
+// an error it returns is treated as a false verdict, matching how a Go guard that
+// cannot decide yields false rather than transitioning. An optional Describe option
+// adds palette metadata exactly as Guard does.
+func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...DescribeOption) *Registry[C] {
+	r.guards[name] = func(gctx GuardCtx[C]) bool {
+		res, err := b.EvalGuard(context.Background(), GuardRequest[C]{
+			Name:    name,
+			Params:  gctx.Params,
+			Context: newInProcessView(gctx.Entity),
+		})
+		if err != nil {
+			return false
+		}
+		return res.OK
+	}
+	r.bindGuard(name, b)
+	r.describe(KindGuard, name, opts)
+	return r
+}
+
 // bindAction records the in-process ActionBinding for an action registration.
 func (r *Registry[C]) bindAction(name string, b ActionBinding[C]) {
 	r.bindings[bindingKey(KindAction, name)] = boundBehavior[C]{action: b}

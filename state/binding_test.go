@@ -256,6 +256,85 @@ func TestRegistry_Sugar_RecordsBindings(t *testing.T) {
 	}
 }
 
+// stubGuardBinding is a test GuardBinding that reads the live entity off the
+// in-process view and applies a Go predicate, optionally returning an error to
+// exercise the error-to-false adaptation BindGuard performs.
+type stubGuardBinding struct {
+	pred func(bindOrder) bool
+	err  error
+}
+
+// EvalGuard satisfies GuardBinding[bindOrder] for the stub.
+func (b stubGuardBinding) EvalGuard(_ context.Context, req GuardRequest[bindOrder]) (GuardResult, error) {
+	if b.err != nil {
+		return GuardResult{}, b.err
+	}
+	ent, _ := req.Context.Raw().(bindOrder)
+	return GuardResult{OK: b.pred(ent)}, nil
+}
+
+// TestBindGuard_RegistersFireResolvableGuard asserts BindGuard registers a guard
+// that the fire-time path resolves and evaluates from the bare-func map, with the
+// binding's verdict carried through, AND records the binding on the parallel seam.
+func TestBindGuard_RegistersFireResolvableGuard(t *testing.T) {
+	reg := NewRegistry[bindOrder]()
+	reg.BindGuard("rich", stubGuardBinding{pred: func(o bindOrder) bool { return o.Amount >= 10 }})
+
+	fn, found := reg.guards["rich"]
+	if !found {
+		t.Fatal("BindGuard did not register a fire-resolvable GuardFn")
+	}
+	if reg.guardBinding("rich") == nil {
+		t.Fatal("BindGuard did not record the binding on the parallel seam")
+	}
+	if !fn(GuardCtx[bindOrder]{Entity: bindOrder{Amount: 10}}) {
+		t.Fatal("guard should pass for amount=10")
+	}
+	if fn(GuardCtx[bindOrder]{Entity: bindOrder{Amount: 9}}) {
+		t.Fatal("guard should fail for amount=9")
+	}
+}
+
+// TestBindGuard_BindingErrorYieldsFalse asserts a binding that returns an error is
+// adapted to a non-transitioning false verdict, matching how a Go guard that cannot
+// decide does not enable a transition.
+func TestBindGuard_BindingErrorYieldsFalse(t *testing.T) {
+	reg := NewRegistry[bindOrder]()
+	reg.BindGuard("boom", stubGuardBinding{err: errTest})
+	if reg.guards["boom"](GuardCtx[bindOrder]{Entity: bindOrder{Amount: 100}}) {
+		t.Fatal("a binding error must yield false, not pass")
+	}
+}
+
+// TestBindGuard_DrivesTransitionThroughFire asserts a guard registered via
+// BindGuard enables (or blocks) a transition when fired, proving the binding flows
+// through the same fire-time guard path as a Go-func guard.
+func TestBindGuard_DrivesTransitionThroughFire(t *testing.T) {
+	build := func(amount int) *Instance[string, string, bindOrder] {
+		b := Forge[string, string, bindOrder]("bg")
+		b.reg.BindGuard("highAmount", stubGuardBinding{pred: func(o bindOrder) bool { return o.Amount >= 50 }})
+		m := b.
+			State("from").
+			Transition("from").On("go").GoTo("to").When("highAmount").
+			State("to").
+			Initial("from").
+			Quench()
+		return m.Cast(bindOrder{Amount: amount}, WithInitialState("from"))
+	}
+
+	pass := build(50)
+	pass.Fire(context.Background(), "go")
+	if pass.Current() != "to" {
+		t.Fatalf("amount=50 should transition; current=%v", pass.Current())
+	}
+
+	block := build(49)
+	block.Fire(context.Background(), "go")
+	if block.Current() != "from" {
+		t.Fatalf("amount=49 should block; current=%v", block.Current())
+	}
+}
+
 // TestRegistry_BindingsSurviveProvideQuench asserts a Provide'd / Quench'd machine
 // carries its bindings, mirroring the func-map adoption, so the seam is available
 // off a rehydrated machine.

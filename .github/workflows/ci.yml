@@ -29,6 +29,9 @@ jobs:
       - name: golangci-lint (state)
         working-directory: state
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (state/expr)
+        working-directory: state/expr
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
       - name: golangci-lint (telemetry)
         working-directory: telemetry
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
@@ -49,7 +52,7 @@ jobs:
   tests:
     uses: ./.github/workflows/test.yml
     with:
-      modules: "state telemetry telemetry/slog telemetry/otel telemetry/datadog"
+      modules: "state state/expr telemetry telemetry/slog telemetry/otel telemetry/datadog"
 
   vuln:
     runs-on: ubuntu-latest
@@ -61,6 +64,9 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - name: govulncheck (state)
         working-directory: state
+        run: go run "$GOVULNCHECK" ./...
+      - name: govulncheck (state/expr)
+        working-directory: state/expr
         run: go run "$GOVULNCHECK" ./...
       - name: govulncheck (telemetry)
         working-directory: telemetry
@@ -87,6 +93,18 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - name: coverage gate (state)
         working-directory: state
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+      - name: coverage gate (state/expr)
+        working-directory: state/expr
+        # The rich expression tier carries a tighter coverage floor than the suite
+        # default: its CEL compile/lower/marshal seams are the bulk of its surface.
+        env:
+          THRESHOLD: "90"
         run: |
           go test -covermode=atomic -coverprofile=coverage.out ./...
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
