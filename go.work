@@ -11,4 +11,5 @@ use (
 	./telemetry/datadog
 	./telemetry/otel
 	./telemetry/slog
+	./transport
 )
