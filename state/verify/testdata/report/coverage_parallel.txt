@@ -1,0 +1,9 @@
+coverage                 coverage:
+states: 6/6 (100.0%)
+transitions: 3/3 (100.0%)
+reachability             active: reachable via [activate]
+reachability             busy: reachable via [activate]
+reachability             idle: reachable via [activate]
+reachability             loud: reachable via [activate]
+reachability             offline: reachable via []
+reachability             silent: reachable via [activate]

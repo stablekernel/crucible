@@ -80,7 +80,24 @@ const (
 	// every run. A violation, by contrast, is real: the reported trace is replayable
 	// and the oracle genuinely fails at the reached configuration.
 	KindBoundedViolation FindingKind = "bounded_violation"
+
+	// KindCoverage is the verdict of a structural-coverage analysis: a set of
+	// scenarios (event sequences) was replayed over the configuration-product
+	// explorer and the states and transitions they exercised were measured against
+	// the reachable universe. Its Reachable field is true when the scenario set
+	// leaves no reachable state and no reachable transition uncovered (full
+	// coverage), false otherwise. The full breakdown — covered and uncovered states
+	// and transitions with their fractions — is read with [Result.Coverage] rather
+	// than from a Witness, since coverage concerns a whole universe rather than a
+	// single configuration. It is guard-agnostic like the other kinds: the universe
+	// is the structural reachable space, so an uncovered element is a real gap a
+	// scenario set leaves unexercised.
+	KindCoverage FindingKind = "coverage"
 )
+
+// coverageLabel is the stable Finding.State a coverage finding is keyed by, so a
+// single [Coverage] pass yields one [Result.Coverage]-addressable finding.
+const coverageLabel = "coverage"
 
 // Finding is one decided property about one state. Kind names the property,
 // State names the subject, and Reachable carries the reachability verdict. When
@@ -104,6 +121,9 @@ type Finding struct {
 	// the route to the stuck configuration from which the target can never be
 	// reached, whose Target names that configuration.
 	Witness Witness
+	// coverage carries the structural-coverage breakdown for a [KindCoverage]
+	// finding, exposed via [Result.Coverage]. It is nil for every other kind.
+	coverage *CoverageReport
 }
 
 // Result is the outcome of a [Verify] pass: one [Finding] per decided property,
@@ -201,6 +221,20 @@ func (r *Result) BoundedSim(label string) (Finding, bool) {
 	return Finding{}, false
 }
 
+// Coverage returns the structural-coverage breakdown and whether one exists. A
+// report exists only when a [Coverage] option was passed. Its Reachable companion
+// finding (see [KindCoverage]) is true exactly when the report leaves nothing
+// uncovered; the report itself carries the covered and uncovered states and
+// transitions and their fractions.
+func (r *Result) Coverage() (CoverageReport, bool) {
+	for _, f := range r.Findings {
+		if f.Kind == KindCoverage && f.coverage != nil {
+			return *f.coverage, true
+		}
+	}
+	return CoverageReport{}, false
+}
+
 // Unreachable returns the names of every declared state that cannot be entered,
 // in sorted order. An empty result means every checked state is reachable.
 func (r *Result) Unreachable() []string {
@@ -242,6 +276,13 @@ func (r *Result) String() string {
 // holding verdict has no counterexample, while a failing one names the stuck
 // configuration the counterexample path reaches.
 func renderFinding(f Finding) string {
+	if f.Kind == KindCoverage {
+		var rep CoverageReport
+		if f.coverage != nil {
+			rep = *f.coverage
+		}
+		return fmt.Sprintf("%-24s %s:\n%s", f.Kind, f.State, rep.String())
+	}
 	hit, miss := findingVerbs(f.Kind)
 	if f.Kind == KindLiveness || f.Kind == KindInvariant || f.Kind == KindBoundedViolation {
 		if f.Reachable {
@@ -369,10 +410,10 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 		}
 	}
 
-	// Configuration invariants and bounded simulation both reason about whole
-	// configurations of co-active leaves over the configuration-product space, so
-	// they share one configGraph, built once when either is requested.
-	if len(cfg.invariants) > 0 || len(cfg.boundedSims) > 0 {
+	// Configuration invariants, bounded simulation, and coverage all reason about
+	// whole configurations of co-active leaves over the configuration-product space,
+	// so they share one configGraph, built once when any is requested.
+	if len(cfg.invariants) > 0 || len(cfg.boundedSims) > 0 || cfg.coverageRequested {
 		cg := buildConfigGraph(m)
 		if len(cfg.invariants) > 0 {
 			exp := cg.explore()
@@ -382,6 +423,9 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 		}
 		for _, q := range cfg.boundedSims {
 			res.Findings = append(res.Findings, boundedSimFor(cg, q))
+		}
+		if cfg.coverageRequested {
+			res.Findings = append(res.Findings, coverageFor(cg, cfg.coverageScenarios))
 		}
 	}
 

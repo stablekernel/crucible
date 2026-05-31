@@ -48,6 +48,16 @@
 // reachable in at most the given number of events, never that the property holds
 // in every run — a violation may still exist in a longer trace. A violation it
 // does report, by contrast, is real and replayable.
+// [Coverage] adds structural-coverage analysis — it replays a set of scenarios
+// (each an ordered event sequence) over that same configuration-product explorer
+// and reports which reachable states and transitions they exercise against the
+// reachable universe, with the concrete uncovered remainder and the coverage
+// fractions. Read the breakdown with [Result.Coverage]. The metric is consistent
+// with the other checks: each scenario drives the configuration along the same
+// structural edges the explorer follows, and an event that names no enabled
+// transition from the current configuration is a clean no-op — so an uncovered
+// state or transition is a real gap a scenario set leaves unexercised, the input a
+// CI gate uses to fail an under-tested suite.
 // Each decided property becomes a [Finding]; a finding that holds carries a
 // [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
 // Events are the sequence a driver fires to drive an instance from the initial

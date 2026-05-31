@@ -146,6 +146,34 @@ func ExampleSimulateBounded() {
 	// held within bound: false; violation at "shipped" via [pay ship]
 }
 
+// ExampleCoverage measures which states and transitions a scenario set exercises
+// against the reachable universe, so a CI gate can flag the structural gap a test
+// suite leaves. Here a single happy-path scenario covers the shipping line but
+// leaves the cancellation branch unexercised.
+func ExampleCoverage() {
+	m := state.Forge[string, string, any]("order").
+		State("open").
+		Transition("open").On("pay").GoTo("paid").
+		Transition("open").On("abandon").GoTo("canceled").
+		State("paid").
+		Transition("paid").On("ship").GoTo("shipped").
+		State("canceled").Final().
+		State("shipped").Final().
+		Initial("open").
+		Quench()
+
+	result := verify.Verify(m, verify.Coverage([]string{"pay", "ship"}))
+	rep, _ := result.Coverage()
+	fmt.Printf("state coverage: %.0f%%\n", rep.StateCoverage()*100)
+	fmt.Printf("uncovered states: %v\n", rep.UncoveredStates)
+	fmt.Printf("uncovered transitions: %v\n", rep.UncoveredTransitions)
+
+	// Output:
+	// state coverage: 75%
+	// uncovered states: [canceled]
+	// uncovered transitions: [open -abandon-> canceled]
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").
