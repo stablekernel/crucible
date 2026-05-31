@@ -63,6 +63,16 @@
 // Events are the sequence a driver fires to drive an instance from the initial
 // state to the target.
 //
+// Alongside the property checkers, [CoveringSuite] is a producer: it generates a
+// set of typed event sequences that together exercise every reachable state and
+// transition, walking the same configuration-product explorer greedily until
+// nothing reachable is left uncovered. Feeding its output back into [Coverage]
+// reports full coverage of the reachable universe — that round-trip is its
+// guarantee. It is a covering suite, not a provably minimal one: the generator
+// favors a small, deterministic suite over a minimum-cardinality one, which is a
+// harder optimization it does not attempt. [MaxScenarioLength] caps each
+// scenario's length, splitting coverage across more, shorter sequences.
+//
 // The checks are purely static in the same sense as the analysis package: no
 // instance is cast, no event is fired, no guard or action is evaluated. A guard
 // can only ever prune an edge at run time, never add one, so a state proven
