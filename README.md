@@ -26,6 +26,7 @@ stability label.
 | `state/analysis`      | Static model-checking and path enumeration over a machine's IR.                  | experimental |
 | `state/evolution`     | Diffs two machine definitions and classifies the SemVer bump.                    | experimental |
 | `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | experimental |
+| `state/expr`          | Rich expression tier: CEL-backed guards type-checked against the context schema. | experimental |
 | `telemetry`           | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.        | experimental |
 | `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
 | `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |

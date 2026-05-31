@@ -1,8 +1,9 @@
-go 1.25
+go 1.25.0
 
 use (
 	./magefiles
 	./state
+	./state/expr
 	./telemetry
 	./telemetry/datadog
 	./telemetry/otel
