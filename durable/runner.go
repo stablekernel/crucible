@@ -246,11 +246,25 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	}
 
 	step := h.nextStep
-	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), Entries: h.drainClock()}
+	// Stamp this step's domain effects with their deterministic ids and carry them
+	// in the Record so the write-ahead append durably names every effect that must
+	// be dispatched before any dispatch happens.
+	des := dispatchableEffects(step, res.Effects)
+	effEnvs, err := recordEffects(des)
+	if err != nil {
+		return res, err
+	}
+	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), Entries: h.drainClock(), Effects: effEnvs}
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return res, err
 	}
 	h.nextStep++
+	// Dispatch AFTER the append: a crash in this window leaves the effect recorded
+	// but un-marked, so recovery redispatches it (at-least-once), deduped by id to
+	// exactly-once once it lands.
+	if err := h.dispatchEffects(ctx, des); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -412,6 +426,13 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			// recorded settlement that follows, mirroring the live Fire path.
 			if svc != nil {
 				svc.Absorb(ctx, res.Effects)
+			}
+			// Re-dispatch this step's domain effects, deduped by the Store's
+			// dispatched set: an effect already marked (it landed before the crash)
+			// is skipped; one recorded-but-un-marked (the crash fell between append
+			// and dispatch) is applied now — exactly-once across the crash boundary.
+			if err := r.dispatchReplayEffects(ctx, id, rec.Step, res.Effects); err != nil {
+				return nil, err
 			}
 		}
 	}

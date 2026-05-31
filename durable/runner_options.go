@@ -37,6 +37,12 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// that declares `InvokeActor` (or spawns actors dynamically) supplies it with
 	// WithActorPalette.
 	actorPalette map[string]state.ActorBehavior
+	// effectHandler applies each emitted domain effect exactly once. It is nil by
+	// default: without WithEffectHandler the Runner records effect ids but
+	// dispatches nothing, so a purely event-driven user is unaffected. A machine
+	// whose transitions emit side-effecting domain effects supplies it with
+	// WithEffectHandler.
+	effectHandler EffectHandler
 }
 
 // WithCheckpointEvery sets the checkpoint policy: the Runner persists a full
@@ -108,6 +114,30 @@ func WithActorPalette[S comparable, E comparable, C any](palette map[string]stat
 	return func(c *runnerConfig[S, E, C]) {
 		if len(palette) > 0 {
 			c.actorPalette = palette
+		}
+	}
+}
+
+// WithEffectHandler binds the seam the Runner calls to apply each emitted domain
+// effect — an email, a charge, a published message: any at-most-once side effect
+// a transition emits as a domain Effect value. A durable effect is applied
+// exactly once over the whole lifetime of an instance (the live run plus any
+// number of recoveries), deduped by a deterministic EffectID: the Runner stamps
+// each emitted effect, write-ahead persists the step Record carrying those ids,
+// then invokes the handler for every id not already marked dispatched, marking
+// each as it succeeds. A handler error is surfaced (wrapped in ErrEffectDispatch)
+// and the failing effect is left un-marked, so a later recovery retries it
+// (at-least-once until it succeeds; exactly-once once it does).
+//
+// The handler receives the stamped EffectID and the live effect value. It is nil
+// by default: without it the Runner records effect ids but dispatches nothing, so
+// an event-driven user is unaffected. Kernel driver effects (services, timers,
+// actors) are NOT routed here — they are absorbed by the ServiceRunner,
+// Scheduler, and ActorSystem; only domain effects reach the handler.
+func WithEffectHandler[S comparable, E comparable, C any](h EffectHandler) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if h != nil {
+			c.effectHandler = h
 		}
 	}
 }

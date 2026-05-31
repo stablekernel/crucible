@@ -20,4 +20,11 @@ var (
 	// ErrInstanceExists is reported by Runner.Start when the InstanceID is already
 	// present in the Store, so a fresh Start does not clobber a recorded instance.
 	ErrInstanceExists = errors.New("crucible/durable: instance already exists")
+
+	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
+	// handler (WithEffectHandler) while applying an emitted effect. The effect was
+	// persisted (write-ahead) but not marked dispatched, so a later recovery
+	// retries it; callers match this with errors.Is to distinguish a dispatch
+	// failure from a kernel transition or persistence error.
+	ErrEffectDispatch = errors.New("crucible/durable: effect dispatch failed")
 )
