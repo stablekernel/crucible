@@ -173,11 +173,13 @@ with `m.ToJSON()`, reloaded with `state.LoadFromJSON`, analyzed with
 
 ## Subpackages
 
-| Package             | What it is                                                          |
-| ------------------- | ------------------------------------------------------------------ |
-| `state/analysis`    | Static model-checking and path enumeration over a machine's IR.    |
-| `state/evolution`   | Diffs two machine definitions and classifies the SemVer bump.      |
-| `state/conformance` | Reusable harness for driving golden scenarios against a machine.   |
+| Package                 | What it is                                                          |
+| ----------------------- | ------------------------------------------------------------------ |
+| `state/analysis`        | Static model-checking and path enumeration over a machine's IR.    |
+| `state/evolution`       | Diffs two machine definitions and classifies the SemVer bump.      |
+| `state/conformance`     | Reusable harness for driving golden scenarios against a machine.   |
+| `state/verify`          | Property and temporal verification: reachability, liveness, invariants, bounded simulation, coverage, and covering-suite generation. |
+| `state/verify/symbolic` | Bounded symbolic guard reasoning: satisfiability, disjointness, and competing-transition (nondeterminism) detection over the Core guard tree. |
 
 ## Stability
 
