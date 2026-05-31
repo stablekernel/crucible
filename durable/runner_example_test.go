@@ -129,3 +129,77 @@ func ExampleRunner_durableTimer() {
 	// recovered state: reminded
 	// reminded: true
 }
+
+// quoteCtx is a small JSON-marshalable context for the invoked-service example.
+type quoteCtx struct {
+	Quote string `json:"quote"`
+}
+
+// quoteMachine invokes a pricing service on entering quoting, folding the returned
+// quote into context on its onDone.
+func quoteMachine(fn state.ServiceFn[*quoteCtx]) *state.Machine[string, string, *quoteCtx] {
+	return state.Forge[string, string, *quoteCtx]("quote").
+		Service("price", fn).
+		Reducer("save", func(in state.AssignCtx[*quoteCtx]) *quoteCtx {
+			c := in.Entity
+			if q, ok := in.Event.(string); ok {
+				c.Quote = q
+			}
+			return c
+		}).
+		State("cart").
+		State("quoting").Invoke("price", "priced", "failed").
+		State("quoted").Final().
+		State("rejected").Final().
+		Initial("cart").
+		Transition("cart").On("checkout").GoTo("quoting").
+		Transition("quoting").On("priced").GoTo("quoted").Assign("save").
+		Transition("quoting").On("failed").GoTo("rejected").
+		Quench()
+}
+
+// ExampleHandle_RunService shows the invoked-service record/replay seam: a pricing
+// service runs exactly once on the live path (its returned quote recorded), and on
+// recovery the recorded quote is replayed back through the same settle seam without
+// re-invoking the service — so the recovered instance reaches the same state and
+// context, and the service's call count never advances past one.
+func ExampleHandle_RunService() {
+	ctx := context.Background()
+	var calls int
+	fn := func(context.Context, state.ServiceCtx[*quoteCtx]) (any, error) {
+		calls++
+		return fmt.Sprintf("quote-%d", calls), nil
+	}
+	reg := state.NewRegistry[*quoteCtx]().Service("price", fn)
+	m := quoteMachine(fn)
+	store := durable.NewMemStore()
+	const id = durable.InstanceID("quote-1")
+
+	runner := durable.NewRunner(m, store, durable.WithServiceRegistry[string, string, *quoteCtx](reg))
+	h, err := runner.Start(ctx, id, &quoteCtx{}, state.WithInitialState("cart"))
+	if err != nil {
+		panic(err)
+	}
+	if _, err = h.Fire(ctx, "checkout"); err != nil {
+		panic(err)
+	}
+	// Run the pricing service: it executes once and routes its result through onDone.
+	if _, _, err = h.RunService(ctx, state.InvokeID("quote", "quoting", 0)); err != nil {
+		panic(err)
+	}
+
+	// Recover: the recorded quote is replayed; the service is not run again.
+	recovered, err := durable.Recover(ctx, m, store, id,
+		durable.WithServiceRegistry[string, string, *quoteCtx](reg))
+	if err != nil {
+		panic(err)
+	}
+	snap := recovered.Instance().Snapshot()
+	fmt.Println("recovered state:", snap.Current)
+	fmt.Println("recovered quote:", snap.Context.Quote)
+	fmt.Println("service calls:", calls)
+	// Output:
+	// recovered state: quoted
+	// recovered quote: quote-1
+	// service calls: 1
+}

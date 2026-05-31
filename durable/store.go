@@ -38,6 +38,24 @@
 // replay is wall-clock-independent. A purely event-driven machine reads no clock
 // and records no clock entries. Drive timers with Handle.Tick (a host from its
 // own timer loop, a test after advancing a fake clock).
+//
+// # Invoked services (the service seam)
+//
+// An invoked service (`invoke`) produces whatever the host's ServiceFn computes —
+// an external fetch, a query, a clock- or randomness-dependent value — so its
+// result is not a pure function of the kernel inputs and must be recorded. A
+// durable service runs exactly once, on the live path, and its result is recorded;
+// on recovery the recorded result is replayed back through the same settle seam and
+// the service is never re-invoked. The Runner wraps the kernel's reusable host
+// driver, state.ServiceRunner: on the live path Handle.RunService resolves and runs
+// the service (against the registry supplied with WithServiceRegistry) and journals
+// the raw outcome as a JournalServiceResult correlated by the invocation id; on
+// recovery the recorded outcomes are replayed in order through the runner's
+// SettleDone / SettleError so the kernel re-fires the identical onDone / onError
+// event with the identical data and re-derives byte-identical context. This is the
+// standard durable-execution guarantee: the external call happens once, and
+// recovery is a pure replay rather than a re-execution. Wire the services with
+// WithServiceRegistry and settle them with Handle.RunService.
 package durable
 
 import (

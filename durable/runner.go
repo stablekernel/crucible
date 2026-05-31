@@ -34,9 +34,15 @@ import (
 // Runner owns each instance's delayed-transition scheduler and wraps the clock
 // (WithRunnerClock) so every reading the scheduler consumes — arming a timer's
 // deadline or testing dueness — is journaled and returned verbatim on recovery,
-// making timer-driven transitions durable and replay wall-clock-independent. The
-// remaining seams (invoked services, actors) arrive in later work; a purely
-// event-driven machine records no Entries.
+// making timer-driven transitions durable and replay wall-clock-independent.
+//
+// Invoked services are the second recorded seam: a service runs exactly once on
+// the live path (Handle.RunService, against the registry supplied with
+// WithServiceRegistry) and its result is journaled as a JournalServiceResult; on
+// recovery the recorded result is replayed back through the kernel's settle seam,
+// so the service is never re-invoked and the same onDone / onError event re-fires
+// with the same data. The actor seam arrives in later work; a purely event-driven
+// machine records no Entries.
 type Runner[S comparable, E comparable, C any] struct {
 	machine *state.Machine[S, E, C]
 	store   Store
@@ -69,6 +75,9 @@ type Handle[S comparable, E comparable, C any] struct {
 
 	sched    *state.Scheduler[S, E, C]
 	clockBuf *[]state.JournalEntry // recording-clock accumulator, flushed per step
+
+	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
+	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
 }
 
 // drainClock returns and clears the clock readings accumulated since the last
@@ -125,6 +134,17 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		return nil, fmt.Errorf("durable: checkpointing start baseline for %q: %w", id, err)
 	}
 
+	// Install the invoked-service host driver and arm the initial configuration's
+	// services, so a service declared on the very first state is in flight before
+	// the first RunService. The service buffer journals each settled outcome for
+	// replay. A machine with no service registry wired runs no services and records
+	// no service entries.
+	svcBuf := make([]state.JournalEntry, 0)
+	svc := r.newServiceRunner(inst)
+	if svc != nil {
+		svc.Absorb(ctx, inst.StartEffects())
+	}
+
 	return &Handle[S, E, C]{
 		runner:   r,
 		id:       id,
@@ -132,7 +152,19 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		nextStep: 0,
 		sched:    state.NewScheduler(inst),
 		clockBuf: &buf,
+		svc:      svc,
+		svcBuf:   &svcBuf,
 	}, nil
+}
+
+// newServiceRunner builds the kernel host driver for invoked services bound to
+// inst, or nil when no service registry was wired (a purely event/timer-driven
+// machine invokes none).
+func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) *state.ServiceRunner[S, E, C] {
+	if r.cfg.serviceReg == nil {
+		return nil
+	}
+	return state.NewServiceRunner(inst, r.cfg.serviceReg)
 }
 
 // Fire drives one event through a durable instance identified by id, loading and
@@ -167,6 +199,13 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	// effect-free step keeps a purely event-driven machine free of clock reads.
 	if hasTimerEffect(res.Effects) {
 		h.sched.Absorb(ctx, res.Effects)
+	}
+
+	// Arm or stop this step's invoked services so a service the step entered is in
+	// flight for a subsequent RunService. The kernel emits StartService / StopService
+	// as pure data; the host driver turns them into runnable services.
+	if h.svc != nil {
+		h.svc.Absorb(ctx, res.Effects)
 	}
 
 	step := h.nextStep
@@ -269,9 +308,29 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	}
 	sched := state.NewScheduler(inst)
 
+	// Install the invoked-service host driver and arm the restored configuration's
+	// services, so a service in flight at the checkpoint (or armed by a replayed
+	// step) can be re-settled from its recorded outcome without re-running it.
+	svcBuf := make([]state.JournalEntry, 0)
+	svc := r.newServiceRunner(inst)
+	if svc != nil {
+		svc.Absorb(ctx, inst.StartEffects())
+	}
+
 	for i := range tail {
 		rec := &tail[i]
 		switch {
+		case hasServiceEntry(rec):
+			// Re-settle each recorded invoked-service outcome through the same settle
+			// seam the live run drove, in recorded (settle) order, so the kernel
+			// re-fires the identical onDone / onError event with the identical data —
+			// running no service. The settle absorbs its own follow-on StartService
+			// effects, so a chained invoke arms its successor for the next entry.
+			for _, entry := range serviceEntries(rec) {
+				if err := replayService(ctx, svc, entry); err != nil {
+					return nil, fmt.Errorf("durable: at step %d for %q: %w", rec.Step, id, err)
+				}
+			}
 		case rec.Tick:
 			// Re-derive the timers the live tick fired: ticking the replay clock
 			// returns the recorded readings, so the same deadlines come due and the
@@ -292,6 +351,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			// scheduler's pending set is reconstructed with the recorded deadlines.
 			if hasTimerEffect(res.Effects) {
 				sched.Absorb(ctx, res.Effects)
+			}
+			// Arm this step's services so a service it entered is in flight for the
+			// recorded settlement that follows, mirroring the live Fire path.
+			if svc != nil {
+				svc.Absorb(ctx, res.Effects)
 			}
 		}
 	}
@@ -319,6 +383,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		nextStep: next,
 		sched:    sched,
 		clockBuf: &buf,
+		svc:      svc,
+		svcBuf:   &svcBuf,
 	}, nil
 }
 
