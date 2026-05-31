@@ -24,6 +24,49 @@ type goldenCase struct {
 	opts    []verify.Option
 }
 
+// combinedMachine is a machine designed to exercise every FindingKind in a
+// single Verify pass. It combines:
+//
+//   - a forking top level (open -> shipped via pay/pack/ship, open -> canceled)
+//     that supports plain reachability and conditional-reachability checks;
+//   - a parallel superstate (active) with two orthogonal regions (Exec, Audit)
+//     so invariant checking and bounded simulation see co-active leaf configurations;
+//   - a cancel terminal at the top level so liveness ("always eventually shipped")
+//     fails, yielding a counterexample.
+//
+// Structure:
+//
+//	open -pay-> processing -pack-> packaged -ship-> shipped(final)
+//	open -cancel-> canceled(final)        ← liveness trap for "shipped"
+//	open -audit-> active(parallel):
+//	  Exec:  running -done-> finished(final)
+//	  Audit: logging -flush-> flushed(final)
+func combinedMachine() *state.Machine[string, string, any] {
+	return forge("combined").
+		State("open").
+		Transition("open").On("pay").GoTo("processing").
+		Transition("open").On("cancel").GoTo("canceled").
+		Transition("open").On("audit").GoTo("active").
+		State("processing").
+		Transition("processing").On("pack").GoTo("packaged").
+		State("packaged").
+		Transition("packaged").On("ship").GoTo("shipped").
+		State("shipped").Final().
+		State("canceled").Final().
+		SuperState("active").
+		Region("Exec").Initial("running").
+		SubState("running").On("done").GoTo("finished").
+		SubState("finished").Final().
+		EndRegion().
+		Region("Audit").Initial("logging").
+		SubState("logging").On("flush").GoTo("flushed").
+		SubState("flushed").Final().
+		EndRegion().
+		EndSuperState().
+		Initial("open").
+		Quench()
+}
+
 func goldenCases() []goldenCase {
 	return []goldenCase{
 		{name: "linear", machine: linearChain()},
@@ -89,6 +132,52 @@ func goldenCases() []goldenCase {
 			// Both regions driven to their terminals: full coverage of the product space.
 			opts: []verify.Option{verify.Coverage([]string{"activate", "work", "report"})},
 		},
+		{
+			// combined exercises every FindingKind in one Verify pass, so Result.String()
+			// renders a coherent multi-kind report and the golden pins the combined output.
+			name:    "combined",
+			machine: combinedMachine(),
+			opts: []verify.Option{
+				// KindConditionalReachability: reach shipped without canceling (satisfiable).
+				verify.ReachAvoiding("shipped", "canceled"),
+				// KindLiveness: "always eventually shipped" fails because canceled is a trap.
+				verify.AlwaysEventually("shipped"),
+				// KindInvariant: running and logging are co-active in the parallel superstate.
+				verify.CheckInvariant(
+					verify.MutualExclusion("running", "logging"), // violated: co-active in active
+					verify.NeverActive("canceled"),               // violated: cancel reaches it
+				),
+				// KindBoundedViolation: oracle fails when running AND logging are co-active.
+				verify.SimulateBounded("co-running-logging", 8,
+					goldenActiveContains("running", "logging")),
+				// KindCoverage: one scenario covers pay->pack->ship but leaves cancel and audit uncovered.
+				verify.Coverage([]string{"pay", "pack", "ship"}),
+			},
+		},
+	}
+}
+
+// TestGoldenReport_Combined_Stable asserts the combined multi-kind report is
+// byte-identical across many runs, verifying the determinism property for the
+// full FindingKind surface in one pass.
+func TestGoldenReport_Combined_Stable(t *testing.T) {
+	m := combinedMachine()
+	opts := []verify.Option{
+		verify.ReachAvoiding("shipped", "canceled"),
+		verify.AlwaysEventually("shipped"),
+		verify.CheckInvariant(
+			verify.MutualExclusion("running", "logging"),
+			verify.NeverActive("canceled"),
+		),
+		verify.SimulateBounded("co-running-logging", 8,
+			goldenActiveContains("running", "logging")),
+		verify.Coverage([]string{"pay", "pack", "ship"}),
+	}
+	first := verify.Verify(m, opts...).String()
+	for i := 0; i < 20; i++ {
+		if got := verify.Verify(m, opts...).String(); got != first {
+			t.Fatalf("run %d differs from run 0:\ngot:\n%s\nwant:\n%s", i+1, got, first)
+		}
 	}
 }
 
