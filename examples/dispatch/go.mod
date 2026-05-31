@@ -8,7 +8,10 @@ replace github.com/stablekernel/crucible/state/expr => ../../state/expr
 
 replace github.com/stablekernel/crucible/examples/fooddelivery => ../fooddelivery
 
+replace github.com/stablekernel/crucible/durable => ../../durable
+
 require (
+	github.com/stablekernel/crucible/durable v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/examples/fooddelivery v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
 )

@@ -430,6 +430,34 @@ func NewModel() (*state.Machine[Stage, Signal, Order], error) {
 	return ir.Provide(reg).Quench(), nil
 }
 
+// KitchenBehavior returns the kitchen actor's behavior. It is exported so hosts
+// (and the dispatch showcase) can drive the fulfillment actors directly — for
+// example registering it in a durable runner's actor palette under "kitchen" —
+// rather than only through the example's Rig.
+func KitchenBehavior() state.ActorBehavior { return kitchenBehavior() }
+
+// CourierBehavior returns the courier actor's behavior. It is exported so hosts
+// (and the dispatch showcase) can drive the fulfillment actors directly — for
+// example registering it in a durable runner's actor palette under "courier" —
+// rather than only through the example's Rig.
+func CourierBehavior() state.ActorBehavior { return courierBehavior() }
+
+// KitchenCook is the actor-driving message that advances the kitchen child machine
+// to its final, plated state. It is exported so hosts (and the dispatch showcase)
+// can drive the fulfillment actors directly: deliver it to a running kitchen actor
+// (as an any) to complete it and re-fire the parent's PlatedUp. Its type is
+// unexported by design; consumers pass it as an opaque any to the actor delivery
+// seam.
+const KitchenCook = kitchenCook
+
+// CourierDrive is the actor-driving message that advances the courier child machine
+// to its final, delivered state. It is exported so hosts (and the dispatch
+// showcase) can drive the fulfillment actors directly: deliver it to a running
+// courier actor (as an any) to complete it and re-fire the parent's DroppedOff. Its
+// type is unexported by design; consumers pass it as an opaque any to the actor
+// delivery seam.
+const CourierDrive = courierDrive
+
 // ServiceRegistry returns a registry holding the order's payment services
 // (authorize and refund), so a host's ServiceRunner can actually run them rather
 // than settling them deterministically. The example's Rig wires its runner with this

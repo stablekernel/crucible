@@ -11,7 +11,16 @@
 // The result is a [ProofReport] a host can assert on at startup, in a test, or in a
 // release gate.
 //
-// Later capabilities build on this proven core — running the saga durably, across a
+// The next capability runs the proven saga durably. [RunCrashRecovery] drives an
+// order to its live Active fulfillment configuration under the durable runtime backed
+// by an on-disk store, simulates a process crash, and reconstructs the order from the
+// store alone — its state, payment hold, and folded log intact — then drives it on to
+// Delivered. [RunTimeTravel] records the same happy path through a history-retaining
+// store and reconstructs the order's state at an earlier point in its lifecycle,
+// read-only. Both reuse the saga wholesale — its model, payment services, and
+// kitchen/courier actor behaviors — driven through the durable Handle API.
+//
+// Later capabilities build on this proven, durable core — running the saga across a
 // cluster, over a transport, and under observation — each layered on as an additive
 // addition without disturbing the proof.
 package dispatch
