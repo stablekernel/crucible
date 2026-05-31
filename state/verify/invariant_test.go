@@ -144,6 +144,92 @@ func TestNeverActive_Holds_NeverEntered_Compound(t *testing.T) {
 	}
 }
 
+// parallelMachineWithSelfInitial returns the same topology as parallelMachine()
+// but adds .Initial("active") so the builder records compoundInitial[active]==active
+// in addition to the two region initials. This is the degenerate shape that
+// previously caused configGraph.descend to recurse infinitely; the test verifies
+// that descend terminates and that the parallel-violation verdict is unchanged.
+func parallelMachineWithSelfInitial() *state.Machine[string, string, any] {
+	return forge("parallel-self-initial").
+		State("offline").
+		Transition("offline").On("activate").GoTo("active").
+		SuperState("active").
+		Region("Exec").
+		Initial("idle").
+		SubState("idle").On("work").GoTo("busy").
+		SubState("busy").Final().
+		EndRegion().
+		Region("Tele").
+		Initial("silent").
+		SubState("silent").On("report").GoTo("loud").
+		SubState("loud").Final().
+		EndRegion().
+		Initial("active"). // self-referential: compoundInitial[active]==active
+		EndSuperState().
+		Initial("offline").
+		Quench()
+}
+
+// TestMutualExclusion_ParallelRegions_SelfInitial ensures that when a parallel
+// superstate carries both region initials AND a self-referential compoundInitial
+// entry (SuperState.Initial(itself)), descend does not recurse infinitely and the
+// violation verdict is identical to the plain parallel machine.
+func TestMutualExclusion_ParallelRegions_SelfInitial(t *testing.T) {
+	inv := verify.MutualExclusion("busy", "loud")
+	// The test returning at all proves descend terminates (no infinite loop).
+	res := verify.Verify(parallelMachineWithSelfInitial(), verify.CheckInvariant(inv))
+	f, ok := res.Invariant(inv.Label())
+	if !ok {
+		t.Fatal("expected an invariant finding")
+	}
+	if f.Reachable {
+		t.Fatalf("busy and loud are co-active in parallel regions; invariant must be violated; got %s", res)
+	}
+	// The counterexample must name both co-active leaves.
+	config := f.Witness.Target
+	if !containsAll(config, "busy", "loud") {
+		t.Errorf("counterexample config %q must name both co-active leaves busy and loud", config)
+	}
+	if len(f.Witness.Steps) == 0 {
+		t.Error("a violation must carry a counterexample witness path")
+	}
+}
+
+// TestMutualExclusion_CompoundState_DistinctInitial exercises the
+// compoundInitial branch of configGraph.descend where child != node — a
+// compound (hierarchical) superstate whose Initial is a distinct substate.
+// The machine has a "running" superstate with two substates (starting,
+// executing); descend must follow compoundInitial["running"]=="starting" and
+// return ["starting"]. The two substates are mutually exclusive (only one can
+// be active at a time inside the compound), so the invariant holds.
+func TestMutualExclusion_CompoundState_DistinctInitial(t *testing.T) {
+	// "running" is a compound state whose InitialChild is "starting".
+	// descend("running") must traverse compoundInitial and return ["starting"],
+	// exercising the child != node branch (line 209 of invariant.go).
+	m := forge("compound-distinct-initial").
+		State("idle").
+		Transition("idle").On("start").GoTo("running").
+		SuperState("running").
+		Initial("starting").
+		SubState("starting").On("go").GoTo("executing").
+		SubState("executing").Final().
+		EndSuperState().
+		Initial("idle").
+		Quench()
+	inv := verify.MutualExclusion("starting", "executing")
+	res := verify.Verify(m, verify.CheckInvariant(inv))
+	f, ok := res.Invariant(inv.Label())
+	if !ok {
+		t.Fatal("expected an invariant finding")
+	}
+	if !f.Reachable {
+		t.Errorf("compound substates are mutually exclusive; invariant must hold; got %s", res)
+	}
+	if len(f.Witness.Steps) != 0 {
+		t.Errorf("a holding invariant carries no counterexample, got %v", f.Witness.Steps)
+	}
+}
+
 func TestCheckInvariant_Compound_MutualExclusionAcrossArms(t *testing.T) {
 	// In a branching machine the two terminal arms are mutually exclusive: no
 	// configuration activates both leftEnd and rightEnd.
