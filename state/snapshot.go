@@ -120,6 +120,130 @@ type Snapshot[S comparable, E comparable, C any] struct {
 	// restores. It is empty for an instance with no spawned children, or when only
 	// the instance core (not the actor tree) is snapshotted.
 	Actors map[string]json.RawMessage `json:"actors,omitempty"`
+
+	// SnapshotVersion is the snapshot-format schema version of this envelope, so the
+	// serialization contract can evolve with explicit, detectable versions. Snapshot
+	// stamps it with CurrentSnapshotVersion; Restore validates it under the lenient
+	// restore-version posture (accept within the current major, reject across a major
+	// mismatch). A zero value is a pre-versioning snapshot and is treated as the
+	// current version on restore.
+	SnapshotVersion int `json:"snapshotVersion,omitempty"`
+	// MachineVersion is the machine DEFINITION version (the IR Version) the snapshot
+	// was taken from, stamped alongside the Machine name so a restored instance
+	// self-identifies which version of the machine it belongs to — the precondition
+	// for live migration. It is advisory by default at restore (recorded, surfaced,
+	// not enforced) so version stamping is non-breaking; RejectMachineVersionMismatch
+	// opts into strict rejection.
+	MachineVersion string `json:"machineVersion,omitempty"`
+	// MachineID is the machine definition id (the IR ID), carried alongside
+	// MachineVersion so a migrator can resolve the source definition unambiguously.
+	MachineID string `json:"machineId,omitempty"`
+
+	// Journal is the reserved replay journal: the per-step record of external,
+	// nondeterministic results (invoked-service done-output, actor messages, clock
+	// reads, randomness) so a future deterministic replay returns the recorded value
+	// rather than re-invoking the source. It is empty at this version under the
+	// recording contract documented on JournalEntry; the runtime that populates and
+	// consumes it is host-side. Reserved and optional: it round-trips empty and
+	// populated.
+	Journal []JournalEntry `json:"journal,omitempty"`
+
+	// InFlightServices is the reserved slot for invoked services that were started
+	// but not yet resolved at snapshot time (id + input + the OnDone/OnError routing
+	// events), so a future distributed/async resume can re-establish them. Empty at
+	// this version under the quiescence assumption; present so resume never needs a
+	// new field.
+	InFlightServices []InFlightService `json:"inFlightServices,omitempty"`
+	// Mailboxes is the reserved slot for per-actor mailbox backlog (queued but
+	// unprocessed envelopes), keyed by actor id, for a future distributed/async
+	// resume where a node can crash mid-delivery. Empty at this version under the
+	// quiescence assumption (mailboxes are drained at a snapshot point); present so a
+	// backlog never needs a new field. This closes the documented mailbox-loss gap in
+	// the actor-tree snapshot.
+	Mailboxes map[string][]json.RawMessage `json:"mailboxes,omitempty"`
+}
+
+// CurrentSnapshotVersion is the snapshot-format schema version stamped by
+// Snapshot and validated by Restore. It is the major.minor schema generation of
+// the Snapshot envelope encoded as major*1000 + minor, so a single int both orders
+// versions and exposes the major for the restore-version posture: a snapshot is
+// restorable within the same major (snapshotMajor), and a major mismatch is
+// rejected. Version 1 is (1*1000 + 0); a future additive field bumps the minor, a
+// breaking change bumps the major.
+const CurrentSnapshotVersion = 1 * snapshotMajorScale
+
+// snapshotMajorScale is the multiplier separating the snapshot-version major from
+// its minor in the single CurrentSnapshotVersion int.
+const snapshotMajorScale = 1000
+
+// snapshotMajor returns the major component of a snapshot-format version, used by
+// the restore-version posture to accept within a major and reject across one.
+func snapshotMajor(v int) int { return v / snapshotMajorScale }
+
+// JournalKind classifies a JournalEntry's recorded nondeterministic result, so a
+// replay routes each recorded value back to the source that produced it.
+type JournalKind string
+
+// JournalKind values, one per nondeterministic source the replay contract covers.
+const (
+	// JournalServiceResult records an invoked service's OnDone/OnError result
+	// payload, correlated by its invocationID.
+	JournalServiceResult JournalKind = "serviceResult"
+	// JournalActorMessage records an actor message payload, correlated by the
+	// actorInvocationID of the routed actor.
+	JournalActorMessage JournalKind = "actorMessage"
+	// JournalClockRead records a Clock.Now() reading consumed during a step.
+	JournalClockRead JournalKind = "clockRead"
+	// JournalRandom records a host randomness draw consumed during a step.
+	JournalRandom JournalKind = "random"
+)
+
+// JournalEntry records one external, nondeterministic resolution so a future
+// deterministic replay returns the recorded value rather than re-invoking its
+// source. It is the unit of the reserved Snapshot.Journal.
+//
+// The recording contract (locked here; the recording/replay runtime is host-side):
+// any result that is NOT a pure function of (current configuration, context, event
+// payload, machine definition) is nondeterministic and MUST be recordable as a
+// JournalEntry so replay returns the recorded value. The nondeterministic sources
+// are the invoked-service OnDone/OnError result payloads, actor message payloads,
+// Clock.Now() reads, and host randomness — each correlated by a stable id reused
+// from the effect that armed it (invocationID / actorInvocationID / scheduleID).
+type JournalEntry struct {
+	// Step is the Fire ordinal the result resolved at, indexing the instance's
+	// recorded Traces, so replay applies the recorded value at the right step.
+	Step int `json:"step"`
+	// Kind classifies which nondeterministic source produced the result.
+	Kind JournalKind `json:"kind"`
+	// CorrelationID is the stable id of the source, reused from the arming effect
+	// (invocationID / actorInvocationID / scheduleID), so replay matches the
+	// recorded value to the resolution it stands in for.
+	CorrelationID string `json:"correlationId,omitempty"`
+	// Payload is the structured, JSON result the source produced (a service's
+	// done-output, an actor message), returned verbatim on replay.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// ClockUnixNano is the recorded Clock.Now() reading (Unix nanoseconds) for a
+	// JournalClockRead entry, returned on replay so time-dependent transitions
+	// resolve identically.
+	ClockUnixNano int64 `json:"clockUnixNano,omitempty"`
+}
+
+// InFlightService is the reserved record of an invoked service started but not yet
+// resolved at snapshot time, so a future distributed/async resume can re-establish
+// it. It mirrors the StartService effect's coordinates: the invocation id, the
+// service src name, the input, and the OnDone/OnError routing event labels.
+type InFlightService struct {
+	// ID is the invocationID of the started service, the stable correlation id a
+	// resolving JournalEntry reuses.
+	ID string `json:"id"`
+	// Src is the service src name (the registry key) the host re-starts.
+	Src string `json:"src,omitempty"`
+	// Input is the structured input the service was started with.
+	Input json.RawMessage `json:"input,omitempty"`
+	// OnDone and OnError are the routing event labels the host re-fires the result
+	// through after the service resolves.
+	OnDone  string `json:"onDone,omitempty"`
+	OnError string `json:"onError,omitempty"`
 }
 
 // PendingRefs is the descriptive inventory of an instance's live timers, invoked
@@ -180,14 +304,17 @@ func (jsonCodec[C]) Decode(b []byte) (C, error) {
 func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
 	cfg := i.Configuration()
 	snap := Snapshot[S, E, C]{
-		Machine:        i.machine.name,
-		Current:        i.current,
-		Configuration:  cfg,
-		Context:        i.entity,
-		HistoryShallow: copyMap(i.historyShallow),
-		HistoryDeep:    copyLeafMap(i.historyDeep),
-		Traces:         i.History(),
-		Status:         StatusRunning,
+		Machine:         i.machine.name,
+		Current:         i.current,
+		Configuration:   cfg,
+		Context:         i.entity,
+		HistoryShallow:  copyMap(i.historyShallow),
+		HistoryDeep:     copyLeafMap(i.historyDeep),
+		Traces:          i.History(),
+		Status:          StatusRunning,
+		SnapshotVersion: CurrentSnapshotVersion,
+		MachineVersion:  i.machine.envelope.version,
+		MachineID:       i.machine.envelope.id,
 	}
 	if i.InFinal() {
 		snap.Status = StatusDone
@@ -265,6 +392,43 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 			Reason: fmt.Sprintf("snapshot machine %q does not match target machine %q", snap.Machine, m.name),
 		}
 	}
+
+	rcfg := restoreConfig[S]{}
+	for _, o := range opts {
+		o(&rcfg)
+	}
+
+	// Lenient restore-version posture (frozen at v1): validate the snapshot-format
+	// schema version. A zero version is a pre-versioning snapshot, treated as the
+	// current version. A version within the current major is accept-and-upgrade; a
+	// major mismatch (newer or older) is rejected with a typed *SnapshotVersionError.
+	sv := snap.SnapshotVersion
+	if sv == 0 {
+		sv = CurrentSnapshotVersion
+	}
+	if sv < 0 || snapshotMajor(sv) != snapshotMajor(CurrentSnapshotVersion) {
+		return nil, &SnapshotVersionError{
+			Kind:    "snapshotFormat",
+			Machine: m.name,
+			Got:     fmt.Sprintf("%d", snap.SnapshotVersion),
+			Want:    fmt.Sprintf("major %d", snapshotMajor(CurrentSnapshotVersion)),
+			Reason:  "snapshot format major version is incompatible with this build",
+		}
+	}
+
+	// Machine definition version is advisory by default (recorded, not enforced) so
+	// version stamping is non-breaking; RejectMachineVersionMismatch opts into a
+	// strict reject across a differing definition version.
+	if rcfg.rejectMachineVersion && snap.MachineVersion != "" && snap.MachineVersion != m.envelope.version {
+		return nil, &SnapshotVersionError{
+			Kind:    "machineVersion",
+			Machine: m.name,
+			Got:     snap.MachineVersion,
+			Want:    m.envelope.version,
+			Reason:  "snapshot machine version does not match target machine version",
+		}
+	}
+
 	cfg := snap.Configuration
 	if len(cfg) == 0 {
 		if _, ok := m.resolveNode(snap.Current); !ok {
@@ -282,10 +446,6 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		}
 	}
 
-	rcfg := restoreConfig[S]{}
-	for _, o := range opts {
-		o(&rcfg)
-	}
 	clock := rcfg.clock
 	if clock == nil {
 		clock = systemClock{}

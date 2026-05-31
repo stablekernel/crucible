@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -142,6 +143,20 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 	}
 }
 
+// marshalEventPayload renders the structured, JSON form of the event value driving
+// a Fire, for the journal/replay seam: a future deterministic replay reconstructs
+// the exact event from this payload rather than re-parsing the Event label. It is
+// a pure, allocation-only marshal — no IO — so Fire stays pure. An event with no
+// JSON encoding yields nil and the field is simply omitted, keeping the record
+// additive and the trace deterministic.
+func marshalEventPayload[E comparable](event E) json.RawMessage {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
 // seedTrace builds a fresh Trace for an internal sub-step (a raised event or an
 // eventless transition), tagged with the active leaf so the microstep record is
 // self-describing.
@@ -239,11 +254,12 @@ func (i *Instance[S, E, C]) fireOnce(ctx context.Context, event E) FireResult[S]
 	from := i.current
 
 	tr := Trace{
-		Machine:   m.name,
-		Event:     fmt.Sprint(event),
-		FromState: fmtState(from),
-		MatchedAt: fmtState(from),
-		Outcome:   OutcomeInvalidTransition,
+		Machine:      m.name,
+		Event:        fmt.Sprint(event),
+		EventPayload: marshalEventPayload(event),
+		FromState:    fmtState(from),
+		MatchedAt:    fmtState(from),
+		Outcome:      OutcomeInvalidTransition,
 	}
 
 	if _, ok := m.stateByName(from); !ok {

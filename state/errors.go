@@ -189,6 +189,27 @@ func (e *SnapshotError) Error() string {
 	return fmt.Sprintf("crucible/state: snapshot %s failed: %s", e.Op, e.Reason)
 }
 
+// SnapshotVersionError is returned by Restore when a snapshot's version identity
+// is incompatible with the target: a snapshot-format schema version across a major
+// boundary (always rejected, under the lenient restore-version posture), or — only
+// when RejectMachineVersionMismatch is set — a machine definition version that does
+// not match the target machine. Kind discriminates the two ("snapshotFormat" |
+// "machineVersion"); Machine names the target; Got and Want carry the offending and
+// expected versions; Reason carries the detail. It is the typed signal a migrator
+// or host keys version-mismatch handling on.
+type SnapshotVersionError struct {
+	Kind    string
+	Machine string
+	Got     string
+	Want    string
+	Reason  string
+}
+
+func (e *SnapshotVersionError) Error() string {
+	return fmt.Sprintf("crucible/state: snapshot %s version mismatch for machine %q: got %q, want %q: %s",
+		e.Kind, e.Machine, e.Got, e.Want, e.Reason)
+}
+
 // MultiRegionErr aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.

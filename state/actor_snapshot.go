@@ -68,6 +68,13 @@ type actorSnapshot struct {
 	// Done reports whether the actor had already reached its final state and been
 	// settled at snapshot time, so RestoreActors does not re-spawn a completed actor.
 	Done bool `json:"done"`
+	// Mailbox is the reserved slot for the actor's mailbox backlog (queued but
+	// unprocessed envelopes). Empty at this version under the quiescence assumption
+	// (mailboxes are drained by Step before a snapshot is taken), present so a future
+	// distributed/async resume — where a node can crash mid-delivery — has a place to
+	// carry the backlog without a format break. This reserves capacity for the
+	// mailbox-loss gap documented above.
+	Mailbox []json.RawMessage `json:"mailbox,omitempty"`
 	// Children is the recursive snapshots of this actor's own spawned children.
 	Children []actorSnapshot `json:"children,omitempty"`
 }

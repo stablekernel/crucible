@@ -314,8 +314,19 @@ const (
 // Trace is the kernel's canonical observability surface — pure data recorded
 // on every Fire.
 type Trace struct {
-	Machine            string                     `json:"machine,omitempty"`
-	Event              string                     `json:"event,omitempty"`
+	Machine string `json:"machine,omitempty"`
+	// Event is the human-readable label of the event that drove this Fire — the
+	// event's string rendering — kept for diagnostics, visualization, and the
+	// pinned emission-ordering goldens.
+	Event string `json:"event,omitempty"`
+	// EventPayload is the structured, JSON-serializable form of the event value
+	// that drove this Fire, recorded so a future deterministic replay can
+	// reconstruct the exact event rather than re-parse its label. It is the
+	// load-bearing journal companion to Event: Event stays the human label,
+	// EventPayload carries the machine-readable value. It is omitted when the event
+	// has no JSON form (e.g. an internal "always"/raise microstep marker), so the
+	// field is additive and the trace stays deterministic across a JSON round-trip.
+	EventPayload       json.RawMessage            `json:"eventPayload,omitempty"`
 	FromState          string                     `json:"fromState,omitempty"`
 	SelectedTransition *Transition[any, any, any] `json:"-"`
 	GuardsEvaluated    []string                   `json:"guardsEvaluated,omitempty"`
@@ -605,6 +616,7 @@ func Forge[S comparable, E comparable, C any](name string, opts ...ForgeOption) 
 		name:       name,
 		reg:        NewRegistry[C](),
 		stateIndex: map[S]*stateDef[S, E, C]{},
+		envelope:   irEnvelope{version: cfg.version, id: cfg.id},
 	}
 }
 
