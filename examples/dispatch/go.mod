@@ -16,11 +16,17 @@ replace github.com/stablekernel/crucible/transport => ../../transport
 
 replace github.com/stablekernel/crucible/wasm => ../../wasm
 
+replace github.com/stablekernel/crucible/telemetry => ../../telemetry
+
+replace github.com/stablekernel/crucible/telemetry/slog => ../../telemetry/slog
+
 require (
 	github.com/stablekernel/crucible/cluster v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/durable v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/examples/fooddelivery v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/telemetry v0.0.0
+	github.com/stablekernel/crucible/telemetry/slog v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/transport v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/wasm v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.81.1

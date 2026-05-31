@@ -45,6 +45,19 @@
 // exercises both verdicts, the resulting [PolyglotReport.Equivalent] is meaningful proof
 // the WebAssembly guard and the CEL guard decide the predicate identically.
 //
-// Later capabilities build on this proven, durable, distributed, polyglot core — adding
-// observation — each layered on as an additive addition without disturbing the proof.
+// The final capability observes the proven, durable saga through Crucible's
+// vendor-neutral telemetry seam. [RunObservedSaga] drives the order to Delivered under
+// the durable runtime and, for every transition, opens an "order.transition" span and
+// increments an "order.transitions" counter — each tagged with the from/to stage — so
+// the emitted telemetry narrates the order's path. There is no kernel hook into the
+// state machine; the host wraps its own drive calls. Telemetry arrives as an injected
+// [telemetry.Provider], so a host wires an slog, otel, or datadog adapter while the
+// silent [telemetry.Nop] default runs the saga allocation-free; the function returns an
+// [ObservedReport] of the observed facts so the run is verifiable from its return value.
+//
+// The capstone test ties the whole story together: it runs the same order machine
+// through all five capabilities in sequence — proven, durable, distributed, polyglot,
+// observed — asserting each stage's headline result, so the showcase reads as a single
+// narrative proving one machine runs proven, durable, distributed, polyglot, and
+// observed.
 package dispatch
