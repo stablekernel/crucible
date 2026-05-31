@@ -1,0 +1,4 @@
+reachability a: reachable via []
+reachability b: reachable via [next]
+reachability c: reachable via [next next]
+reachability d: reachable via [next next next]
