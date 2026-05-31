@@ -2,81 +2,154 @@
 // machine and returns, for every property it decides, a witness: the concrete
 // event sequence that proves or refutes the claim.
 //
+// # Overview
+//
 // Where [github.com/stablekernel/crucible/state/analysis] reports structural
 // defects (unreachable states, dead transitions, nondeterminism) as a flat
-// catalog, verify answers questions a caller poses about reachability and,
-// in later additions, safety and liveness. It is the property-checking layer
-// that sits on top of the analysis graph primitives rather than a second copy
-// of them: the reachable-state space is explored with the same guard-agnostic
-// breadth-first walk the analysis package already exposes through
-// [github.com/stablekernel/crucible/state/analysis.ShortestPaths], so a state
-// verify calls reachable is reachable in some run of the machine, and the
-// witness verify hands back is the minimal event sequence that gets there.
+// catalog, verify answers questions a caller poses about reachability, safety,
+// liveness, configuration invariants, bounded simulation, scenario coverage, and
+// covering-suite generation. It is the property-checking layer that sits on top
+// of the analysis graph primitives rather than a second copy of them.
 //
-// # Usage
+// # Structural model and fidelity guarantee
 //
-//	result := verify.Verify(machine, verify.Reachable("shipped"))
-//	for _, f := range result.Findings {
-//		fmt.Printf("%s %s: %s\n", f.Kind, f.State, f.Witness.Events())
-//	}
+// Every check in this package reasons over a guard-agnostic structural model of
+// the machine's state space. The model is built from the machine's public IR —
+// the same representation a JSON-loaded machine produces — so no instance is cast
+// and no guard or action is evaluated at check time.
 //
-// [Verify] takes a [state.Machine] built either by the Forge DSL or loaded from
-// JSON, and a tail of functional [Option] values that select which properties
-// to check. With no options it checks reachability of every declared state,
-// the foundational property the rest build on. [ReachAvoiding] adds a
-// conditional-reachability (safety) check — "reach X along some run that never
-// passes through Y" — answered by a witness-carrying constrained search that
-// prunes any configuration whose active states intersect the avoid-set.
-// [AlwaysEventually] adds a liveness check — "from every reachable
-// configuration, Z is always eventually reachable" (the CTL eventuality
-// AG EF Z) — answered by reverse reachability from Z: a reachable configuration
-// from which Z can never be reached is a counterexample, a configuration parked
-// in a Z-free terminal or cycle, and the finding carries the route to it.
+// Guard-agnostic means: the model assumes guards pass. A guard can only ever
+// prune a transition at run time, never add one, so the structural model is a
+// superset of any real machine's execution space. As a result:
+//
+//   - A state the model calls reachable is reachable in some run (the witness
+//     fires events that drive an instance there when guards cooperate).
+//   - An unreachable verdict means the model finds no structural path, which means
+//     no guard assignment can make it reachable in any run.
+//
+// The model's reachability verdict is cross-checked against the [analysis]
+// package's authoritative [analysis.KindUnreachableState] pass: verify consumes
+// that proven set rather than re-deriving it, so both packages agree on which
+// states are reachable and the two layers are consistent by construction.
+//
+// # The property checks
+//
+// [Verify] takes a [state.Machine] and a tail of functional [Option] values that
+// select which properties to check. Each decided property becomes a [Finding].
+// With no options, Verify checks reachability of every declared state.
+//
+// [Reachable] restricts the reachability check to named target states. With no
+// [Reachable] option, Verify checks every declared state.
+//
+// [ReachAvoiding] adds a conditional-reachability check — "reach X along some
+// run that never passes through Y". The search prunes every configuration whose
+// active states intersect the avoid-set, honoring hierarchy: a configuration is
+// "in Y" when any active leaf, enclosing ancestor, or initial-descent member is
+// Y, so avoiding a region leaf, a superstate, or a sibling initial-descent state
+// each forbids the whole configuration it belongs to. A satisfiable finding
+// carries the witnessing event sequence; an unsatisfiable one carries the zero
+// Witness.
+//
+// [AlwaysEventually] adds a liveness check — from every reachable configuration,
+// the target is always eventually reachable (the CTL eventuality AG EF target).
+// The check is answered by reverse reachability from the target: a reachable
+// configuration from which the target can never be reached is a counterexample.
+// A holding verdict (Reachable true) carries the zero Witness; a failing one
+// carries the route to the nearest stuck configuration — a target-free terminal
+// or a node in a target-free cycle — from which the target can never be reached.
+//
 // [CheckInvariant] adds configuration invariants — predicates over the
-// active-state configuration that must hold in every reachable configuration,
-// built with [MutualExclusion], [Implies], or [NeverActive]. Invariants are
-// decided by a configuration-product exploration that tracks the full set of
-// co-active leaves (so orthogonal parallel regions advancing independently are
-// modeled faithfully); a violation carries the shortest route to the nearest
-// configuration that breaks the predicate, whose Target names that configuration.
+// active-state configuration that must hold in every reachable configuration.
+// Build invariants with [MutualExclusion], [Implies], or [NeverActive]. The
+// exploration models the full set of co-active leaves over the
+// configuration-product space, so orthogonal parallel regions advancing
+// independently are modeled faithfully. A violation carries the shortest route
+// to the nearest configuration that breaks the predicate; its Witness.Target
+// names that configuration as a '|'-joined list of active leaves.
+//
 // [SimulateBounded] adds bounded exhaustive simulation — it enumerates the
-// machine's event sequences up to a depth bound over that same
+// machine's event sequences up to a depth bound over the same
 // configuration-product space, evaluates a caller-supplied [Oracle] at every
 // reached configuration, and reports the shortest trace whose configuration the
-// oracle rejects. Unlike the other checks it is bounded, not exact: "no violation
-// within the bound" guarantees only that the oracle held across the configurations
-// reachable in at most the given number of events, never that the property holds
-// in every run — a violation may still exist in a longer trace. A violation it
-// does report, by contrast, is real and replayable.
+// oracle rejects. A violation is real and replayable; a clean run is a bounded
+// guarantee only (see Caveats below).
+//
 // [Coverage] adds structural-coverage analysis — it replays a set of scenarios
-// (each an ordered event sequence) over that same configuration-product explorer
-// and reports which reachable states and transitions they exercise against the
-// reachable universe, with the concrete uncovered remainder and the coverage
-// fractions. Read the breakdown with [Result.Coverage]. The metric is consistent
-// with the other checks: each scenario drives the configuration along the same
-// structural edges the explorer follows, and an event that names no enabled
-// transition from the current configuration is a clean no-op — so an uncovered
-// state or transition is a real gap a scenario set leaves unexercised, the input a
-// CI gate uses to fail an under-tested suite.
-// Each decided property becomes a [Finding]; a finding that holds carries a
-// [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
-// Events are the sequence a driver fires to drive an instance from the initial
-// state to the target.
+// (each an ordered event sequence) over the configuration-product explorer and
+// reports which reachable states and transitions they exercise against the
+// reachable universe. The full breakdown is read with [Result.Coverage]; the
+// accompanying [Finding]'s Reachable field is true exactly when nothing is left
+// uncovered. An event that names no enabled transition from the current
+// configuration is a clean no-op, mirroring a kernel Fire of an unhandled event.
+//
+// # Covering-suite generation
 //
 // Alongside the property checkers, [CoveringSuite] is a producer: it generates a
 // set of typed event sequences that together exercise every reachable state and
 // transition, walking the same configuration-product explorer greedily until
 // nothing reachable is left uncovered. Feeding its output back into [Coverage]
-// reports full coverage of the reachable universe — that round-trip is its
-// guarantee. It is a covering suite, not a provably minimal one: the generator
-// favors a small, deterministic suite over a minimum-cardinality one, which is a
-// harder optimization it does not attempt. [MaxScenarioLength] caps each
-// scenario's length, splitting coverage across more, shorter sequences.
+// reports 100% coverage of the reachable universe — that round-trip is the
+// suite's guarantee. The suite is deterministic and stable across runs; it is a
+// covering suite, not a provably minimal one (the generator favors a small,
+// deterministic result over minimum cardinality). [MaxScenarioLength] caps each
+// scenario's event count, splitting coverage across more, shorter sequences.
 //
-// The checks are purely static in the same sense as the analysis package: no
-// instance is cast, no event is fired, no guard or action is evaluated. A guard
-// can only ever prune an edge at run time, never add one, so a state proven
-// reachable here is reachable in some run, and an unreachable verdict is exact.
+// # Witnesses and conformance cross-check
+//
+// A witness is an [analysis.Path] whose Events are the event sequence a driver
+// fires to drive an instance from the initial configuration to the target. For
+// reachability and conditional reachability, the witness proves the property: a
+// test suite can replay it through the conformance harness and confirm the
+// instance lands in the target state. For liveness and invariant violations, the
+// witness is a counterexample: replaying it drives an instance into the stuck or
+// violating configuration, making the defect tangible and drivable.
+//
+// This cross-check discipline is the package's reproducibility contract: every
+// non-trivial witness produced by verify has been confirmed replayable by the
+// package's own conformance cross-check tests, tying the static claim to the
+// kernel's executable semantics.
+//
+// # Caveats
+//
+// Guard-agnostic analysis is a structural over-approximation. The model is
+// deliberately wider than any guarded execution, so it can only prove that a
+// property holds structurally or that a structural path exists — it cannot
+// account for guard predicates narrowing the real run space. In practice:
+//
+//   - A reachable verdict means "reachable if the guards cooperate". If a guard
+//     in the real machine always blocks the path, the state is structurally but
+//     not practically reachable; that is a modeling concern, not a verify defect.
+//   - An unreachable verdict is exact: no run can reach the state regardless of
+//     guard values.
+//
+// Bounded simulation is NOT a proof of absence. A holding [SimulateBounded]
+// verdict ("no violation within the bound") guarantees only that the oracle held
+// across every configuration reachable in at most the given number of events. A
+// violation may still exist in a longer trace. A violation it does report is real
+// and replayable. For an exact, unbounded verdict over fixed structural predicates,
+// use [CheckInvariant] instead.
+//
+// Configuration invariants and all other checks are configuration-level —
+// predicates over the set of active states. Context-value or symbolic reasoning
+// (predicates over the runtime context type C, guard expressions, or data-flow
+// properties) is a separate capability not provided by this package.
+//
+// # Usage
+//
+//	result := verify.Verify(machine,
+//	    verify.Reachable("shipped"),
+//	    verify.AlwaysEventually("delivered"),
+//	    verify.CheckInvariant(verify.MutualExclusion("held", "paid")),
+//	    verify.SimulateBounded("never-shipped", 5, myOracle),
+//	    verify.Coverage([]string{"pay", "ship"}),
+//	)
+//	for _, f := range result.Findings {
+//	    fmt.Println(f.Kind, f.State, f.Reachable)
+//	}
+//
+// [Verify] never returns nil and never panics: a machine whose IR cannot be read
+// yields an empty result rather than an error, honoring the kernel's no-panic
+// contract for read-only inspection.
 //
 // The package imports only [state], the analysis package, and the standard
 // library, preserving the kernel's stdlib-only dependency stance. The API is
