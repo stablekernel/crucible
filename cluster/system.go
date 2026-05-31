@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -12,7 +13,7 @@ import (
 // Transport still serves its local actors; it simply cannot reach remote ones.
 var ErrNoTransport = errors.New("cluster: ref names a remote node but no transport is configured")
 
-// Transport moves an actor delivery to the node that owns the target actor. It is
+// Transport carries actor operations to the node that owns the target actor. It is
 // the host-supplied seam that keeps the kernel and this package's core free of any
 // network dependency: an in-memory transport drives tests, and a real network
 // transport implements the same interface.
@@ -24,6 +25,11 @@ type Transport interface {
 	// failed); a nil error with delivered=false means the node was reached but had
 	// no such running actor.
 	Deliver(ctx context.Context, ref state.ActorRef, event any) (delivered bool, err error)
+	// Spawn asks node to start an actor with the given id from the behavior its
+	// local system registered under src, passing input, and returns a ref to it
+	// (its Node set to node). An error reports a transport-level failure reaching
+	// node or a spawn that did not start on the far side.
+	Spawn(ctx context.Context, node, src, id string, input map[string]any) (state.ActorRef, error)
 }
 
 // System is the distributed actor system for one node: a local
@@ -98,6 +104,37 @@ func (s *System[S, E, C]) Deliver(ctx context.Context, ref state.ActorRef, event
 // node's actors; use Deliver with a remote ref to reach another node.
 func (s *System[S, E, C]) DeliverByID(ctx context.Context, id string, event any) bool {
 	return s.local.DeliverByID(ctx, id, event)
+}
+
+// Spawn starts an actor with the given id from the behavior registered under src,
+// on node. When node is this node (or empty) the actor is spawned in the local
+// ActorSystem; otherwise the spawn is routed over the Transport to node. It
+// returns a ref to the new actor with its Node set so the caller can address it
+// wherever it runs. A remote spawn with no Transport configured returns
+// ErrNoTransport.
+func (s *System[S, E, C]) Spawn(ctx context.Context, node, src, id string, input map[string]any) (state.ActorRef, error) {
+	if node == "" || node == s.node {
+		return s.SpawnLocal(ctx, src, id, input)
+	}
+	if s.transport == nil {
+		return state.ActorRef{}, ErrNoTransport
+	}
+	return s.transport.Spawn(ctx, node, src, id, input)
+}
+
+// SpawnLocal starts an actor with the given id from the behavior the local
+// ActorSystem registered under src, passing input, and returns a ref to it stamped
+// with this node so it is addressable from other nodes. It is the local half of
+// Spawn and the operation a Transport invokes on the owning node. An error reports
+// that the spawn did not start (for example, no behavior is registered under src).
+func (s *System[S, E, C]) SpawnLocal(ctx context.Context, src, id string, input map[string]any) (state.ActorRef, error) {
+	s.local.Absorb(ctx, []state.Effect{state.SpawnActor{ID: id, Src: state.Ref{Name: src}, Input: input}})
+	ref, ok := s.local.Ref(id)
+	if !ok {
+		return state.ActorRef{}, fmt.Errorf("cluster: spawn of %q from %q on node %q did not start", id, src, s.node)
+	}
+	ref.Node = s.node
+	return ref, nil
 }
 
 // Ref resolves a local actor id to its ref, reporting whether this node runs it.
