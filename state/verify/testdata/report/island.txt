@@ -1,0 +1,3 @@
+reachability closed: reachable via [close]
+reachability open: reachable via []
+reachability orphan: unreachable

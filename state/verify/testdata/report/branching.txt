@@ -1,0 +1,3 @@
+reachability leftEnd: reachable via [left]
+reachability rightEnd: reachable via [right]
+reachability start: reachable via []
