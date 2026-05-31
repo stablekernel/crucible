@@ -1,5 +1,7 @@
 package state
 
+import "log/slog"
+
 // This file declares the functional-option types for every public constructor
 // and operation, per the kernel's functional-options convention. Each is an
 // opaque type so new knobs arrive as new options, never as signature changes.
@@ -138,6 +140,7 @@ type castConfig[S comparable] struct {
 	hasInitial bool
 	clock      Clock
 	inspector  Inspector
+	logger     *slog.Logger
 }
 
 // WithClock injects the time seam an instance's delayed-transition driver uses.
@@ -160,6 +163,22 @@ func WithClock[S comparable](c Clock) CastOption[S] {
 // mutate the instance.
 func WithInspector[S comparable](insp Inspector) CastOption[S] {
 	return func(c *castConfig[S]) { c.inspector = insp }
+}
+
+// WithLogger wires a structured-logging seam an instance writes a terse,
+// fixed-shape record to as each Fire settles — distinct from the event-shaped
+// Inspector. Where an Inspector receives the full, typed InspectionEvent stream
+// for live observation and tooling, the logger is the conventional *slog.Logger a
+// host already threads through its services, so a Fire's outcome shows up in the
+// host's ordinary logs (machine, event, from, to, outcome) without the host
+// adapting an Inspector. It is no-op by default: with no WithLogger the instance
+// holds a nil logger and never logs, so the pure Fire step performs no IO and adds
+// zero overhead. The logger is written to synchronously on the Fire path at
+// slog.LevelDebug and must not block; it observes only and never mutates the
+// instance. Wire both seams when you want host logs AND structured inspection —
+// they are independent.
+func WithLogger[S comparable](l *slog.Logger) CastOption[S] {
+	return func(c *castConfig[S]) { c.logger = l }
 }
 
 // WithInitialState supplies the instance's starting state explicitly. Use it
@@ -205,8 +224,11 @@ type AssayOption func(*assayConfig)
 
 type assayConfig struct{ aggregate bool }
 
-// WithAggregate makes Assay collect all failing requirements in one pass.
-func WithAggregate() AssayOption { return func(c *assayConfig) { c.aggregate = true } }
+// Aggregate makes Assay collect all failing requirements in one pass instead of
+// failing fast at the first. It is a pure directive option (it carries no value),
+// so it drops the With prefix that value-carrying options keep — matching Strict
+// and CollectAll.
+func Aggregate() AssayOption { return func(c *assayConfig) { c.aggregate = true } }
 
 // PlanOption configures PlanPath.
 type PlanOption func(*planConfig)

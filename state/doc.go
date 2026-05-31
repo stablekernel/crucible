@@ -214,7 +214,65 @@
 // emits a StopService effect (auto-stop-on-exit), while Fire stays pure
 // — a host ServiceRunner runs the bound service and re-fires the invocation's
 // onDone (with the result) or onError (with the error) back through Fire, with a
-// deterministic settle-by-id harness for testing. Child-machine actors (invoking
-// another Machine as a sub-actor) and the actor model remain reserved-but-inert;
-// they arrive with the instance mailbox.
+// deterministic settle-by-id harness for testing.
+//
+// Child-machine actors are live: a state may invoke another Machine as a
+// sub-actor (InvokeActor) or spawn one dynamically (Spawn), driven by a host
+// ActorSystem that runs the child, routes its done-data to the parent's onDone and
+// its failure to the parent's onError, and carries inter-actor messages (SendTo /
+// SendParent / Respond / Forward) between mailboxes — all as host-dispatched
+// effects, so the pure Fire step still owns no mailbox and performs no IO. When a
+// child fails and the parent declared no onError, the failure does not vanish: the
+// default is escalate-to-parent — a typed *ActorEscalation recorded on the system
+// (LastEscalation), surfaced to the inspector, climbed up the supervision chain,
+// and optionally routed to a host EscalationHandler. Supervision STRATEGIES
+// (restart / resume / backoff) layer additively on that frozen default.
+//
+// # Guard expressions
+//
+// A transition guard is authored at one of three graduated tiers, all bindings of
+// the same frozen Guard data contract (context + params -> bool), so a machine
+// mixes tiers freely and the tier is a property of the guard, not the kernel:
+//
+//   - Core — a small, dependency-free expression built with the in-package builder
+//     (Field("…").Eq/Lt/In/…, And/Or/Not, StateIn) over a fixed vocabulary —
+//     boolean composition, typed compare, membership, and state-tests. It lowers to
+//     a serializable GuardNode tree (GuardKindCore) the kernel evaluates IN-KERNEL,
+//     adds no dependency, serializes losslessly, and stays transparent to tooling
+//     and analysis.
+//   - Rich — a mature embedded expression engine (CEL) for cross-stack evaluation
+//     and richer logic (arithmetic, map construction) than Core admits. It lives in
+//     the opt-in github.com/stablekernel/crucible/state/expr module so the kernel
+//     itself stays stdlib-only; a Rich guard is checked against the ContextSchema at
+//     freeze time and serializes as a GuardKindRich node.
+//   - Escape — a plain Go func registered as a named guard (Registry.Guard). It is
+//     the always-available, maximally-expressive tier; it is opaque to the analyzer
+//     and does not cross a serialization boundary, so reserve it for logic the
+//     declarative tiers cannot express.
+//
+// Core and Rich guards are STRUCTURALLY read-only — an expression cannot mutate
+// context. An Escape Go-func guard is read-only by CONTRACT (documented; under a
+// value context the kernel's value semantics make a mutation a throwaway anyway).
+//
+// # Context schema
+//
+// A machine may declare a ContextSchema — a serializable description of the
+// context type's fields and their types. It is the type contract the declarative
+// guard tiers check against: a Core or Rich expression that references a field is
+// validated against the schema at freeze time rather than failing at run time, and
+// the schema is the data contract a cross-language evaluator binds the same machine
+// to. It is optional; an Escape Go-func guard needs none.
+//
+// # Versioning, snapshots, and journal seams
+//
+// A definition carries a SchemaVersion (the IR wire form), an optional machine ID
+// and definition version, and serializes losslessly with unknown fields preserved,
+// so a newer document round-trips through an older loader without corruption and a
+// higher MAJOR schema version is refused rather than guessed at. An instance
+// snapshots to a versioned Snapshot and restores under a lenient version posture
+// (accept-and-upgrade within a compatible range, reject across a major boundary;
+// strict machine-version checking is opt-in via RejectMachineVersionMismatch). The
+// Trace records a structured EventPayload alongside the human Event label so a
+// recorded event stream replays the exact event — the journal/durable-execution
+// seam the deterministic step makes sound.
 package state
