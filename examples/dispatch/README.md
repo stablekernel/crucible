@@ -121,5 +121,39 @@ if err != nil {
 // report.Delivered counts the signals driven across the wire after the restart.
 ```
 
-Later capabilities build on this proven, durable, distributed core — adding observation
-— each added without disturbing the proof.
+## Polyglot guard
+
+The next capability proves the order saga's admission guard is **polyglot**: the same
+"generous order" predicate — `subtotal + tip >= 6000` — runs identically whether
+evaluated by the in-tree CEL engine or by a foreign engine compiled to WebAssembly. The
+machine is untouched; only the engine that decides "generous" is swapped, through the
+engine-agnostic `fooddelivery.WithGenerousGuard` seam.
+
+`fooddelivery.NewModel` builds the generous guard as a **named, registry-bound,
+engine-agnostic** node (`fooddelivery.GenerousGuardName`). By default it compiles the CEL
+predicate `fooddelivery.GenerousGuardSource()`; a consumer can instead bind any engine
+under the same name. The polyglot guest (`testdata/generousguest`) is a tiny wasip1
+reactor — `//go:wasmexport alloc` / `eval` over the JSON ABI — that reads the order
+context and returns `{"ok": subtotal+tip >= 6000}`. It is compiled to WebAssembly at test
+time (`GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared`) and run through wazero; no
+binary is committed.
+
+`RunPolyglotEquivalence` builds both models and drives each through the Authorized
+decision across orders chosen to **isolate the generous branch** — every order is
+non-fast-lane and below the expedite threshold, so the Core big-basket branch can never
+admit and only the generous guard can. One generous order (`subtotal+tip = 6500`) must be
+admitted by both engines; one frugal order (`subtotal+tip = 4500`) must be blocked by
+both. Because the suite exercises both verdicts, the agreement is non-vacuous.
+
+```go
+report, err := dispatch.RunPolyglotEquivalence(ctx, wasmBytes)
+if err != nil {
+	log.Fatal(err)
+}
+// report.Cases records each order's CEL and WASM outcome;
+// report.Equivalent is true iff every order agreed AND both an admit and a reject
+// were observed — proof the WebAssembly guard and the CEL guard decide identically.
+```
+
+Later capabilities build on this proven, durable, distributed, polyglot core — adding
+observation — each added without disturbing the proof.

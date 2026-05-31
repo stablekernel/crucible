@@ -32,6 +32,19 @@
 // location-transparent and survive a worker-side failure. The gRPC transport is carried
 // in-memory by a bufconn listener so the whole cluster runs inside one process.
 //
-// Later capabilities build on this proven, durable, distributed core — adding
+// The next capability proves the saga's admission guard is polyglot. The order
+// machine's "generous order" guard — the predicate subtotal + tip >= 6000 — is named,
+// registry-bound, and engine-agnostic ([fooddelivery.GenerousGuardName]), so the engine
+// that computes it can be swapped through [fooddelivery.WithGenerousGuard] without
+// touching the machine. [RunPolyglotEquivalence] builds two models that differ only in
+// that engine — the default CEL model and a model whose guard is a WebAssembly guest
+// compiled to wasip1/wasm and run through wazero — and drives both through the Authorized
+// decision across orders chosen to isolate the generous branch (non-fast-lane and below
+// the expedite threshold, so only the generous guard can admit). One generous order is
+// admitted by both engines and one frugal order is blocked by both; because the run
+// exercises both verdicts, the resulting [PolyglotReport.Equivalent] is meaningful proof
+// the WebAssembly guard and the CEL guard decide the predicate identically.
+//
+// Later capabilities build on this proven, durable, distributed, polyglot core — adding
 // observation — each layered on as an additive addition without disturbing the proof.
 package dispatch

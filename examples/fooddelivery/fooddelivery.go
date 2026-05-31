@@ -395,26 +395,100 @@ func recordRefund(in state.AssignCtx[Order]) Order {
 	return c
 }
 
+// generousGuardSource is the predicate the generous-order guard evaluates: an order
+// is generous when its subtotal plus tip meets the threshold. It is exported as a
+// named constant so a consumer swapping the guard engine (CEL → WASM → anything else)
+// reproduces the exact same predicate the default CEL guard compiles, keeping the two
+// engines behaviorally identical.
+const generousGuardSource = "subtotal + tip >= 6000"
+
+// GenerousGuardName is the registry name the generous-order guard is bound under, and
+// the name the Authorized transition's guard expression references. A consumer that
+// injects an alternate engine via [WithGenerousGuard] must bind its node under this
+// same name so the machine's guard expression resolves it unchanged.
+const GenerousGuardName = "generousOrder"
+
+// GenerousGuardSource returns the predicate source the default (CEL) generous-order
+// guard compiles: subtotal + tip ≥ 6000. A consumer building an alternate-engine guard
+// (for example a WebAssembly evaluator) reads it so the swapped engine reproduces the
+// exact same predicate, the precondition for the two engines being behaviorally
+// identical.
+func GenerousGuardSource() string { return generousGuardSource }
+
+// GenerousGuardBuilder builds the generous-order guard node, binding it into reg under
+// [GenerousGuardName] and type-checking it against schema. The default builder compiles
+// the CEL predicate [GenerousGuardSource]; an alternate builder supplied via
+// [WithGenerousGuard] may evaluate the same predicate in any engine, so long as it
+// binds a node named [GenerousGuardName] into reg. The returned node is dropped into
+// the Authorized transition's guard expression unchanged, so the machine is agnostic to
+// which engine computes the verdict.
+type GenerousGuardBuilder func(reg *state.Registry[Order], schema state.ContextSchema) (state.GuardNode[Stage], error)
+
+// modelConfig holds the resolved [NewModel] options. Its only knob today is the
+// generous-guard builder, defaulted to the CEL engine; it is a struct so future
+// engine-agnostic seams arrive additively as more options without changing NewModel's
+// signature.
+type modelConfig struct {
+	generousGuard GenerousGuardBuilder
+}
+
+// Option configures [NewModel] at construction. Options follow the functional-options
+// pattern so the model gains seams additively: NewModel takes no required arguments
+// (it has a sound default for every knob), and each capability arrives as an Option, so
+// existing NewModel() callers are unaffected when a new seam is added.
+type Option func(*modelConfig)
+
+// defaultGenerousGuard is the default generous-order guard builder: it compiles the CEL
+// predicate [GenerousGuardSource] into reg under [GenerousGuardName], reproducing the
+// machine's original rich-tier guard exactly. It is the builder NewModel uses unless a
+// consumer overrides it with [WithGenerousGuard].
+func defaultGenerousGuard(reg *state.Registry[Order], schema state.ContextSchema) (state.GuardNode[Stage], error) {
+	return expr.Guard[Stage](reg, GenerousGuardName, generousGuardSource, schema)
+}
+
+// WithGenerousGuard overrides the engine that computes the generous-order guard,
+// without changing the machine. The supplied builder must bind a guard node named
+// [GenerousGuardName] into the registry and return it; NewModel drops that node into the
+// Authorized transition's guard expression in place of the default CEL node, so the
+// admission logic — a generous order OR a big fast-lane basket — is unchanged and only
+// the engine that decides "generous" differs. This is the seam the polyglot showcase
+// uses to swap the CEL guard for a behaviorally identical WebAssembly guard.
+func WithGenerousGuard(build GenerousGuardBuilder) Option {
+	return func(c *modelConfig) { c.generousGuard = build }
+}
+
 // NewModel forges the order lifecycle machine and returns it alongside the registry
-// the Rich (CEL) guard is compiled into. The machine is authored with the fluent
-// builder, then round-tripped through its IR (ToJSON → LoadFromJSON → Provide) so
-// the CEL-backed guard binds to the live machine the same way a host that loads a
+// the rich generous-order guard is compiled into. The machine is authored with the
+// fluent builder, then round-tripped through its IR (ToJSON → LoadFromJSON → Provide)
+// so the rich-tier guard binds to the live machine the same way a host that loads a
 // serialized definition would wire it — the in-repo demonstration of the rich tier.
-func NewModel() (*state.Machine[Stage, Signal, Order], error) {
+//
+// The generous-order guard is named ([GenerousGuardName]), registry-bound, and
+// engine-agnostic: by default it is the CEL predicate [GenerousGuardSource], but a
+// consumer may swap the engine — for example to a WebAssembly evaluator — with
+// [WithGenerousGuard], without touching the machine. The supplied options leave every
+// other behavior unchanged, so NewModel() with no options builds the original CEL model.
+func NewModel(opts ...Option) (*state.Machine[Stage, Signal, Order], error) {
+	cfg := modelConfig{generousGuard: defaultGenerousGuard}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	schema := orderSchema()
 	reg := state.NewRegistry[Order]()
 
-	// Rich (CEL) guard: a generous-order check authored as a typed expression over
-	// the context schema. It compiles once, here, and the kernel evaluates the
-	// compiled program inside Fire. It composes with the Core/named leaves below.
-	generous, err := expr.Guard[Stage](reg, "generousOrder", "subtotal + tip >= 6000", schema)
+	// Rich generous-order guard: by default a CEL predicate over the context schema,
+	// or whatever engine a consumer injected via WithGenerousGuard. It binds into reg
+	// under GenerousGuardName and the kernel evaluates it inside Fire; it composes with
+	// the Core/named leaves below regardless of which engine computes the verdict.
+	generous, err := cfg.generousGuard(reg, schema)
 	if err != nil {
-		return nil, fmt.Errorf("compile rich guard: %w", err)
+		return nil, fmt.Errorf("build generous guard: %w", err)
 	}
 
 	// Register every behavior the live machine binds into the same registry as the
-	// CEL guard: Provide adopts this registry wholesale, so it must carry the full
-	// set of services, actors, and reducers — not just the rich guard.
+	// generous guard: Provide adopts this registry wholesale, so it must carry the full
+	// set of services, actors, and reducers — not just the generous guard.
 	registerBindings(reg)
 
 	def := buildModel(schema, generous)
