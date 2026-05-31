@@ -5,6 +5,7 @@ use (
 	./durable
 	./e2e
 	./examples/fooddelivery
+	./examples/dispatch
 	./magefiles
 	./state
 	./state/expr
