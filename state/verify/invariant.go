@@ -195,19 +195,23 @@ func (g configGraph) descend(node string) []string {
 	if g.leaf[node] {
 		return []string{node}
 	}
-	if child, ok := g.compoundInitial[node]; ok {
+	// A parallel state's regions are authoritative: enter every region's initial
+	// child at once. Regions are checked before compoundInitial so a parallel state
+	// that also carries a (possibly self-referential) initial-child marker descends
+	// through its regions rather than looping on that marker.
+	if regions := g.regionInitials[node]; len(regions) > 0 {
+		var out []string
+		for _, ric := range regions {
+			out = append(out, g.descend(ric)...)
+		}
+		return out
+	}
+	if child, ok := g.compoundInitial[node]; ok && child != node {
 		return g.descend(child)
 	}
-	var out []string
-	for _, ric := range g.regionInitials[node] {
-		out = append(out, g.descend(ric)...)
-	}
-	if len(out) == 0 {
-		// A composite with neither an initial child nor regions has no descent; treat
-		// the node itself as the active atom so it is not lost from a configuration.
-		return []string{node}
-	}
-	return out
+	// A composite with neither regions nor a non-self initial child has no descent;
+	// treat the node itself as the active atom so it is not lost from a configuration.
+	return []string{node}
 }
 
 // activeSet expands a set of active leaves into the full active configuration:
