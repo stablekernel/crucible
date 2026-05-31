@@ -20,6 +20,10 @@ type config struct {
 	// invariants holds the requested configuration invariants: for each, check that
 	// the predicate holds in every reachable configuration.
 	invariants []Invariant
+	// boundedSims holds the requested bounded-simulation queries: for each, explore
+	// every trace up to a depth bound and report the shortest one whose reached
+	// configuration the oracle rejects.
+	boundedSims []simQuery
 }
 
 // avoidQuery is one conditional-reachability request: reach target along a run
@@ -125,5 +129,39 @@ func CheckInvariant(inv Invariant, more ...Invariant) Option {
 	return func(c *config) {
 		c.invariants = append(c.invariants, inv)
 		c.invariants = append(c.invariants, more...)
+	}
+}
+
+// SimulateBounded adds a bounded exhaustive simulation: enumerate the machine's
+// event sequences (traces) up to depth events deep, evaluate the [Oracle] at
+// every reached configuration, and report the shortest trace whose configuration
+// the oracle rejects. The pass adds one [Finding] of [KindBoundedViolation] keyed
+// by label.
+//
+// The oracle receives the full active configuration — active leaves plus enclosing
+// ancestors — and returns whether the property HOLDS there (true acceptable,
+// false a violation). The search reuses the configuration-product explorer, so a
+// parallel machine's orthogonal regions advance independently and the oracle sees
+// true co-active leaf sets. The initial configuration is evaluated at depth 0; a
+// depth of 0 therefore checks only the initial configuration, and a negative depth
+// is treated as 0.
+//
+// The finding holds (its Reachable field is true, with the zero [Witness]) when
+// the oracle accepts every configuration reachable within the bound. It fails
+// (Reachable false) when some reachable configuration is rejected; the finding
+// then carries the shortest violating trace — the breadth-first-minimal event
+// sequence to that configuration, whose Target names it (a '|'-joined list of its
+// active leaves). Replaying the trace drives an instance into the rejected
+// configuration, where the oracle genuinely fails.
+//
+// Bounded simulation is a bounded guarantee, not a proof: "no violation within the
+// bound" means only that the oracle held across every configuration reachable in
+// at most depth events. A violation may still exist in a longer trace. For an
+// exact, unbounded verdict over the fixed structural predicates, use
+// [CheckInvariant]. A violation reported here, however, is real and replayable.
+// Repeated SimulateBounded calls each add their own check.
+func SimulateBounded(label string, depth int, oracle Oracle) Option {
+	return func(c *config) {
+		c.boundedSims = append(c.boundedSims, simQuery{label: label, depth: depth, oracle: oracle})
 	}
 }
