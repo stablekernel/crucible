@@ -31,8 +31,15 @@
 // configuration, Z is always eventually reachable" (the CTL eventuality
 // AG EF Z) — answered by reverse reachability from Z: a reachable configuration
 // from which Z can never be reached is a counterexample, a configuration parked
-// in a Z-free terminal or cycle, and the finding carries the route to it. Each
-// decided property becomes a [Finding]; a finding that holds carries a
+// in a Z-free terminal or cycle, and the finding carries the route to it.
+// [CheckInvariant] adds configuration invariants — predicates over the
+// active-state configuration that must hold in every reachable configuration,
+// built with [MutualExclusion], [Implies], or [NeverActive]. Invariants are
+// decided by a configuration-product exploration that tracks the full set of
+// co-active leaves (so orthogonal parallel regions advancing independently are
+// modeled faithfully); a violation carries the shortest route to the nearest
+// configuration that breaks the predicate, whose Target names that configuration.
+// Each decided property becomes a [Finding]; a finding that holds carries a
 // [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
 // Events are the sequence a driver fires to drive an instance from the initial
 // state to the target.

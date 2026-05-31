@@ -17,6 +17,9 @@ type config struct {
 	// alwaysEventually holds the requested liveness targets: for each, check that
 	// from every reachable configuration the target is still eventually reachable.
 	alwaysEventually []string
+	// invariants holds the requested configuration invariants: for each, check that
+	// the predicate holds in every reachable configuration.
+	invariants []Invariant
 }
 
 // avoidQuery is one conditional-reachability request: reach target along a run
@@ -93,5 +96,34 @@ func ReachAvoiding(target string, avoid ...string) Option {
 func AlwaysEventually(target string) Option {
 	return func(c *config) {
 		c.alwaysEventually = append(c.alwaysEventually, target)
+	}
+}
+
+// CheckInvariant adds one or more configuration invariants to the pass: predicates
+// over the active-state configuration that must hold in every reachable
+// configuration. Build invariants with [MutualExclusion], [Implies], or
+// [NeverActive]. The pass adds one [Finding] of [KindInvariant] per invariant,
+// keyed by the invariant's [Invariant.Label].
+//
+// A finding holds (its Reachable field is true, with the zero [Witness]) when the
+// predicate is satisfied by every reachable configuration. It fails (Reachable
+// false) when some reachable configuration violates the predicate; the finding
+// then carries a counterexample witness: the shortest event sequence from the
+// initial state to the nearest violating configuration, whose Target names that
+// configuration (a '|'-joined list of its active leaves). Replaying the witness
+// drives an instance into the violating configuration.
+//
+// Predicates are over the active configuration of states only — pure structural
+// IR, with no runtime context or guard values consulted. Invariant checking is
+// exact in the same guard-agnostic sense as reachability: a guard can only ever
+// prune an edge at run time, never add one, so a configuration reachable
+// structurally is reachable in some run, a structural violation is a real
+// reachable violation, and a holding verdict means every reachable configuration
+// satisfies the predicate. Repeated CheckInvariant calls each add their
+// invariants.
+func CheckInvariant(inv Invariant, more ...Invariant) Option {
+	return func(c *config) {
+		c.invariants = append(c.invariants, inv)
+		c.invariants = append(c.invariants, more...)
 	}
 }

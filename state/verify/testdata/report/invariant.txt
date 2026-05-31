@@ -1,0 +1,9 @@
+invariant                implies(busy=>active): holds
+invariant                mutex(busy,loud): violated at busy|loud via [activate work report]
+invariant                never(offline): violated at offline via []
+reachability             active: reachable via [activate]
+reachability             busy: reachable via [activate]
+reachability             idle: reachable via [activate]
+reachability             loud: reachable via [activate]
+reachability             offline: reachable via []
+reachability             silent: reachable via [activate]

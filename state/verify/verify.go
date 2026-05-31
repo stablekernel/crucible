@@ -55,6 +55,19 @@ const (
 	// configuration — a target-free terminal or cycle — from which the target can
 	// never be reached.
 	KindLiveness FindingKind = "liveness"
+
+	// KindInvariant is the verdict on whether a configuration invariant — a
+	// predicate over the active-state configuration, such as mutual exclusion,
+	// implication, or never-active — holds in every reachable configuration. It is
+	// exact in the same guard-agnostic sense as KindReachability: the
+	// configuration-product exploration is guard-agnostic, and a guard can only ever
+	// prune an edge at run time, never add one, so a configuration reachable
+	// structurally is reachable in some run and a holding verdict holds in every run.
+	// A holding finding (Reachable true) carries the zero Witness; a failing one
+	// carries a counterexample witness: the shortest route to a reachable
+	// configuration that violates the predicate, whose Target names that
+	// configuration.
+	KindInvariant FindingKind = "invariant"
 )
 
 // Finding is one decided property about one state. Kind names the property,
@@ -144,6 +157,22 @@ func (r *Result) Liveness(target string) (Finding, bool) {
 	return Finding{}, false
 }
 
+// Invariant returns the invariant finding for an invariant label and whether one
+// exists. A finding exists only for an invariant a [CheckInvariant] option
+// requested; look up the label with [Invariant.Label]. Its Reachable field is the
+// invariant verdict — true when the predicate holds in every reachable
+// configuration — and its Witness, when the verdict is false, is the route to the
+// nearest reachable configuration that violates the predicate, whose Target names
+// that configuration.
+func (r *Result) Invariant(label string) (Finding, bool) {
+	for _, f := range r.Findings {
+		if f.Kind == KindInvariant && f.State == label {
+			return f, true
+		}
+	}
+	return Finding{}, false
+}
+
 // Unreachable returns the names of every declared state that cannot be entered,
 // in sorted order. An empty result means every checked state is reachable.
 func (r *Result) Unreachable() []string {
@@ -186,7 +215,7 @@ func (r *Result) String() string {
 // configuration the counterexample path reaches.
 func renderFinding(f Finding) string {
 	hit, miss := findingVerbs(f.Kind)
-	if f.Kind == KindLiveness {
+	if f.Kind == KindLiveness || f.Kind == KindInvariant {
 		if f.Reachable {
 			return fmt.Sprintf("%-24s %s: %s", f.Kind, f.State, hit)
 		}
@@ -207,6 +236,8 @@ func findingVerbs(k FindingKind) (hit, miss string) {
 		return "satisfiable via", "unsatisfiable"
 	case KindLiveness:
 		return "always eventually reachable", "stuck at"
+	case KindInvariant:
+		return "holds", "violated at"
 	default:
 		return "reachable via", "unreachable"
 	}
@@ -305,6 +336,17 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 				continue // report on declared states only, matching Reachable
 			}
 			res.Findings = append(res.Findings, f)
+		}
+	}
+
+	// Configuration invariants reason about whole configurations of co-active
+	// leaves, so they run their own configuration-product exploration — built once
+	// and shared across every requested invariant.
+	if len(cfg.invariants) > 0 {
+		cg := buildConfigGraph(m)
+		exp := cg.explore()
+		for _, inv := range cfg.invariants {
+			res.Findings = append(res.Findings, invariantFor(cg, exp, inv))
 		}
 	}
 

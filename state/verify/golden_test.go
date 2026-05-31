@@ -54,6 +54,17 @@ func goldenCases() []goldenCase {
 			machine: zFreeCycle(),
 			opts:    []verify.Option{verify.AlwaysEventually("goal")},
 		},
+		{
+			name:    "invariant",
+			machine: parallelMachine(),
+			opts: []verify.Option{
+				verify.CheckInvariant(
+					verify.MutualExclusion("busy", "loud"), // violated: co-active
+					verify.Implies("busy", "active"),       // holds: nested
+					verify.NeverActive("offline"),          // violated: initial state
+				),
+			},
+		},
 	}
 }
 

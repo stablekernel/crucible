@@ -90,6 +90,37 @@ func ExampleAlwaysEventually() {
 	// always delivered: false; stuck at "lost" via [misroute]
 }
 
+// ExampleCheckInvariant checks a configuration invariant: that a parcel is never
+// both "held" and "delivered" at once. The two regions of a parallel state can
+// advance independently, so the configuration where both are active is reachable,
+// the invariant is violated, and the counterexample names that configuration.
+func ExampleCheckInvariant() {
+	m := state.Forge[string, string, any]("parcel").
+		State("created").
+		Transition("created").On("dispatch").GoTo("transit").
+		SuperState("transit").
+		Region("Custody").Initial("held").
+		SubState("held").On("release").GoTo("delivered").
+		SubState("delivered").Final().
+		EndRegion().
+		Region("Billing").Initial("unpaid").
+		SubState("unpaid").On("pay").GoTo("paid").
+		SubState("paid").Final().
+		EndRegion().
+		EndSuperState().
+		Initial("created").
+		Quench()
+
+	inv := verify.MutualExclusion("held", "paid")
+	result := verify.Verify(m, verify.CheckInvariant(inv))
+	f, _ := result.Invariant(inv.Label())
+	fmt.Printf("%s holds: %t; violated at %q via %v\n",
+		inv.Label(), f.Reachable, f.Witness.Target, f.Witness.Events())
+
+	// Output:
+	// mutex(held,paid) holds: false; violated at "held|paid" via [dispatch pay]
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").
