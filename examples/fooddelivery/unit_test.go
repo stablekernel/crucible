@@ -2,10 +2,12 @@ package fooddelivery_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stablekernel/crucible/examples/fooddelivery"
+	"github.com/stablekernel/crucible/state"
 )
 
 // TestModel_GuardAdmitsAndBlocks drives the authorization guard expression directly
@@ -151,6 +153,97 @@ func TestStage_StringFallback(t *testing.T) {
 		if got := e.String(); got == "" || got == "Signal?" {
 			t.Fatalf("signal %d renders %q", e, got)
 		}
+	}
+}
+
+// driveAuthorized casts the model at Placed, fires Submit to arm authorization, then
+// settles the authorize service with a fixed hold token so the Authorized transition's
+// guard is evaluated. It returns the resting stage: Cooking when the order was admitted
+// into the Active fulfillment configuration, or Authorizing when the guard blocked it.
+func driveAuthorized(t *testing.T, m *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], order fooddelivery.Order) fooddelivery.Stage {
+	t.Helper()
+	ctx := context.Background()
+	inst := m.Cast(order, state.WithInitialState(fooddelivery.Placed))
+	run := state.NewServiceRunner(inst, fooddelivery.ServiceRegistry())
+	run.Absorb(ctx, inst.StartEffects())
+	run.Absorb(ctx, inst.Fire(ctx, fooddelivery.Submit).Effects)
+	if _, ok := run.SettleDone(ctx, state.InvokeID("order", fooddelivery.Authorizing, 0), "tok-test"); !ok {
+		t.Fatal("expected an authorize service in flight to settle")
+	}
+	return inst.Configuration()[0]
+}
+
+// TestNewModel_DefaultGuardStillCEL asserts the additive Option seam left NewModel()
+// behaving exactly as before: with no options it builds the CEL generous-order guard,
+// which admits a generous, non-fast-lane order via the generous branch and blocks a
+// small one — proving the default path reproduces the original rich-tier guard.
+func TestNewModel_DefaultGuardStillCEL(t *testing.T) {
+	m, err := fooddelivery.NewModel()
+	if err != nil {
+		t.Fatalf("NewModel: %v", err)
+	}
+	// Isolate the generous branch: standard priority and subtotal below the expedite
+	// threshold, so only the generous predicate (subtotal+tip >= 6000) can admit.
+	if got := driveAuthorized(t, m, fooddelivery.Order{Subtotal: 3000, Tip: 3500, Priority: "standard"}); got != fooddelivery.Cooking {
+		t.Fatalf("generous order should be admitted to Cooking; got %v", got)
+	}
+	if got := driveAuthorized(t, m, fooddelivery.Order{Subtotal: 3000, Tip: 1000, Priority: "standard"}); got != fooddelivery.Authorizing {
+		t.Fatalf("small order should stay in Authorizing; got %v", got)
+	}
+}
+
+// TestNewModel_WithGenerousGuardInjects asserts WithGenerousGuard swaps the engine that
+// computes the generous verdict while leaving the machine unchanged: an injected Core
+// guard (subtotal >= 6000, ignoring tip) governs the Authorized decision, admitting an
+// order the CEL guard would have blocked and blocking one it would have admitted —
+// proving the injected node, not the default, governs the transition.
+func TestNewModel_WithGenerousGuardInjects(t *testing.T) {
+	// A Go-func leaf bound under the generous name: generous iff subtotal alone >= 6000
+	// (ignoring tip), a deliberately different predicate so the swap is observable.
+	injected := func(reg *state.Registry[fooddelivery.Order], _ state.ContextSchema) (state.GuardNode[fooddelivery.Stage], error) {
+		reg.Guard(fooddelivery.GenerousGuardName, func(g state.GuardCtx[fooddelivery.Order]) bool {
+			return g.Entity.Subtotal >= 6000
+		})
+		return state.Guard[fooddelivery.Stage](fooddelivery.GenerousGuardName), nil
+	}
+	m, err := fooddelivery.NewModel(fooddelivery.WithGenerousGuard(injected))
+	if err != nil {
+		t.Fatalf("NewModel(WithGenerousGuard): %v", err)
+	}
+	// subtotal 7000 alone admits under the injected guard (the CEL guard, on subtotal+tip,
+	// would also admit — but this proves the injected leaf governs and resolves).
+	if got := driveAuthorized(t, m, fooddelivery.Order{Subtotal: 7000, Tip: 0, Priority: "standard"}); got != fooddelivery.Cooking {
+		t.Fatalf("injected guard should admit subtotal>=6000; got %v", got)
+	}
+	// subtotal 3000 + tip 3500 = 6500: the CEL guard WOULD admit, but the injected guard
+	// (subtotal only) blocks it — the discriminating case proving the swap took effect.
+	if got := driveAuthorized(t, m, fooddelivery.Order{Subtotal: 3000, Tip: 3500, Priority: "standard"}); got != fooddelivery.Authorizing {
+		t.Fatalf("injected guard ignores tip and should block subtotal<6000; got %v", got)
+	}
+}
+
+// TestNewModel_WithGenerousGuardError surfaces a builder error through NewModel rather
+// than swallowing it, so a mis-wired engine fails loudly at construction.
+func TestNewModel_WithGenerousGuardError(t *testing.T) {
+	sentinel := errors.New("boom")
+	_, err := fooddelivery.NewModel(fooddelivery.WithGenerousGuard(
+		func(*state.Registry[fooddelivery.Order], state.ContextSchema) (state.GuardNode[fooddelivery.Stage], error) {
+			return state.GuardNode[fooddelivery.Stage]{}, sentinel
+		},
+	))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("NewModel should surface the builder error; got %v", err)
+	}
+}
+
+// TestGenerousGuardSource_MatchesPredicate pins the exported predicate source the
+// alternate-engine builders must reproduce, so a drift in the CEL source is caught.
+func TestGenerousGuardSource_MatchesPredicate(t *testing.T) {
+	if got := fooddelivery.GenerousGuardSource(); got != "subtotal + tip >= 6000" {
+		t.Fatalf("GenerousGuardSource() = %q, want the subtotal+tip>=6000 predicate", got)
+	}
+	if fooddelivery.GenerousGuardName != "generousOrder" {
+		t.Fatalf("GenerousGuardName = %q, want generousOrder", fooddelivery.GenerousGuardName)
 	}
 }
 
