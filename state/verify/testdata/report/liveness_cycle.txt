@@ -1,0 +1,5 @@
+liveness                 goal: stuck at spin via [loop]
+reachability             goal: reachable via [go]
+reachability             spin: reachable via [loop]
+reachability             spinBack: reachable via [loop back]
+reachability             start: reachable via []

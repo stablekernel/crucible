@@ -26,7 +26,12 @@
 // the foundational property the rest build on. [ReachAvoiding] adds a
 // conditional-reachability (safety) check — "reach X along some run that never
 // passes through Y" — answered by a witness-carrying constrained search that
-// prunes any configuration whose active states intersect the avoid-set. Each
+// prunes any configuration whose active states intersect the avoid-set.
+// [AlwaysEventually] adds a liveness check — "from every reachable
+// configuration, Z is always eventually reachable" (the CTL eventuality
+// AG EF Z) — answered by reverse reachability from Z: a reachable configuration
+// from which Z can never be reached is a counterexample, a configuration parked
+// in a Z-free terminal or cycle, and the finding carries the route to it. Each
 // decided property becomes a [Finding]; a finding that holds carries a
 // [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
 // Events are the sequence a driver fires to drive an instance from the initial

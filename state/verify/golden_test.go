@@ -39,6 +39,21 @@ func goldenCases() []goldenCase {
 				verify.ReachAvoiding("calm", "start"),  // unsatisfiable: start gates every route
 			},
 		},
+		{
+			name:    "liveness_holds",
+			machine: liveToGoal(),
+			opts:    []verify.Option{verify.AlwaysEventually("done")},
+		},
+		{
+			name:    "liveness_trap",
+			machine: trapBeforeGoal(),
+			opts:    []verify.Option{verify.AlwaysEventually("goal")},
+		},
+		{
+			name:    "liveness_cycle",
+			machine: zFreeCycle(),
+			opts:    []verify.Option{verify.AlwaysEventually("goal")},
+		},
 	}
 }
 

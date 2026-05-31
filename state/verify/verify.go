@@ -42,6 +42,19 @@ const (
 	// finding carries the witnessing event sequence; an unsatisfiable one carries
 	// the zero Witness.
 	KindConditionalReachability FindingKind = "conditional_reachability"
+
+	// KindLiveness is the verdict on whether a target state is always eventually
+	// reachable: from every reachable configuration, can the target still be
+	// reached? It is the CTL eventuality AG EF target. It is exact in the same
+	// sense as KindReachability: the reverse-reachability computation is
+	// guard-agnostic, and a guard can only ever prune an edge at run time, never
+	// add one, so a configuration from which the structural graph offers no route
+	// to the target has no run to it in any instance, and a holding verdict holds
+	// in every run. A holding finding (Reachable true) carries the zero Witness; a
+	// failing one carries a counterexample witness: the route to a reachable
+	// configuration — a target-free terminal or cycle — from which the target can
+	// never be reached.
+	KindLiveness FindingKind = "liveness"
 )
 
 // Finding is one decided property about one state. Kind names the property,
@@ -53,11 +66,18 @@ type Finding struct {
 	Kind FindingKind
 	// State is the state the finding concerns.
 	State string
-	// Reachable is the reachability verdict for the state.
+	// Reachable is the property verdict for the state. For reachability and
+	// conditional-reachability kinds it is true when the (possibly constrained)
+	// target is reachable. For [KindLiveness] it is true when the target is always
+	// eventually reachable from every reachable configuration — so a true verdict
+	// is the desirable one and a false verdict carries a counterexample.
 	Reachable bool
-	// Witness is the proving route when one exists: for a reachable state, the
-	// shortest event sequence from the initial state to it. The zero Witness means
-	// no supporting route (an unreachable state, or the initial state itself).
+	// Witness is the supporting route. For reachability and conditional
+	// reachability it is the proving event sequence when the property holds, and
+	// the zero Witness when it does not. For [KindLiveness] the witness is inverted:
+	// a holding verdict carries the zero Witness, while a failing verdict carries
+	// the route to the stuck configuration from which the target can never be
+	// reached, whose Target names that configuration.
 	Witness Witness
 }
 
@@ -109,6 +129,21 @@ func (r *Result) ConditionalReach(target string) (Finding, bool) {
 	return Finding{}, false
 }
 
+// Liveness returns the liveness finding for a target and whether one exists. A
+// finding exists only for a target an [AlwaysEventually] option requested that is
+// also a declared state. Its Reachable field is the liveness verdict — true when
+// the target is always eventually reachable from every reachable configuration —
+// and its Witness, when the verdict is false, is the route to a reachable
+// configuration from which the target can never be reached.
+func (r *Result) Liveness(target string) (Finding, bool) {
+	for _, f := range r.Findings {
+		if f.Kind == KindLiveness && f.State == target {
+			return f, true
+		}
+	}
+	return Finding{}, false
+}
+
 // Unreachable returns the names of every declared state that cannot be entered,
 // in sorted order. An empty result means every checked state is reachable.
 func (r *Result) Unreachable() []string {
@@ -140,24 +175,41 @@ func (r *Result) String() string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		hit, miss := findingVerbs(f.Kind)
-		if f.Reachable {
-			fmt.Fprintf(&b, "%-24s %s: %s %v", f.Kind, f.State, hit, f.Witness.Events())
-		} else {
-			fmt.Fprintf(&b, "%-24s %s: %s", f.Kind, f.State, miss)
-		}
+		b.WriteString(renderFinding(f))
 	}
 	return b.String()
+}
+
+// renderFinding renders one finding as a single line. Most properties read
+// "satisfied via <witness>" or "unsatisfied"; liveness inverts the witness — a
+// holding verdict has no counterexample, while a failing one names the stuck
+// configuration the counterexample path reaches.
+func renderFinding(f Finding) string {
+	hit, miss := findingVerbs(f.Kind)
+	if f.Kind == KindLiveness {
+		if f.Reachable {
+			return fmt.Sprintf("%-24s %s: %s", f.Kind, f.State, hit)
+		}
+		return fmt.Sprintf("%-24s %s: %s %s via %v", f.Kind, f.State, miss, f.Witness.Target, f.Witness.Events())
+	}
+	if f.Reachable {
+		return fmt.Sprintf("%-24s %s: %s %v", f.Kind, f.State, hit, f.Witness.Events())
+	}
+	return fmt.Sprintf("%-24s %s: %s", f.Kind, f.State, miss)
 }
 
 // findingVerbs returns the satisfied/unsatisfied phrasing for a finding kind, so
 // each property reads naturally: reachability is "reachable via"/"unreachable",
 // conditional reachability is "satisfiable via"/"unsatisfiable".
 func findingVerbs(k FindingKind) (hit, miss string) {
-	if k == KindConditionalReachability {
+	switch k {
+	case KindConditionalReachability:
 		return "satisfiable via", "unsatisfiable"
+	case KindLiveness:
+		return "always eventually reachable", "stuck at"
+	default:
+		return "reachable via", "unreachable"
 	}
-	return "reachable via", "unreachable"
 }
 
 // Verify checks behavioral properties of a Quenched machine and returns a
@@ -227,11 +279,13 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 		})
 	}
 
-	// Conditional reachability ("reach X without passing through Y") runs its own
-	// avoid-pruning search over the structural graph, since the reachable-space
-	// pass above and analysis.ShortestPaths cannot exclude an avoid-set.
-	if len(cfg.reachAvoiding) > 0 {
+	// Conditional reachability ("reach X without passing through Y") and liveness
+	// ("from every reachable config, Z is always eventually reachable") both run
+	// their own structural search, so build the search graph once when either is
+	// requested.
+	if len(cfg.reachAvoiding) > 0 || len(cfg.alwaysEventually) > 0 {
 		g := buildSearchGraph(m)
+
 		for _, q := range cfg.reachAvoiding {
 			if !g.nodes[q.target] {
 				continue // report on declared states only, matching Reachable
@@ -243,6 +297,14 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 				Reachable: ok,
 				Witness:   w,
 			})
+		}
+
+		for _, target := range cfg.alwaysEventually {
+			f, ok := livenessFor(g, target)
+			if !ok {
+				continue // report on declared states only, matching Reachable
+			}
+			res.Findings = append(res.Findings, f)
 		}
 	}
 
