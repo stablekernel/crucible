@@ -44,6 +44,29 @@ func ExampleVerify_unreachable() {
 	// [orphan]
 }
 
+// ExampleReachAvoiding checks a safety property: can the order reach "shipped"
+// along a run that never passes through "canceled"? The clean route exists, and
+// its witness is the event sequence that proves it without ever canceling.
+func ExampleReachAvoiding() {
+	m := state.Forge[string, string, any]("order").
+		State("open").
+		Transition("open").On("pay").GoTo("paid").
+		Transition("open").On("abandon").GoTo("canceled").
+		State("paid").
+		Transition("paid").On("ship").GoTo("shipped").
+		State("canceled").Final().
+		State("shipped").Final().
+		Initial("open").
+		Quench()
+
+	result := verify.Verify(m, verify.ReachAvoiding("shipped", "canceled"))
+	f, _ := result.ConditionalReach("shipped")
+	fmt.Printf("shipped without canceling: %t via %v\n", f.Reachable, f.Witness.Events())
+
+	// Output:
+	// shipped without canceling: true via [pay ship]
+}
+
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
 	m := state.Forge[string, string, any]("toggle").

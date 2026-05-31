@@ -23,11 +23,14 @@
 // [Verify] takes a [state.Machine] built either by the Forge DSL or loaded from
 // JSON, and a tail of functional [Option] values that select which properties
 // to check. With no options it checks reachability of every declared state,
-// the foundational property the rest build on. Each decided property becomes a
-// [Finding]; a finding about a reachable state carries a [Witness] — an
-// [github.com/stablekernel/crucible/state/analysis.Path] whose Events are the
-// sequence a driver fires to drive an instance from the initial state to the
-// target.
+// the foundational property the rest build on. [ReachAvoiding] adds a
+// conditional-reachability (safety) check — "reach X along some run that never
+// passes through Y" — answered by a witness-carrying constrained search that
+// prunes any configuration whose active states intersect the avoid-set. Each
+// decided property becomes a [Finding]; a finding that holds carries a
+// [Witness] — an [github.com/stablekernel/crucible/state/analysis.Path] whose
+// Events are the sequence a driver fires to drive an instance from the initial
+// state to the target.
 //
 // The checks are purely static in the same sense as the analysis package: no
 // instance is cast, no event is fired, no guard or action is evaluated. A guard

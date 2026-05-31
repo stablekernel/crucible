@@ -31,6 +31,17 @@ const (
 	// an edge at run time, never add one, so a state reachable here is reachable in
 	// some run and an unreachable verdict holds in every run.
 	KindReachability FindingKind = "reachability"
+
+	// KindConditionalReachability is the verdict on whether a target state can be
+	// reached along some run that never passes through any state in a declared
+	// avoid-set — the "reach X without entering Y" safety/reachability property. It
+	// is exact in the same sense as KindReachability: the constrained search is
+	// guard-agnostic, and a guard can only ever prune an edge at run time, never
+	// add one, so a clean route found here exists in some run and an unsatisfiable
+	// verdict (every route crosses the avoid-set) holds in every run. A satisfiable
+	// finding carries the witnessing event sequence; an unsatisfiable one carries
+	// the zero Witness.
+	KindConditionalReachability FindingKind = "conditional_reachability"
 )
 
 // Finding is one decided property about one state. Kind names the property,
@@ -84,6 +95,20 @@ func (r *Result) CanReach(stateName string) bool {
 	return ok && f.Reachable
 }
 
+// ConditionalReach returns the conditional-reachability finding for a target and
+// whether one exists. A finding exists only for a target a [ReachAvoiding] option
+// requested that is also a declared state; its Reachable field is the
+// satisfiability verdict (true when a route avoiding the forbidden set exists),
+// and its Witness is the proving event sequence when satisfiable.
+func (r *Result) ConditionalReach(target string) (Finding, bool) {
+	for _, f := range r.Findings {
+		if f.Kind == KindConditionalReachability && f.State == target {
+			return f, true
+		}
+	}
+	return Finding{}, false
+}
+
 // Unreachable returns the names of every declared state that cannot be entered,
 // in sorted order. An empty result means every checked state is reachable.
 func (r *Result) Unreachable() []string {
@@ -102,8 +127,10 @@ func (r *Result) Unreachable() []string {
 func (r *Result) OK() bool { return len(r.Unreachable()) == 0 }
 
 // String renders the result as one line per finding, in finding order, so a
-// report is human-readable and diffable. A reachable state shows its witness
-// event sequence; an unreachable one is marked plainly.
+// report is human-readable and diffable. A reachability finding shows its witness
+// event sequence when the state is reachable, or is marked unreachable; a
+// conditional-reachability finding reads as satisfiable (with its avoid-free
+// witness) or unsatisfiable.
 func (r *Result) String() string {
 	if len(r.Findings) == 0 {
 		return "no findings"
@@ -113,13 +140,24 @@ func (r *Result) String() string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
+		hit, miss := findingVerbs(f.Kind)
 		if f.Reachable {
-			fmt.Fprintf(&b, "%-12s %s: reachable via %v", f.Kind, f.State, f.Witness.Events())
+			fmt.Fprintf(&b, "%-24s %s: %s %v", f.Kind, f.State, hit, f.Witness.Events())
 		} else {
-			fmt.Fprintf(&b, "%-12s %s: unreachable", f.Kind, f.State)
+			fmt.Fprintf(&b, "%-24s %s: %s", f.Kind, f.State, miss)
 		}
 	}
 	return b.String()
+}
+
+// findingVerbs returns the satisfied/unsatisfied phrasing for a finding kind, so
+// each property reads naturally: reachability is "reachable via"/"unreachable",
+// conditional reachability is "satisfiable via"/"unsatisfiable".
+func findingVerbs(k FindingKind) (hit, miss string) {
+	if k == KindConditionalReachability {
+		return "satisfiable via", "unsatisfiable"
+	}
+	return "reachable via", "unreachable"
 }
 
 // Verify checks behavioral properties of a Quenched machine and returns a
@@ -188,6 +226,26 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 			Witness:   w,
 		})
 	}
+
+	// Conditional reachability ("reach X without passing through Y") runs its own
+	// avoid-pruning search over the structural graph, since the reachable-space
+	// pass above and analysis.ShortestPaths cannot exclude an avoid-set.
+	if len(cfg.reachAvoiding) > 0 {
+		g := buildSearchGraph(m)
+		for _, q := range cfg.reachAvoiding {
+			if !g.nodes[q.target] {
+				continue // report on declared states only, matching Reachable
+			}
+			w, ok := g.reachAvoiding(q.target, q.avoid)
+			res.Findings = append(res.Findings, Finding{
+				Kind:      KindConditionalReachability,
+				State:     q.target,
+				Reachable: ok,
+				Witness:   w,
+			})
+		}
+	}
+
 	sortFindings(res.Findings)
 	return res
 }
