@@ -9,10 +9,79 @@ A machine definition is treated as a schema: see the
 counts as an additive (minor) versus breaking (major) change. Use the
 `state/evolution` package to classify a machine change and decide the bump.
 
-## [Unreleased]
+## [1.0.0]
+
+The first stable release. The data model and contracts are now fixed: a machine
+definition, its serialized IR, the context model, the effect envelope, and the
+emission-ordering contract are all frozen so that future capabilities arrive as
+additive packages, modules, and options rather than breaking changes. See
+[MIGRATION.md](./MIGRATION.md) for the concrete steps to upgrade from `v0.2.0`,
+and the "Performance baseline (v1.0.0)" note at the end of this section for the
+representative hot-path numbers.
 
 ### Added
 
+- Versioned IR envelope. A definition's serialized form now carries an explicit
+  `schemaVersion` (stamped by `ToJSON`, currently `"1.0"` via
+  `CurrentSchemaVersion`), an optional machine `id` and `version`, opaque
+  `input`/`output` slots, and a `meta` namespace (`map[string]any`) at the
+  machine, state, transition, and ref granularity for layout, documentation,
+  tags, binding descriptors, and other out-of-band annotation. `LoadFromJSON`
+  preserves unknown fields on nested nodes (machine, state, transition, `Ref`,
+  `GuardNode`) so a document written by a newer build round-trips losslessly
+  through an older one, and rejects only a higher *major* schema version (the
+  typed `*ErrUnsupportedSchema`). IR encoding is deterministic (stable key order)
+  so a definition hashes and diffs reproducibly.
+- Closed-enum extension policy. Every IR enum that may grow — guard op, state
+  kind, param type, descriptor kind, effect kind — has a documented
+  unknown-variant rule: an unrecognized value is preserved verbatim on load and
+  rejected only at evaluation/dispatch, never silently dropped or coerced.
+- Context schema. A machine may declare a `ContextSchema` (reusing the palette
+  `ParamType` vocabulary) describing its context shape; `SchemaOf[C]()` derives
+  one from a Go type by reflection, and `Builder.WithContextSchema` attaches it.
+  The schema type-checks Core guard expressions at authoring time and is the
+  cross-stack data contract a Rich (`state/expr`) or polyglot binding evaluates
+  against. It round-trips through the IR.
+- Graduated guard expressions as logic-as-data. Guards are authored across three
+  tiers that are all bindings of one frozen `Guard` data contract:
+  - **Core** — a stdlib expression vocabulary (typed compare `eq`/`ne`/`lt`/…,
+    field reference, literal, membership, and the boolean spine `And`/`Or`/`Not`
+    plus `stateIn`) extending the existing `GuardNode` tree. It evaluates
+    in-kernel with zero dependencies, type-checks against the `ContextSchema`,
+    and stays fully transparent to analysis and visualization.
+  - **Rich** — a CEL-backed tier in the opt-in `state/expr` module (see that
+    module's changelog), surfaced to the kernel as an ordinary named-ref guard.
+  - **Escape** — a plain Go func, always available, opaque to tooling.
+  Core guards are structurally read-only (an expression cannot mutate context);
+  Escape guards are read-only by contract.
+- Assign reducers — the sole context-mutation site under the value-semantics
+  context contract. An `AssignFn[C]` is a total pure reducer
+  (`ctxView, event, params → C`) registered by `Registry.Assign` (alias
+  `Builder.Reducer`) and wired onto a transition by `Builder.Assign(name)`. The
+  kernel folds the assigns declared on a transition's exit, transition, and entry
+  phases — in that order, declaration order within each phase, each seeing the
+  prior result — and the folded value becomes the instance's context at commit.
+  An assign emits no effect and returns no error; the triggering event (or a
+  service/actor result on an `onDone` transition) is in scope as `AssignCtx.Event`.
+  The serializable `AssignBinding`/`AssignRequest`/`AssignResult` mirror the
+  guard and action bindings so a reducer can run out-of-process in a future
+  transport.
+- Read-only context projection. Guards, actions, and services observe context
+  through a `ContextView` (a read-only projection), keeping the write path
+  exclusively in assigns. The view is the in-process seam a serialized,
+  cross-stack context contract is built on.
+- Snapshot version identity and journal seams. A snapshot carries a
+  `CurrentSnapshotVersion`; restore applies a lenient version policy
+  (accept-and-upgrade within a compatible range, reject across major, the typed
+  `*SnapshotVersionError`). The trace records a structured event payload, and the
+  snapshot reserves `Journal []JournalEntry` and in-flight service/mailbox slots
+  for a future durable-execution/replay runtime — recorded as data, no behavior
+  promised at v1.
+- Actor escalation surface. An unhandled child-actor failure now escalates to the
+  parent (see Changed/BREAKING below). The escalation is observable on the
+  `ActorSystem` via `LastEscalation` and routable via `WithEscalationHandler`
+  (the `EscalationHandler` callback receives the `*ActorEscalation`); an
+  inspector also sees it.
 - Typed effect envelope with a kind registry: every kernel-emitted effect now
   carries a stable, serializable `Kind()` discriminant (the new `KindedEffect`
   interface, implemented by `SpawnActor`, `StopActor`, `StartService`,
@@ -66,33 +135,6 @@ counts as an additive (minor) versus breaking (major) change. Use the
   schedule + fire cycle, snapshot + restore, invoke start + settle, and
   `analysis.ShortestPaths`/`SimplePaths` over a branchy machine. All report
   allocations and join the existing benchstat gate.
-
-### Changed
-
-- BREAKING (pre-1.0): the built-in effect structs gained JSON field tags so their
-  serialized form is lower-camel and stable (`{"id":…,"src":…}` rather than the
-  Go field names), and a `Trace.EffectsEmitted` label now records an effect's
-  stable `Kind` in place of its Go type name (the `name:…` ref prefix is
-  unchanged, so conformance ref-name assertions are unaffected). A host that
-  serialized a built-in effect struct directly, or that parsed the type-name
-  suffix of an `EffectsEmitted` label, must update; type-switching on the effect
-  structs is unaffected (the structs only gained methods and tags).
-
-### Fixed
-
-- On-entry lifecycle effects (`after` / `invoke` / actor `spawn`) are now emitted
-  for a state entered *inside* a parallel region. The region-entry path
-  (`applyRegionTransition`) previously ran only transition effects, so a region
-  substate declaring an `after` timeout, an invoked service, or an invoked actor
-  silently never started it. The region path now emits the same
-  `ScheduleAfter` / `StartService` / `SpawnActor` effects on entry — and the
-  symmetric `CancelScheduled` / `StopService` / `StopActor` effects on exit — as
-  the normal entry/exit cascade, for every state entered within a region
-  (including nested compounds). `Fire` stays pure: the fix emits effect data, it
-  does not run timers/services/actors in the kernel.
-
-### Added
-
 - Inspection API: a live observer sink for an instance's runtime activity. An
   `Inspector` (or the `InspectorFunc` closure adapter) receives
   `InspectionEvent`s tagged by `InspectKind` — an event received, a transition taken (carrying the live `Trace`),
@@ -359,6 +401,83 @@ counts as an additive (minor) versus breaking (major) change. Use the
   result onto a semantic-version bump (`Diff`, `DiffJSON`, `DiffMachines`,
   `Report.Breaking`, `Report.SemverBump`).
 
+### Changed
+
+- **BREAKING — context is now value-semantic; actions no longer mutate context.**
+  The context model is frozen: a context value `C` flows through the step as data,
+  guards and actions observe it through a read-only projection, and the *only*
+  place context changes is an assign reducer. Actions emit effects; they cannot
+  write context. A consumer that previously mutated the context through a pointer
+  inside an action must move those writes into an `AssignFn` registered with
+  `Registry.Assign`/`Builder.Reducer` and wired with `Builder.Assign(name)`. This
+  is the central change for clean serialization, deterministic replay, and
+  cross-stack evaluation. See [MIGRATION.md](./MIGRATION.md).
+- **BREAKING — the reserved `ContextDelta` slot on the action result is removed.**
+  Under the value-semantics contract, a context change is the value an assign
+  reducer returns (`AssignResult.Context`), not a delta carried back from an
+  action. Code referencing `ActionResult.ContextDelta` must drop it and move the
+  write into an assign.
+- **BREAKING — unhandled child-actor failure now escalates to the parent.** A
+  child actor that fails with no `onError` route previously had its failure
+  swallowed silently. It now escalates to the parent: the failure is recorded on
+  the `ActorSystem` (`LastEscalation`), surfaced to a registered inspector, and
+  delivered to a `WithEscalationHandler` callback if one is wired. Wire an
+  `onError` route, an escalation handler, or read `LastEscalation` rather than
+  relying on the old silent behavior.
+- **BREAKING — the built-in effect structs serialize with stable lower-camel JSON
+  keys, and the `Trace.EffectsEmitted` suffix is the stable effect `Kind`.** The
+  built-in effect structs carry JSON field tags so their serialized form is
+  lower-camel and stable (`{"id":…,"src":…}` rather than the Go field names), and
+  a `Trace.EffectsEmitted` label records an effect's stable `Kind` in place of its
+  Go type name (the `name:…` ref prefix is unchanged, so conformance ref-name
+  assertions are unaffected). A host that serialized a built-in effect struct
+  directly, or that parsed the type-name suffix of an `EffectsEmitted` label, must
+  update; type-switching on the effect structs is unaffected (the structs only
+  gained methods and tags).
+- **BREAKING — the `Assay` option `WithAggregate` is renamed `Aggregate`.** The
+  option that makes `Assay` collect all failing requirements in one pass instead
+  of failing fast is now `Aggregate()`. Replace `WithAggregate()` with
+  `Aggregate()` at the call site.
+- The determinism and ordering contract is now explicit and frozen: emission
+  order is exit → transition → entry across the cascade, declaration order within
+  a set, fixed parallel-region order, and the run-to-completion interleave for
+  raised/eventless transitions. A golden-order regression test locks it so a
+  journal or replay built on top stays stable.
+
+### Fixed
+
+- `Cast` returns the typed `*ErrInvalidTransition` consistently for an event that
+  matches no transition, including inside parallel regions, so a caller can
+  distinguish "no transition" from other failures uniformly.
+- On-entry lifecycle effects (`after` / `invoke` / actor `spawn`) are now emitted
+  for a state entered *inside* a parallel region. The region-entry path
+  (`applyRegionTransition`) previously ran only transition effects, so a region
+  substate declaring an `after` timeout, an invoked service, or an invoked actor
+  silently never started it. The region path now emits the same
+  `ScheduleAfter` / `StartService` / `SpawnActor` effects on entry — and the
+  symmetric `CancelScheduled` / `StopService` / `StopActor` effects on exit — as
+  the normal entry/exit cascade, for every state entered within a region
+  (including nested compounds). `Fire` stays pure: the fix emits effect data, it
+  does not run timers/services/actors in the kernel.
+
+### Performance baseline (v1.0.0)
+
+Representative numbers from `go test -run=^$ -bench=. -benchmem ./...` on the
+`state` module (Apple silicon, `-14`). These are a baseline for regression
+tracking, not a tuning target; `Fire` allocates because every step returns a
+fresh trace and effect set as data.
+
+| Benchmark | ns/op | B/op | allocs/op | What it measures |
+|-----------|------:|-----:|----------:|------------------|
+| `Fire` | ~1,005 | 1,185 | 34 | flat hot-path step (event → next state, effects, trace) |
+| `FireHierarchical/hierarchical` | ~2,483 | 2,819 | 81 | compound entry/exit cascade |
+| `FireHierarchical/nested` | ~1,752 | 2,611 | 50 | deep-nested cascade |
+| `Assign_ContextCopyPerStep` | ~1,312 | 2,335 | 29 | per-step context copy cost under value-semantic context |
+| `GuardExpr/flat` | ~1,041 | 1,273 | 36 | single Core guard expression |
+| `Cascade` | ~1,221 | 1,385 | 43 | entry/exit effect cascade |
+| `SnapshotRestore` | ~28,550 | 15,108 | 121 | snapshot capture + restore |
+| `E2E_ConnectionLifecycle` | ~46,187 | 59,856 | 657 | end-to-end exemplar over the wired host runtime |
+
 ## [0.1.0]
 
 Initial release of the pure state-machine kernel.
@@ -377,6 +496,6 @@ Initial release of the pure state-machine kernel.
   clock/ID seams for determinism.
 - Reusable conformance harness with golden scenarios.
 
-[Unreleased]: https://github.com/stablekernel/crucible/compare/state/v0.2.0...HEAD
+[1.0.0]: https://github.com/stablekernel/crucible/compare/state/v0.2.0...state/v1.0.0
 [0.2.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.2.0
 [0.1.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.1.0
