@@ -1,0 +1,33 @@
+{
+  "event": "Tick",
+  "from": "Alpha1",
+  "to": "Work",
+  "outcome": 0,
+  "effectsEmitted": [
+    "tickA:string",
+    "tickB:string"
+  ],
+  "assignsApplied": [
+    "foldA",
+    "foldB"
+  ],
+  "microsteps": [
+    "region:alpha",
+    "region:beta"
+  ],
+  "effects": [
+    "tickA",
+    "tickB"
+  ],
+  "contextLog": [
+    "asg",
+    "asg2",
+    "asg",
+    "asg",
+    "asg2",
+    "asg",
+    "asg",
+    "foldA",
+    "foldB"
+  ]
+}

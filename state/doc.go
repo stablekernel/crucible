@@ -98,6 +98,67 @@
 // structural read-only, clean-replay, and deterministic-analysis contracts hold
 // only for a value C.
 //
+// # Determinism and ordering
+//
+// The pure step is also a deterministic step: given the same machine, the same
+// starting configuration, and the same event, a Fire produces the same effects,
+// the same context, and the same Trace — byte-for-byte, every time. Purity keeps
+// a Fire from reading the clock or doing IO; determinism additionally freezes the
+// ORDER in which the step emits effects, folds assigns, and advances states. This
+// is what makes a Trace journalable and a run replayable: a consumer that records
+// the event stream can re-derive the identical effect/context sequence later.
+//
+// The emission order is frozen as follows, and is golden-locked by a regression
+// test so a reorder is a visible failure:
+//
+//   - Cascade phases run exit -> transition -> entry, in that fixed order. The
+//     exit cascade runs innermost-first (the source leaf, then its ancestors up
+//     to but not including the least common ancestor); the entry cascade runs
+//     outermost-first (the least common ancestor's child down to the target, then
+//     the descent into the target's initial children). A reentering self/ancestor
+//     transition exits up to and including its target, then re-enters it.
+//
+//   - Within a single state's phase, effects (actions) run before assigns
+//     (reducers), each in declaration order. The folded context of a phase becomes
+//     the input to the next phase's assigns; the value committed to the instance
+//     at the end of the step is the fold of every phase's assigns in cascade order.
+//     Effects read the context as it stood at phase entry (read-only).
+//
+//   - Parallel regions are broadcast in REGION DECLARATION ORDER. When several
+//     regions handle the same event in one macrostep, the earlier-declared
+//     region's effects and assigns are emitted and folded before the later one's,
+//     so a cross-region assign fold is deterministic and order-stable. Likewise a
+//     parallel target's entry descends its regions in declaration order, and the
+//     active configuration lists region leaves in that same order.
+//
+//   - The run-to-completion (RTC) microstep interleave is fixed: after the
+//     triggering transition settles, the macrostep drains raised internal events
+//     FIRST (FIFO, in the order they were raised), then fires one enabled eventless
+//     ("always") transition, and repeats until the configuration is stable. Raised
+//     events always precede eventless transitions within a microstep. The internal
+//     queue is macrostep-local, so the interleave is reproducible and Fire stays
+//     pure. A cycle is bounded and fails fast with a typed overflow error rather
+//     than spinning.
+//
+//   - Auto-emitted lifecycle effects keep their cascade slot: a ScheduleAfter /
+//     StartService / SpawnActor for an entered state is appended after that state's
+//     entry effects and assigns; a CancelScheduled / StopService / StopActor for an
+//     exited state after its exit effects and assigns — all in exit/entry order.
+//
+// The Trace records each of these in order: EffectsEmitted and AssignsApplied list
+// the per-step effects and folds in emission order, ExitedStates and EnteredStates
+// the cascade in execution order, and Microsteps the RTC interleave (each raised
+// event and eventless step, plus per-region markers) as it happened. FireResult's
+// Effects slice carries the same effects, in the same order, as data.
+//
+// The ordering is structural, not incidental. Every emission, fold, and cascade
+// walk iterates declaration-ordered slices — states, transitions, regions,
+// children, refs — never a Go map. The kernel's maps (node and state indices, the
+// behavior registry) are consulted only for keyed lookup, never iterated to drive
+// order, so no map-iteration nondeterminism can leak into a Fire. This holds under
+// a value context (see above); a pointer context forfeits the clean-replay
+// guarantee because a guard or action can mutate through the shared alias.
+//
 // # Design
 //
 // The public API follows the suite's functional-options convention: every

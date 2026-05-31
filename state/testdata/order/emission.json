@@ -1,0 +1,162 @@
+[
+  {
+    "event": "Go",
+    "from": "Start",
+    "to": "Start",
+    "outcome": 0,
+    "exitedStates": [
+      "Start",
+      "RTCMid"
+    ],
+    "enteredStates": [
+      "RTCMid",
+      "Work",
+      "Alpha1",
+      "Beta1"
+    ],
+    "effectsEmitted": [
+      "eff:string",
+      "eff2:string",
+      "eff:string",
+      "eff:string",
+      "eff2:string",
+      "eff:string",
+      "eff:string"
+    ],
+    "assignsApplied": [
+      "asg",
+      "asg2",
+      "asg"
+    ],
+    "microsteps": [
+      "raise.Kick",
+      "Kick",
+      "always"
+    ],
+    "effects": [
+      "eff",
+      "eff2",
+      "eff",
+      "eff",
+      "eff2",
+      "eff",
+      "eff"
+    ],
+    "contextLog": [
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg2",
+      "asg",
+      "asg"
+    ]
+  },
+  {
+    "event": "AlphaE",
+    "from": "Alpha1",
+    "to": "Work",
+    "outcome": 0,
+    "exitedStates": [
+      "Alpha1"
+    ],
+    "enteredStates": [
+      "AlphaF"
+    ],
+    "effectsEmitted": [
+      "eff:string"
+    ],
+    "assignsApplied": [
+      "asg"
+    ],
+    "microsteps": [
+      "region:alpha"
+    ],
+    "effects": [
+      "eff"
+    ],
+    "contextLog": [
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg"
+    ]
+  },
+  {
+    "event": "BetaE",
+    "from": "AlphaF",
+    "to": "Work",
+    "outcome": 0,
+    "exitedStates": [
+      "Beta1"
+    ],
+    "enteredStates": [
+      "BetaF"
+    ],
+    "effectsEmitted": [
+      "eff:string"
+    ],
+    "assignsApplied": [
+      "asg"
+    ],
+    "microsteps": [
+      "region:beta",
+      "done.Work"
+    ],
+    "effects": [
+      "eff"
+    ],
+    "contextLog": [
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg",
+      "asg"
+    ]
+  },
+  {
+    "event": "Cross",
+    "from": "AlphaF",
+    "to": "Work",
+    "outcome": 0,
+    "exitedStates": [
+      "Work"
+    ],
+    "enteredStates": [
+      "Done"
+    ],
+    "effectsEmitted": [
+      "eff:string",
+      "eff:string"
+    ],
+    "assignsApplied": [
+      "asg",
+      "asg"
+    ],
+    "effects": [
+      "eff",
+      "eff"
+    ],
+    "contextLog": [
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg2",
+      "asg",
+      "asg",
+      "asg",
+      "asg",
+      "asg",
+      "asg"
+    ]
+  }
+]
