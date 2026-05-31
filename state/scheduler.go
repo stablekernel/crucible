@@ -145,7 +145,10 @@ func (i *Instance[S, E, C]) lifecycleExits(exits []S) []S {
 	for _, s := range exits {
 		exiting[s] = true
 	}
-	out := exits
+	// Copy the caller's slice before appending: out is grown with the orthogonal
+	// leaves below, and aliasing exits here would let an append overwrite the
+	// caller's backing array (or surprise a later caller that still holds exits).
+	out := append([]S(nil), exits...)
 	m := i.machine
 	for _, leaf := range i.config {
 		if exiting[leaf] {
