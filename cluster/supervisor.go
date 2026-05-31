@@ -23,6 +23,12 @@ const (
 	// (or no Respawner is wired) the failure escalates instead. Configure it with
 	// WithRestart, not WithDecision.
 	Restart
+	// Backoff defers the restart: it schedules the re-spawn after an exponentially
+	// growing delay and the host applies due restarts via Tick, so a failing actor
+	// is not hammered with immediate restarts. Bounded by the per-src budget set
+	// with WithBackoff; on exhaustion the failure escalates. Configure it with
+	// WithBackoff.
+	Backoff
 )
 
 // String renders a Decision for diagnostics.
@@ -34,6 +40,8 @@ func (d Decision) String() string {
 		return "escalate"
 	case Restart:
 		return "restart"
+	case Backoff:
+		return "backoff"
 	default:
 		return "unknown"
 	}
@@ -65,14 +73,17 @@ type HandledEscalation struct {
 // restart and backoff build on the same routing. A Supervisor is safe for
 // concurrent use.
 type Supervisor struct {
-	def    Decision
-	perSrc map[string]Decision
-	limits map[string]int // per-src restart budget for the Restart decision
-	sink   state.EscalationHandler
+	def     Decision
+	perSrc  map[string]Decision
+	limits  map[string]int           // per-src restart budget (Restart and Backoff)
+	backoff map[string]backoffPolicy // per-src backoff schedule (Backoff)
+	clock   state.Clock
+	sink    state.EscalationHandler
 
 	mu        sync.Mutex
 	respawner Respawner
 	restarts  map[string]int // per-actor-id restarts already spent
+	pending   []pendingRestart
 	handled   []HandledEscalation
 }
 
@@ -122,10 +133,14 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 	s := &Supervisor{
 		perSrc:   make(map[string]Decision),
 		limits:   make(map[string]int),
+		backoff:  make(map[string]backoffPolicy),
 		restarts: make(map[string]int),
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.clock == nil {
+		s.clock = state.SystemClock()
 	}
 	return s
 }
@@ -155,8 +170,15 @@ func (s *Supervisor) DecisionFor(src string) Decision {
 // ActorSystem.WithEscalationHandler(sup.Handle).
 func (s *Supervisor) Handle(ctx context.Context, esc *state.ActorEscalation) {
 	applied := s.DecisionFor(esc.Src)
-	if applied == Restart && !s.tryRestart(ctx, esc) {
-		applied = Escalate // budget spent or no respawner: give up and propagate
+	switch applied {
+	case Restart:
+		if !s.tryRestart(ctx, esc) {
+			applied = Escalate // budget spent or no respawner: give up and propagate
+		}
+	case Backoff:
+		if !s.scheduleBackoff(esc) {
+			applied = Escalate // budget spent or no respawner
+		}
 	}
 	if applied == Escalate && s.sink != nil {
 		s.sink(ctx, esc)
