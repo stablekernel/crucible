@@ -77,6 +77,18 @@ func goldenCases() []goldenCase {
 				verify.SimulateBounded("never-co", 8, goldenActiveContains("idle", "busy")),
 			},
 		},
+		{
+			name:    "coverage_partial",
+			machine: branching(),
+			// One arm exercised: the report names the unexercised arm's state and edge.
+			opts: []verify.Option{verify.Coverage([]string{"left"})},
+		},
+		{
+			name:    "coverage_parallel",
+			machine: parallelMachine(),
+			// Both regions driven to their terminals: full coverage of the product space.
+			opts: []verify.Option{verify.Coverage([]string{"activate", "work", "report"})},
+		},
 	}
 }
 

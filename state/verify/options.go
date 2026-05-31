@@ -1,5 +1,7 @@
 package verify
 
+import "fmt"
+
 // Option configures a [Verify] pass. Options compose left to right; with no
 // options Verify checks reachability of every declared state. The option set is
 // designed to grow additively: new property checks arrive as new Option
@@ -8,6 +10,13 @@ type Option func(*config)
 
 // config is the accumulated configuration of a Verify pass.
 type config struct {
+	// coverageRequested records that a [Coverage] option was passed, so an empty
+	// scenario set still produces a coverage finding (0% covered) rather than none.
+	coverageRequested bool
+	// coverageScenarios holds the requested coverage scenarios: each is an event
+	// sequence replayed over the configuration-product explorer to record the states
+	// and transitions it exercises.
+	coverageScenarios [][]string
 	// targets restricts the reachability check to these state names; nil or empty
 	// means check every declared state.
 	targets map[string]bool
@@ -129,6 +138,45 @@ func CheckInvariant(inv Invariant, more ...Invariant) Option {
 	return func(c *config) {
 		c.invariants = append(c.invariants, inv)
 		c.invariants = append(c.invariants, more...)
+	}
+}
+
+// Coverage adds a structural-coverage analysis: replay a set of scenarios — each
+// an ordered event sequence — over the machine and report which reachable states
+// and transitions they exercise, against the universe of reachable states and
+// transitions the explorer enumerates. The pass adds a single [Finding] of
+// [KindCoverage]; read the breakdown with [Result.Coverage].
+//
+// Each scenario is replayed over the same guard-agnostic configuration-product
+// explorer the other property checks reason over, so the coverage metric is
+// consistent with verify's model: an event drives the configuration along the
+// same structural edge the explorer follows, the states entered are the active
+// configurations the run visits, and the transitions fired are the structural
+// edges it traverses. An event that names no enabled transition from the current
+// configuration is a clean no-op — it advances nothing and is neither an error nor
+// counted — exactly as a kernel Fire of an unhandled event is ignored.
+//
+// The universe a scenario set is measured against is the reachable universe: the
+// reachable states (every state active in some reachable configuration) and the
+// reachable transitions (every structural edge fired between reachable
+// configurations). An empty scenario set is valid and yields 0% coverage with the
+// full universe reported uncovered.
+//
+// Coverage is exact in the same guard-agnostic sense as the other checks: a guard
+// can only ever prune an edge at run time, never add one, so a state or transition
+// the explorer marks reachable is reachable in some run, and the uncovered set is a
+// real structural gap a scenario set leaves unexercised. Repeated Coverage calls
+// union their scenarios.
+func Coverage[E comparable](scenarios ...[]E) Option {
+	return func(c *config) {
+		c.coverageRequested = true
+		for _, sc := range scenarios {
+			seq := make([]string, len(sc))
+			for i, e := range sc {
+				seq[i] = fmt.Sprint(e)
+			}
+			c.coverageScenarios = append(c.coverageScenarios, seq)
+		}
 	}
 }
 

@@ -1,0 +1,6 @@
+coverage                 coverage:
+states: 2/3 (66.7%); uncovered [rightEnd]
+transitions: 1/2 (50.0%); uncovered [start -right-> rightEnd]
+reachability             leftEnd: reachable via [left]
+reachability             rightEnd: reachable via [right]
+reachability             start: reachable via []
