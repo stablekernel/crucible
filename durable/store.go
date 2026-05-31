@@ -56,6 +56,31 @@
 // standard durable-execution guarantee: the external call happens once, and
 // recovery is a pure replay rather than a re-execution. Wire the services with
 // WithServiceRegistry and settle them with Handle.RunService.
+//
+// # Child-machine actors (the actor seam)
+//
+// A child-machine actor (InvokeActor, or a dynamically spawned actor) produces
+// whatever its behavior computes — its done-data on completion, its error on
+// failure, or a message it sends that drives the parent — so its result is not a
+// pure function of the kernel inputs and must be recorded. A durable actor's
+// behavior runs exactly once, on the live path, and the result it routes into the
+// parent is recorded; on recovery the recorded result is replayed back through the
+// same parent transition and the actor behavior is never re-instantiated. The
+// Runner wraps the kernel's reusable host driver, state.ActorSystem: on the live
+// path Handle.DeliverToActor delivers an event to a running actor (against the
+// palette supplied with WithActorPalette), runs it to settlement, and journals each
+// parent transition the delivery drove — the parent event together with the actor's
+// done-data / error — as a JournalActorMessage correlated by the actor id; on
+// recovery the recorded transitions are re-fired directly through the parent so the
+// kernel re-derives byte-identical context having run no actor. Wire the behaviors
+// with WithActorPalette and deliver to actors with Handle.DeliverToActor.
+//
+// Actor done-data, errors, and messages are recorded as serialized JSON, the same
+// polyglot serializable boundary the clock and service seams record across: a
+// parent reducer that type-asserts a concrete, non-JSON Go type from
+// AssignCtx.Event observes the JSON-decoded shape on the replayed onDone. A
+// typed-codec option to record and replay the concrete Go value is reserved for a
+// later, additive change.
 package durable
 
 import (

@@ -41,8 +41,15 @@ import (
 // WithServiceRegistry) and its result is journaled as a JournalServiceResult; on
 // recovery the recorded result is replayed back through the kernel's settle seam,
 // so the service is never re-invoked and the same onDone / onError event re-fires
-// with the same data. The actor seam arrives in later work; a purely event-driven
-// machine records no Entries.
+// with the same data.
+//
+// Child-machine actors are the third recorded seam: an actor's behavior runs
+// exactly once on the live path (Handle.DeliverToActor, against the palette
+// supplied with WithActorPalette) and each parent transition the delivery drives —
+// the actor's onDone / onError, or a message it sends — is journaled as a
+// JournalActorMessage; on recovery the recorded transition is replayed by re-firing
+// the parent directly with the recorded done-data, so the actor behavior is never
+// re-instantiated. A purely event-driven machine records no Entries.
 type Runner[S comparable, E comparable, C any] struct {
 	machine *state.Machine[S, E, C]
 	store   Store
@@ -78,6 +85,9 @@ type Handle[S comparable, E comparable, C any] struct {
 
 	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
 	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
+
+	actors   *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
+	actorBuf *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
 }
 
 // drainClock returns and clears the clock readings accumulated since the last
@@ -145,6 +155,17 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		svc.Absorb(ctx, inst.StartEffects())
 	}
 
+	// Install the child-machine actor host driver and spawn the initial
+	// configuration's actors, so an actor declared on the very first state is running
+	// before the first DeliverToActor. The actor buffer journals each parent
+	// transition a delivery drives for replay. A machine with no actor palette wired
+	// spawns no actor and records no actor entries.
+	actorBuf := make([]state.JournalEntry, 0)
+	actors := r.newActorSystem(inst)
+	if actors != nil {
+		actors.Absorb(ctx, inst.StartEffects())
+	}
+
 	return &Handle[S, E, C]{
 		runner:   r,
 		id:       id,
@@ -154,6 +175,8 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		clockBuf: &buf,
 		svc:      svc,
 		svcBuf:   &svcBuf,
+		actors:   actors,
+		actorBuf: &actorBuf,
 	}, nil
 }
 
@@ -165,6 +188,20 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) *state
 		return nil
 	}
 	return state.NewServiceRunner(inst, r.cfg.serviceReg)
+}
+
+// newActorSystem builds the kernel host driver for child-machine actors bound to
+// inst, registering each behavior in the configured palette, or nil when no actor
+// palette was wired (a machine that spawns no actor needs none).
+func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) *state.ActorSystem[S, E, C] {
+	if len(r.cfg.actorPalette) == 0 {
+		return nil
+	}
+	sys := state.NewActorSystem(inst)
+	for src, behavior := range r.cfg.actorPalette {
+		sys.Register(src, behavior)
+	}
+	return sys
 }
 
 // Fire drives one event through a durable instance identified by id, loading and
@@ -317,9 +354,28 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		svc.Absorb(ctx, inst.StartEffects())
 	}
 
+	// Build the child-machine actor host driver, but DO NOT spawn the restored
+	// configuration's actors yet: the recorded run's actors are reconstructed by
+	// replaying their parent transitions directly (replayActor), not by re-running
+	// behavior. Spawning here would re-instantiate an actor the recorded run already
+	// settled. The live actors at the resume point are armed once, after replay,
+	// from the final configuration's StartEffects.
+	actorBuf := make([]state.JournalEntry, 0)
+	actors := r.newActorSystem(inst)
+
 	for i := range tail {
 		rec := &tail[i]
 		switch {
+		case hasActorEntry(rec):
+			// Re-fire each recorded parent transition the live delivery drove, in
+			// recorded (fire) order, carrying the recorded actor done-data / error so
+			// the kernel re-derives the identical onDone / onError (or message) parent
+			// transition — running no actor behavior.
+			for _, entry := range actorEntries(rec) {
+				if err := replayActor(ctx, inst, r.cfg.eventCodec, entry); err != nil {
+					return nil, fmt.Errorf("durable: at step %d for %q: %w", rec.Step, id, err)
+				}
+			}
 		case hasServiceEntry(rec):
 			// Re-settle each recorded invoked-service outcome through the same settle
 			// seam the live run drove, in recorded (settle) order, so the kernel
@@ -365,15 +421,30 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// readings): they belong to no new step and must not leak into the next Fire.
 	buf = buf[:0]
 
-	// The next step ordinal continues past the highest assigned step. Externally
-	// fired steps map one-to-one to Traces, so the Trace count gives their share;
-	// each scheduler-tick barrier consumed one extra ordinal beyond the timer
-	// Traces it produced (the barrier's own step), so the next ordinal is the
-	// Trace count plus the number of tick barriers replayed.
+	// Arm the live actors at the resume point from the final configuration's
+	// StartEffects: this spawns exactly the actors running where replay left the
+	// parent (for example the next child in a chain, after the prior one settled),
+	// so a subsequent DeliverToActor finds them — without re-instantiating an actor
+	// the recorded run already settled, which replay reconstructed by re-firing the
+	// parent rather than re-running behavior.
+	if actors != nil {
+		actors.Absorb(ctx, inst.StartEffects())
+	}
+
+	// The next step ordinal continues past the highest assigned step. Step ordinals
+	// are assigned monotonically: each Record consumes one ordinal regardless of how
+	// many parent Traces it produced (an actor delivery can drive several), except a
+	// scheduler-tick barrier, which consumed one ordinal per timer it fired plus the
+	// barrier's own. The next ordinal is therefore the last tail Record's Step plus
+	// its own span. When the tail is empty (a fresh checkpoint compacted every
+	// Record), no actor or tick step survives in it, so the restored Trace count —
+	// one per pre-checkpoint step — gives the next ordinal directly.
 	next := len(inst.History())
-	for i := range tail {
-		if tail[i].Tick {
-			next++
+	if n := len(tail); n > 0 {
+		last := &tail[n-1]
+		next = last.Step + 1
+		if last.Tick {
+			next = last.Step + last.TickSteps + 1
 		}
 	}
 	return &Handle[S, E, C]{
@@ -385,6 +456,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		clockBuf: &buf,
 		svc:      svc,
 		svcBuf:   &svcBuf,
+		actors:   actors,
+		actorBuf: &actorBuf,
 	}, nil
 }
 

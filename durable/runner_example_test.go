@@ -203,3 +203,88 @@ func ExampleHandle_RunService() {
 	// recovered quote: quote-1
 	// service calls: 1
 }
+
+// fulfillmentCtx is a small JSON-marshalable context for the actor example.
+type fulfillmentCtx struct {
+	Tracking string `json:"tracking"`
+}
+
+// fulfillmentMachine supervises a child shipping actor: it spawns the actor on
+// entering supervising and folds the actor's done-data (a tracking number) into
+// context on its onDone.
+func fulfillmentMachine() *state.Machine[string, string, *fulfillmentCtx] {
+	return state.Forge[string, string, *fulfillmentCtx]("fulfillment").
+		Reducer("track", func(in state.AssignCtx[*fulfillmentCtx]) *fulfillmentCtx {
+			c := in.Entity
+			if tr, ok := in.Event.(string); ok {
+				c.Tracking = tr
+			}
+			return c
+		}).
+		Actor("ship").
+		State("supervising").InvokeActor("ship", "shipped", "failed").
+		State("complete").Final().
+		State("aborted").Final().
+		Initial("supervising").
+		Transition("supervising").On("shipped").GoTo("complete").Assign("track").
+		Transition("supervising").On("failed").GoTo("aborted").
+		Quench()
+}
+
+// ExampleHandle_DeliverToActor shows the actor record/replay seam: a child shipping
+// actor runs exactly once on the live path (its done-data recorded), and on recovery
+// the recorded done-data is replayed back through the same parent onDone without
+// re-running the actor — so the recovered instance reaches the same state and
+// context, and the actor's run count never advances past one.
+func ExampleHandle_DeliverToActor() {
+	ctx := context.Background()
+	var runs int
+	palette := map[string]state.ActorBehavior{
+		"ship": func(map[string]any) (state.ActorInstance, error) {
+			child := state.Forge[string, string, *fulfillmentCtx]("shipper").
+				State("packing").
+				State("shipped").Final().
+				Initial("packing").
+				Transition("packing").On("dispatch").GoTo("shipped").
+				Quench()
+			inst := child.Cast(&fulfillmentCtx{}, state.WithInitialState[string]("packing"))
+			return state.NewActor(inst, func(*state.Instance[string, string, *fulfillmentCtx]) any {
+				runs++
+				return fmt.Sprintf("TRK-%d", runs)
+			}), nil
+		},
+	}
+	m := fulfillmentMachine()
+	store := durable.NewMemStore()
+	const id = durable.InstanceID("ship-1")
+
+	runner := durable.NewRunner(m, store, durable.WithActorPalette[string, string, *fulfillmentCtx](palette))
+	h, err := runner.Start(ctx, id, &fulfillmentCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		panic(err)
+	}
+	// Drive the shipping actor to completion: it runs once and routes its tracking
+	// number through the parent onDone.
+	ref, ok := h.ActorRef(state.ActorID("fulfillment", "supervising", 0))
+	if !ok {
+		panic("no actor ref")
+	}
+	if _, err = h.DeliverToActor(ctx, ref, "dispatch"); err != nil {
+		panic(err)
+	}
+
+	// Recover: the recorded done-data is replayed; the actor is not run again.
+	recovered, err := durable.Recover(ctx, m, store, id,
+		durable.WithActorPalette[string, string, *fulfillmentCtx](palette))
+	if err != nil {
+		panic(err)
+	}
+	snap := recovered.Instance().Snapshot()
+	fmt.Println("recovered state:", snap.Current)
+	fmt.Println("recovered tracking:", snap.Context.Tracking)
+	fmt.Println("actor runs:", runs)
+	// Output:
+	// recovered state: complete
+	// recovered tracking: TRK-1
+	// actor runs: 1
+}
