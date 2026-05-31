@@ -46,6 +46,45 @@ if !report.Sound() {
 }
 ```
 
-Later capabilities build on this proven core — running the saga durably, across a
+## Durable execution
+
+The next capability runs the proven saga under the
+[`durable`](../../durable) runtime, so an order survives a process crash and its
+lifecycle can be replayed read-only after the fact. The saga is reused wholesale —
+the model, the payment services (`fooddelivery.ServiceRegistry`), and the
+kitchen/courier actor behaviors (`fooddelivery.KitchenBehavior` /
+`fooddelivery.CourierBehavior`) — driven through the durable `Handle` API rather
+than the example's in-process Rig.
+
+Two properties are demonstrated:
+
+- **Crash and recovery**, against a real on-disk `durable.FileStore`. `RunCrashRecovery`
+  drives an order to its live `Active` fulfillment configuration, drops the runner
+  and handle to simulate a process crash, then reconstructs the order from the store
+  alone with `durable.Recover` — its state, payment authorization hold, and folded
+  milestone log intact — and drives the recovered order on to `Delivered`. The
+  authorize service ran exactly once, on the live path; recovery replays its recorded
+  result without re-invoking it.
+- **Read-only time travel**, against a history-retaining `durable.MemStore`
+  (`WithHistory`). `RunTimeTravel` records the same happy path, then uses
+  `durable.Steps` and `durable.StateAt` to reconstruct the order's state at each
+  recorded step — and at an earlier point in its lifecycle — without re-running any
+  service or actor.
+
+```go
+recovery, err := dispatch.RunCrashRecovery(ctx, storeDir)
+if err != nil {
+	log.Fatal(err)
+}
+// recovery.RecoveredConfig is [Cooking OnTime]; recovery.FinalConfig is [Delivered].
+
+travel, err := dispatch.RunTimeTravel(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+// travel.EarlierConfig is an earlier configuration, distinct from travel.FinalConfig.
+```
+
+Later capabilities build on this proven, durable core — running the saga across a
 cluster, over a transport, and under observation — each added without disturbing the
 proof.
