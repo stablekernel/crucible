@@ -16,4 +16,8 @@ var (
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.
 	ErrCheckpointNotAdvancing = errors.New("crucible/durable: checkpoint does not advance")
+
+	// ErrInstanceExists is reported by Runner.Start when the InstanceID is already
+	// present in the Store, so a fresh Start does not clobber a recorded instance.
+	ErrInstanceExists = errors.New("crucible/durable: instance already exists")
 )
