@@ -50,6 +50,24 @@ until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `broker`, `store`, and `sink` modules are
 planned.
 
+## Roadmap — event-driven seams
+
+The kernel emits effects as pure data; a small family of bring-your-own-adapter
+IO seams moves events to and from the outside world, each defaulting to a no-op
+and forcing nothing third-party on the consumer:
+
+- **`broker`** _(planned)_ — pub/sub transport: publish emitted events and
+  subscribe machines to external streams.
+- **`sink`** _(planned)_ — egress fan-out: dispatch emitted effects to many
+  outlets (SQL, Dynamo, StatsD, …), fire-and-forget.
+- **`source`** _(exploring)_ — ingress: subscribe external streams and drive
+  machines; the symmetric counterpart to `sink`.
+- **`bellows`** _(exploring)_ — resilience seam: circuit-breaking and
+  backpressure around the IO edges.
+
+Durable state and event persistence is tracked separately with the `durable`
+runtime, not here.
+
 ## Design & discussions
 
 Design rationale and roadmaps live on the GitHub
