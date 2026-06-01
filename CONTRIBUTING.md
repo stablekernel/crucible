@@ -50,6 +50,10 @@ Before you push, **tests, lint, vet, and `govulncheck` must all pass.** The
 quickest way to verify locally is `mage check`. CI runs the same gates across a
 Go-version × OS matrix on every PR.
 
+Docs-only pull requests (changing only `*.md`, `docs/`, `LICENSE`, or `NOTICE`)
+skip the Go matrix automatically and are gated solely by the aggregate `gate`
+check, so a README tweak doesn't spend the full test run.
+
 ## Performance
 
 Performance regressions fail the build. On every pull request, CI runs the
