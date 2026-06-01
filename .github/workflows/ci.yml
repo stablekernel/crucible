@@ -18,7 +18,38 @@ env:
   BENCHSTAT: golang.org/x/perf/cmd/benchstat@v0.0.0-20260512194132-3cf34090a3db
 
 jobs:
+  # Detect whether anything other than docs changed. Docs-only PRs skip the Go
+  # lint/test/vuln/coverage/bench jobs entirely; the `gate` job below still runs
+  # and is the single required status check, so such PRs stay mergeable.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Detect non-docs changes
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # --quiet exits 0 (no diff) only when every changed path is excluded —
+          # i.e. the PR is docs-only → code=false. Any other path (Go, go.mod/sum,
+          # workflows, config) yields a diff → code=true. If the diff errors for
+          # any reason, control falls through to code=true (fail-safe: run CI).
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \
+            ':(exclude)*.md' ':(exclude)docs/**' ':(exclude)LICENSE' ':(exclude)NOTICE'; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change; skipping Go lint/test/vuln/coverage/bench." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -71,11 +102,15 @@ jobs:
   # than as flat top-level checks. Keep the module list in sync with the lint,
   # vuln, and coverage jobs below.
   tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
     with:
       modules: "state state/expr durable cluster transport wasm e2e examples/fooddelivery examples/dispatch telemetry telemetry/slog telemetry/otel telemetry/datadog"
 
   vuln:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -124,6 +159,8 @@ jobs:
         run: go run "$GOVULNCHECK" ./...
 
   coverage:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
       THRESHOLD: "80"
@@ -274,8 +311,10 @@ jobs:
   # job's step summary for visibility, and the job fails if any gated metric
   # (sec/op, allocs/op) regresses past the threshold below.
   bench:
-    # Only meaningful on PRs, where there is a base to compare against.
-    if: github.event_name == 'pull_request'
+    # Skipped entirely on docs-only PRs (see the `changes` job); on code PRs the
+    # inner step further narrows to Go-source changes before benchmarking.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
       # Maximum allowed head/base ratio before the gate fails (1.20 = +20%).
@@ -356,4 +395,23 @@ jobs:
           awk -v THRESHOLD="$BENCH_THRESHOLD" \
             -f "$GITHUB_WORKSPACE/.github/scripts/bench-gate.awk" \
             "$RUNNER_TEMP/compare.csv" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Single required status check. Branch protection requires only `gate`, which
+  # aggregates the required jobs: it fails if any of them failed or was
+  # cancelled, and treats a skipped job (docs-only PRs) as a pass — so such PRs
+  # stay mergeable without running the Go matrix. `bench` is advisory and is
+  # deliberately excluded so a benchmark regression never blocks a merge.
+  gate:
+    if: always()
+    needs: [changes, lint, tests, vuln, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a required job did not pass
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "::error::A required job failed or was cancelled: ${{ join(needs.*.result, ', ') }}"
+          exit 1
+      - name: Required jobs passed
+        run: echo "Required jobs passed or were skipped (${{ join(needs.*.result, ', ') }})."
+
 # As modules land (broker, store, sink), add their dirs to each job.
