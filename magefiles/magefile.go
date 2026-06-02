@@ -25,10 +25,29 @@ import (
 	"github.com/magefile/mage/sh"
 )
 
-// modules is the list of Go modules in the suite, by directory. As new modules
-// land (broker, store, sink), add them here and every target picks them
+// modules is the list of workspace Go modules these targets iterate. As new
+// modules land (broker, store, sink), add them here and every target picks them
 // up automatically.
-var modules = []string{"state", "telemetry", "telemetry/slog", "telemetry/otel", "telemetry/datadog"}
+//
+// The SDK-heavy sink destinations (the AWS family, redis, nats, kafka,
+// gcppubsub, otel, statsd) are deliberately absent: they are standalone modules
+// kept out of the shared workspace so their vendor SDKs never enter the core
+// modules' dependency graphs. CI verifies them separately with GOWORK=off; run
+// SinkDestinations below to do the same locally.
+var modules = []string{
+	"state", "telemetry", "telemetry/slog", "telemetry/otel", "telemetry/datadog",
+	"sink", "sink/bridge", "sink/file", "sink/http", "sink/prometheus", "sink/slog",
+	"sink/sql", "examples/sinkflow",
+}
+
+// sinkDestinations are the standalone SDK-backed sink destination modules, kept
+// out of the workspace (see modules above). Each builds via its own go.mod and
+// replace directives, so the SinkDestinations target runs with GOWORK=off.
+var sinkDestinations = []string{
+	"sink/cloudwatch", "sink/dynamo", "sink/eventbridge", "sink/firehose",
+	"sink/gcppubsub", "sink/kafka", "sink/kinesis", "sink/nats", "sink/otel",
+	"sink/redis", "sink/s3", "sink/sns", "sink/sqs", "sink/statsd", "sink/timestream",
+}
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.
 const (
@@ -345,6 +364,34 @@ func Vuln() error {
 // scan. Run this before opening a PR.
 func Check() {
 	mg.SerialDeps(Lint, TestRace, Vuln)
+}
+
+// SinkDestinations verifies the standalone SDK-backed sink destination modules
+// (the ones kept out of the workspace; see sinkDestinations). Each is built with
+// GOWORK=off via its own go.mod and replace directives, running race tests,
+// lint, and the vulnerability scan. CI runs this as a separate leg so the vendor
+// SDKs never enter the core modules' dependency graphs.
+func SinkDestinations() error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	cfg := filepath.Join(root, ".golangci.yml")
+	env := map[string]string{"GOWORK": "off"}
+	for _, mod := range sinkDestinations {
+		dir := filepath.Join(root, mod)
+		fmt.Printf("==> sink-destinations: %s\n", mod)
+		if err := sh.RunWithV(env, "go", "test", "-C", dir, "-race", "./..."); err != nil {
+			return fmt.Errorf("test failed for %q: %w", mod, err)
+		}
+		if err := sh.RunWithV(env, "go", "-C", dir, "run", golangciLint, "run", "--config", cfg, "./..."); err != nil {
+			return fmt.Errorf("lint failed for %q: %w", mod, err)
+		}
+		if err := sh.RunWithV(env, "go", "-C", dir, "run", govulncheck, "./..."); err != nil {
+			return fmt.Errorf("govulncheck failed for %q: %w", mod, err)
+		}
+	}
+	return nil
 }
 
 // Changelog prints the Unreleased section of a module's CHANGELOG.md — the

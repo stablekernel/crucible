@@ -1,13 +1,24 @@
 go 1.25.0
 
+// SDK-heavy sink destinations (the AWS family, redis, nats, kafka, gcppubsub,
+// otel, statsd) are intentionally NOT listed here: each is a standalone module
+// with its own go.mod and replace directives, verified in CI with GOWORK=off so
+// its vendor SDKs never enter the shared workspace's dependency graph. Only the
+// stdlib-only / no-extra-dependency sink modules join the workspace.
 use (
 	./cluster
 	./durable
 	./e2e
-	./examples/fooddelivery
 	./examples/dispatch
+	./examples/fooddelivery
+	./examples/sinkflow
 	./magefiles
 	./sink
+	./sink/bridge
+	./sink/file
+	./sink/http
+	./sink/prometheus
+	./sink/slog
 	./sink/sql
 	./state
 	./state/expr
