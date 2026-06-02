@@ -1,30 +1,54 @@
 ---
 title: Introduction
-description: What Crucible is, and the philosophy behind it.
+description: What crucible/state is — a pure, domain-agnostic statechart kernel for Go.
+sidebar:
+  order: 1
 ---
 
-Crucible is a Go suite for forging event-driven services. Its through-line is
-simple: **thin seams, no-op defaults, no forced dependencies.**
+`crucible/state` is a statechart kernel for Go: an abstract, domain-agnostic
+engine for modeling anything that moves through states in response to events —
+an order, a payment, a device, a workflow. It is stdlib-only, generic over your
+own state, event, and context types, and built so that advancing a machine is a
+**pure function**.
 
-The modules — statecharts, durable execution, clustering, transport, telemetry —
-compose like alloy: take only what you need, bring your own logging and
-telemetry, and never inherit a dependency you did not ask for.
+<!-- IMAGE-SLOT: state-kernel-hero — a glowing crucible casting a luminous statechart (nodes and directed arcs) as molten metal pours into a mold, sky-squid mascot peering over the rim; conveys "forge a state machine from abstract definition into a running instance" — 16:9 -->
+![Placeholder hero: a molten crucible casting a statechart into shape.](../../../assets/placeholders/hero.svg)
 
-This site is under active construction. The pages below are stubs; full content
-lands in subsequent releases.
+## What makes it different
 
-## The lifecycle of an event
+Most statechart libraries braid the *definition* of a machine together with the
+*implementation* of its behavior and the *IO* it performs. `crucible/state`
+separates all three:
 
-Crucible models a service as a statechart that reacts to events. The diagram
-below renders client-side via Mermaid to confirm diagram support works:
+- **The machine is data.** Its canonical form is a serializable IR — states,
+  transitions, and behavior referenced by name and params. Nothing executable is
+  embedded in the definition.
+- **Behavior is bound by name.** A registry maps names to your Go functions
+  (guards, actions, assign reducers, services). The same definition can be
+  authored in Go today and in a visual editor later — both emit the same IR.
+- **Advancing is pure.** `Fire` computes the next state and returns the effects
+  to perform as *data*. It does no IO itself. The caller decides what to publish,
+  store, or call.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Forging: event / guard
-    Forging --> Idle: complete
-    Forging --> Failed: error
-    Failed --> [*]
+Purity is not an aesthetic — it is what makes a machine **verifiable** and
+**durable-ready**. Because state advances deterministically from `(context,
+event)`, you can snapshot it, replay it, statically analyze reachable paths, and
+verify that an externally-built entity is legally in a given state.
+
+## The shape of the API
+
+The lifecycle reads as foundry verbs: **Forge** a builder, optionally **Temper**
+it for diagnostics, **Quench** it into an immutable `*Machine`, **Cast** an
+instance around your entity, then **Fire** events at it.
+
+```go
+m := state.Forge[Status, Event, Order]("order").
+    Initial(Placed).
+    Transition(Placed).On(Pay).GoTo(Paid).
+    Quench()
+
+inst := m.Cast(Order{ID: "A-1"})
+res := inst.Fire(context.Background(), Pay) // res.NewState == Paid; res.Effects is data
 ```
 
-Next: [Quickstart](/crucible/start/quickstart/).
+Next: [Getting started](/crucible/start/getting-started/).

@@ -51,14 +51,13 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Start here',
-          items: [
-            { slug: 'start/introduction' },
-            { slug: 'start/quickstart' },
-          ],
+          // Pages live in start/ and order by each page's `sidebar.order`.
+          items: [{ autogenerate: { directory: 'start' } }],
         },
         {
           label: 'Concepts',
-          items: [{ slug: 'concepts/overview' }],
+          // Pages live in concepts/ and order by each page's `sidebar.order`.
+          items: [{ autogenerate: { directory: 'concepts' } }],
         },
         {
           label: 'Authoring guides',
