@@ -87,6 +87,13 @@ export default defineConfig({
           label: 'Integrating',
           items: [{ autogenerate: { directory: 'integrating' } }],
         },
+        {
+          label: 'Sink',
+          // The egress IO seam. Prose pages live in sink/; sink's generated API
+          // reference appears under the shared Reference group above. As further
+          // IO seams (broker, source) are documented, each gets its own group.
+          items: [{ autogenerate: { directory: 'sink' } }],
+        },
       ],
     }),
   ],
