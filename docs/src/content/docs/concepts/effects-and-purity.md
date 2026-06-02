@@ -55,3 +55,13 @@ it runs.
 The `Trace` rounds this out: it is an ordered record of the transitions, guards,
 and regions that `Fire` walked, so you can explain, log, or replay any step
 after the fact — again, entirely as data.
+
+## Dispatching the effects
+
+That `for _, eff := range res.Effects` loop is exactly the seam the
+[`crucible/sink`](/crucible/sink/overview/) module fills: a `Manifold` fans each
+effect out to every wired destination — SQL, a message bus, a metric — fire and
+forget, with neither kernel importing the other. The
+[state-to-sink bridge](/crucible/sink/with-state/) makes "fan every transition
+out" a one-liner. The kernel stays a pure decision core; sink is one ready-made
+way for the host to act on what it decides.
