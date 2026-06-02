@@ -33,3 +33,8 @@ docs/.astro/
 # regenerated fresh in CI and on deploy, so never committed — avoids drift).
 docs/src/content/docs/reference/
 docs/src/content/docs/_generated/
+
+# Local environment / secrets (API keys, etc.) — never committed
+.env
+.env.*
+!.env.example
