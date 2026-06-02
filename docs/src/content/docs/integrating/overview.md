@@ -23,7 +23,7 @@ Three properties make this comfortable inside an existing codebase:
 - **Effects are data the host applies.** The kernel emits discriminated, serializable effects and never executes them. You decide whether an effect becomes a Kafka publish, a row write, or an RPC — and you do it at *your* boundary, inside *your* transaction.
 - **One machine across test, HTTP, and consumer.** The same definition that a unit test exercises also runs behind a synchronous request handler and an asynchronous event consumer, unchanged. The behavior is identical because the decision is identical; only the dispatch differs.
 
-The most common adoption question is "my domain is a big mutable aggregate behind a relational store — how does a value-semantic kernel fit that?" It fits cleanly, but the recipe matters. The next page, [pointer-heavy codebases](/integrating/pointer-heavy-codebases/), is the field guide: don't make the aggregate your context — project it.
+The most common adoption question is "my domain is a big mutable aggregate behind a relational store — how does a value-semantic kernel fit that?" It fits cleanly, but the recipe matters. The next page, [pointer-heavy codebases](/crucible/integrating/pointer-heavy-codebases/), is the field guide: don't make the aggregate your context — project it.
 
 <!-- IMAGE-SLOT: decision-core-seam — a glowing crucible decision-core at center emitting effect-sparks across a clean seam to a host that routes them to broker, store, and RPC; sky-squid working the seam — 16:9 -->
 ![The kernel as a pure decision core](../../../assets/placeholders/hero.svg)

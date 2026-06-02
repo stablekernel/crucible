@@ -21,11 +21,11 @@ and can never drift from the source.
 ## Images
 
 Brand and illustration art is generated externally. Labeled placeholders live in
-`src/assets/placeholders/`; the full set of slots — with a shared visual style guide
-and a ready-to-use prompt for each — is in [`IMAGE-PROMPTS.md`](./IMAGE-PROMPTS.md).
-In-page illustration slots are marked in the content with an `IMAGE-SLOT: <slug>`
-comment. To add real art: generate it from the manifest, drop it in, and swap the
-placeholder reference.
+`src/assets/placeholders/`, and in-page illustration slots are marked in the content
+with an `IMAGE-SLOT: <slug>` comment. The prompt manifest — the shared visual style
+guide and a ready-to-use prompt for each slot — is maintained outside this repo. To
+add real art: generate it from that manifest, drop it in, and swap the placeholder
+reference.
 
 ## Local development
 

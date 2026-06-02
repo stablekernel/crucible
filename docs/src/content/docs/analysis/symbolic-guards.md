@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-Plain [static analysis](/analysis/static-analysis/) treats every guard as opaque, so it won't report an overlap between two *guarded* transitions on the same event. `state/verify/symbolic` closes that gap by reasoning over the Core guard tree as data — comparison and boolean structure over context fields — instead of running it.
+Plain [static analysis](/crucible/analysis/static-analysis/) treats every guard as opaque, so it won't report an overlap between two *guarded* transitions on the same event. `state/verify/symbolic` closes that gap by reasoning over the Core guard tree as data — comparison and boolean structure over context fields — instead of running it.
 
 Four questions over a guard node and the machine's `ContextSchema`:
 

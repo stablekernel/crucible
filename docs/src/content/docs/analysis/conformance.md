@@ -34,4 +34,4 @@ You don't have to hand-write the scenarios. `GenerateScenarios` walks the machin
 <!-- IMAGE-SLOT: conformance-replay — a foundry quality bench replaying a stamped golden casting against a fresh one, a glowing diff-meter reading "match", sky-squid signing off — 16:9 -->
 ![Golden scenarios replayed against a machine](../../../assets/placeholders/hero.svg)
 
-Conformance and verification cross-check each other: the suite that gives full [coverage](/analysis/verification/) is the suite worth freezing here.
+Conformance and verification cross-check each other: the suite that gives full [coverage](/crucible/analysis/verification/) is the suite worth freezing here.
