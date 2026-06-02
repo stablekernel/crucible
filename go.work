@@ -13,6 +13,7 @@ use (
 	./telemetry/datadog
 	./telemetry/otel
 	./telemetry/slog
+	./tools/docsgen
 	./transport
 	./wasm
 )
