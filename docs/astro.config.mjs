@@ -65,11 +65,11 @@ export default defineConfig({
         },
         {
           label: 'Serialization & visualization',
-          items: [{ slug: 'serialization/overview' }],
+          items: [{ autogenerate: { directory: 'serialization' } }],
         },
         {
           label: 'Analysis & verification',
-          items: [{ slug: 'analysis/overview' }],
+          items: [{ autogenerate: { directory: 'analysis' } }],
         },
         {
           label: 'Reference',
@@ -81,11 +81,11 @@ export default defineConfig({
         },
         {
           label: 'Examples',
-          items: [{ slug: 'examples/overview' }],
+          items: [{ autogenerate: { directory: 'examples' } }],
         },
         {
           label: 'Integrating',
-          items: [{ slug: 'integrating/overview' }],
+          items: [{ autogenerate: { directory: 'integrating' } }],
         },
       ],
     }),
