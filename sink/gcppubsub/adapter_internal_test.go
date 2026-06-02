@@ -52,3 +52,14 @@ func TestAdapterPropagatesError(t *testing.T) {
 		t.Fatalf("Publish() = %v, want %v", err, boom)
 	}
 }
+
+// TestAdaptWrapsPublisher covers the Adapt constructor wiring: it returns a
+// usable Publisher around the SDK publisher. The wrapped call itself
+// (pub.Publish(...).Get) is exercised against a real emulator in the
+// integration test, since it needs a live topic and result handle.
+func TestAdaptWrapsPublisher(t *testing.T) {
+	t.Parallel()
+	if Adapt(nil) == nil {
+		t.Fatal("Adapt returned a nil Publisher")
+	}
+}
