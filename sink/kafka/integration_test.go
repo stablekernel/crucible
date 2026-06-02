@@ -32,7 +32,7 @@ func TestIntegrationSinkProducesToRealBroker(t *testing.T) {
 	ctx := context.Background()
 	container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1")
 	if err != nil {
-		t.Fatalf("kafka.Run() error = %v", err)
+		t.Skipf("kafka.Run() unavailable (image pull or startup failed); skipping integration test: %v", err)
 	}
 	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
 
