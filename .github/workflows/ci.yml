@@ -126,12 +126,6 @@ jobs:
       - name: golangci-lint (sink/slog)
         working-directory: sink/slog
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
-      - name: golangci-lint (sink/sql)
-        working-directory: sink/sql
-        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
-      - name: golangci-lint (examples/sinkflow)
-        working-directory: examples/sinkflow
-        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
 
   # The race-test matrix lives in a reusable workflow so its legs render as a
   # single collapsible tree in the checks UI ("tests / test (1.25.x, …)") rather
@@ -142,7 +136,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
     with:
-      modules: "state state/expr durable cluster transport wasm e2e examples/fooddelivery examples/dispatch telemetry telemetry/slog telemetry/otel telemetry/datadog sink sink/bridge sink/file sink/http sink/prometheus sink/slog sink/sql examples/sinkflow"
+      modules: "state state/expr durable cluster transport wasm e2e examples/fooddelivery examples/dispatch telemetry telemetry/slog telemetry/otel telemetry/datadog sink sink/bridge sink/file sink/http sink/prometheus sink/slog"
 
   vuln:
     needs: changes
@@ -210,12 +204,6 @@ jobs:
         run: go run "$GOVULNCHECK" ./...
       - name: govulncheck (sink/slog)
         working-directory: sink/slog
-        run: go run "$GOVULNCHECK" ./...
-      - name: govulncheck (sink/sql)
-        working-directory: sink/sql
-        run: go run "$GOVULNCHECK" ./...
-      - name: govulncheck (examples/sinkflow)
-        working-directory: examples/sinkflow
         run: go run "$GOVULNCHECK" ./...
 
   coverage:
@@ -415,22 +403,6 @@ jobs:
           echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
-      - name: coverage gate (sink/sql)
-        working-directory: sink/sql
-        run: |
-          go test -covermode=atomic -coverprofile=coverage.out ./...
-          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
-          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
-          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
-            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
-      - name: coverage gate (examples/sinkflow)
-        working-directory: examples/sinkflow
-        run: |
-          go test -covermode=atomic -coverprofile=coverage.out ./...
-          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
-          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
-          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
-            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
 
   # Benchmark regression gate. Runs the state benchmarks on the PR head and on
   # the PR base on the SAME runner, then benchstat-diffs them. Running both refs
@@ -580,9 +552,11 @@ jobs:
           - sink/redis
           - sink/s3
           - sink/sns
+          - sink/sql
           - sink/sqs
           - sink/statsd
           - sink/timestream
+          - examples/sinkflow
     runs-on: ${{ matrix.os }}
     env:
       GOWORK: "off"
@@ -614,6 +588,54 @@ jobs:
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
 
+  # Integration / E2E leg, behind the `integration` build tag, run with
+  # GOWORK=off. The hermetic destinations (sql, http, file, slog, prometheus,
+  # statsd, otel) and the flagship sinkflow example run end-to-end; the
+  # container-backed destinations drive a real emulator via testcontainers
+  # (Docker is available on GitHub-hosted ubuntu runners) and skip cleanly if a
+  # daemon is ever absent. Kept off the default test matrix so the hermetic
+  # checks stay fast.
+  integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - sink/file
+          - sink/http
+          - sink/prometheus
+          - sink/slog
+          - sink/sql
+          - sink/statsd
+          - sink/otel
+          - sink/cloudwatch
+          - sink/dynamo
+          - sink/eventbridge
+          - sink/firehose
+          - sink/gcppubsub
+          - sink/kafka
+          - sink/kinesis
+          - sink/nats
+          - sink/redis
+          - sink/s3
+          - sink/sns
+          - sink/sqs
+          - sink/timestream
+          - examples/sinkflow
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - name: integration tests
+        shell: bash
+        run: go test -C "${{ matrix.module }}" -tags integration ./...
+
   # Single required status check. Branch protection requires only `gate`, which
   # aggregates the required jobs: it fails if any of them failed or was
   # cancelled, and treats a skipped job (docs-only PRs, or PRs that touch no
@@ -622,7 +644,7 @@ jobs:
   # never blocks a merge.
   gate:
     if: always()
-    needs: [changes, lint, tests, vuln, coverage, docs, sink-destinations]
+    needs: [changes, lint, tests, vuln, coverage, docs, sink-destinations, integration]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a required job did not pass
