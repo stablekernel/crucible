@@ -66,4 +66,4 @@ flowchart LR
 <!-- IMAGE-SLOT: project-and-apply — a heavy pointer-aggregate ingot casting off a slim glowing value-projection wafer into the crucible, which returns effect-sparks the host stamps back onto the ingot inside a transaction ring — 16:9 -->
 ![Projecting an aggregate into a value context](../../../assets/placeholders/hero.svg)
 
-This recipe applies effects synchronously at the call site today. The event-driven IO seams — pushing effects out through a broker and fanning them to a sink, so the host never hand-wires dispatch — are on the roadmap; the projection-and-apply boundary above is exactly the seam those will plug into.
+This recipe applies effects synchronously at the call site today. The event-driven IO seams let the host stop hand-wiring dispatch: [`crucible/sink`](/crucible/sink/overview/) fans effects out to many destinations fire-and-forget (and the [state-to-sink bridge](/crucible/sink/with-state/) makes "fan every transition out" a one-liner), while a `broker` for pub/sub transport is on the roadmap. The projection-and-apply boundary above is exactly the seam those plug into.

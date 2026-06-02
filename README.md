@@ -58,8 +58,9 @@ and forcing nothing third-party on the consumer:
 
 - **`broker`** _(planned)_ — pub/sub transport: publish emitted events and
   subscribe machines to external streams.
-- **`sink`** _(planned)_ — egress fan-out: dispatch emitted effects to many
-  outlets (SQL, Dynamo, StatsD, …), fire-and-forget.
+- **`sink`** — egress fan-out: dispatch emitted effects to many outlets (SQL,
+  Dynamo, StatsD, …), fire-and-forget.
+  [Docs](https://stablekernel.github.io/crucible/sink/overview/).
 - **`source`** _(exploring)_ — ingress: subscribe external streams and drive
   machines; the symmetric counterpart to `sink`.
 - **`bellows`** _(exploring)_ — resilience seam: circuit-breaking and
