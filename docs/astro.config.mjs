@@ -61,7 +61,7 @@ export default defineConfig({
         },
         {
           label: 'Authoring guides',
-          items: [{ slug: 'authoring/state-machines' }],
+          items: [{ autogenerate: { directory: 'authoring' } }],
         },
         {
           label: 'Serialization & visualization',
