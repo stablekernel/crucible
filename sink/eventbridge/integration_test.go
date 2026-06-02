@@ -114,7 +114,7 @@ func startLocalStack(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	container, err := localstack.Run(ctx, "localstack/localstack:3.8.1")
 	if err != nil {
-		t.Fatalf("localstack.Run() error = %v", err)
+		t.Skipf("localstack.Run() unavailable (image pull or startup failed); skipping integration test: %v", err)
 	}
 	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
 
