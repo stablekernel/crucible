@@ -22,3 +22,9 @@ go.work.sum
 
 # Git worktrees
 .worktrees/
+
+# Docs site (Astro/Starlight) — isolated Node project under docs/.
+# package-lock.json IS committed; build/cache/deps are not.
+docs/node_modules/
+docs/dist/
+docs/.astro/

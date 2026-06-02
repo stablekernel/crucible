@@ -1,0 +1,73 @@
+/*
+ * Crucible "foundry" brand theme.
+ *
+ * Real CSS-variable overrides of Starlight's design tokens — NOT a theme fork.
+ * Dark mode is the default (see :root below); a light variant is provided for
+ * users who toggle it. Palette: molten ember-orange / copper accent over a deep
+ * steel/charcoal base with cool steel grays. Technical-but-warm.
+ */
+
+/* ---- Accent: molten ember-orange / copper -------------------------------- */
+/* Starlight derives links, focus rings, and active nav from --sl-color-accent*. */
+:root {
+  --sl-color-accent-low: #3a1c0a; /* deep ember shadow */
+  --sl-color-accent: #d9620a; /* molten ember-orange */
+  --sl-color-accent-high: #f6a85b; /* glowing copper highlight */
+
+  /* Brand convenience tokens (used by index.mdx hero accents). */
+  --crucible-ember: #d9620a;
+  --crucible-copper: #c47a3d;
+  --crucible-ember-glow: #f6a85b;
+  --crucible-steel: #8a929c;
+}
+
+/* ---- Dark mode (DEFAULT): deep steel / charcoal base --------------------- */
+:root,
+:root[data-theme='dark'] {
+  --sl-color-white: #f4f6f8;
+  --sl-color-gray-1: #e3e7ec;
+  --sl-color-gray-2: #c0c7cf;
+  --sl-color-gray-3: #8a929c; /* cool steel gray */
+  --sl-color-gray-4: #555d66;
+  --sl-color-gray-5: #353b42; /* charcoal panel */
+  --sl-color-gray-6: #23272c; /* charcoal surface */
+  --sl-color-black: #16191d; /* deep steel base */
+
+  --sl-color-bg: #16191d;
+  --sl-color-bg-nav: #1b1f24;
+  --sl-color-bg-sidebar: #1b1f24;
+
+  /* Warm the text-accent so inline links read as copper, not neon. */
+  --sl-color-text-accent: var(--crucible-ember-glow);
+  --sl-color-hairline-shade: #2b3036;
+}
+
+/* ---- Light mode (toggle): cool steel grays, ember accent retained -------- */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f7d9bf;
+  --sl-color-accent: #b8500a; /* slightly deepened for contrast on light bg */
+  --sl-color-accent-high: #7a3406;
+
+  --sl-color-white: #16191d;
+  --sl-color-gray-1: #23272c;
+  --sl-color-gray-2: #353b42;
+  --sl-color-gray-3: #555d66;
+  --sl-color-gray-4: #8a929c;
+  --sl-color-gray-5: #c0c7cf;
+  --sl-color-gray-6: #e3e7ec;
+  --sl-color-gray-7: #f1f3f5;
+  --sl-color-black: #ffffff;
+
+  --sl-color-text-accent: var(--sl-color-accent);
+}
+
+/* ---- Splash hero: warm the gradient so the landing reads as molten -------- */
+.hero > .copy {
+  /* a touch of ember glow behind the tagline */
+  text-wrap: balance;
+}
+
+/* Tasteful ember underline on hovered sidebar/active nav links. */
+.sidebar a[aria-current='page'] {
+  border-inline-start-color: var(--crucible-ember);
+}
