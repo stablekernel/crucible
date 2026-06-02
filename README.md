@@ -15,6 +15,13 @@ The `state` engine is the extreme end of this: **stdlib-only**, with no injected
 IO at all. The IO modules carry the heavier seams via injection, but follow the
 same rule — defaults are no-ops, nothing third-party is forced on the consumer.
 
+## Documentation
+
+Guides, concepts, the food-delivery example, and the generated API reference live
+in the documentation site:
+
+### 👉 **[stablekernel.github.io/crucible](https://stablekernel.github.io/crucible/)**
+
 ## Modules
 
 Each module is independently versioned (per-module SemVer) and carries its own
@@ -33,7 +40,7 @@ stability label.
 | `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
 | `broker`              | Message broker seam — publish/subscribe transport with injected adapters.        | planned      |
 | `store`               | Durable state/event store seam with graceful lifecycle.                          | planned      |
-| `sink`                | Effect dispatch / egress seam for emitted effects.                               | planned      |
+| `sink`                | Egress seam: fan emitted effects out to many destinations, fire-and-forget.      | experimental |
 
 The engine emits effects as pure data; the IO modules are the thin seams that
 carry those effects to real transports, stores, and sinks — each
@@ -47,7 +54,8 @@ delayed transitions; invoked services; an actor model with message passing;
 snapshots; inspection; and JSON (de)serialization — backed by its `analysis`,
 `evolution`, and `conformance` companion packages. Treat its API as experimental
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
-`datadog` adapters are released. The `broker`, `store`, and `sink` modules are
+`datadog` adapters are released. The `sink` egress seam and its destination
+adapters are now available and documented; the `broker` and `store` modules are
 planned.
 
 ## Roadmap — event-driven seams
