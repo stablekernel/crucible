@@ -5,16 +5,22 @@ go 1.25.0
 replace (
 	github.com/stablekernel/crucible/cluster => ../cluster
 	github.com/stablekernel/crucible/durable => ../durable
+	github.com/stablekernel/crucible/sink => ../sink
+	github.com/stablekernel/crucible/sink/bridge => ../sink/bridge
 	github.com/stablekernel/crucible/state => ../state
 	github.com/stablekernel/crucible/state/expr => ../state/expr
+	github.com/stablekernel/crucible/telemetry => ../telemetry
 	github.com/stablekernel/crucible/transport => ../transport
 )
 
 require (
 	github.com/stablekernel/crucible/cluster v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/durable v0.0.0-00010101000000-000000000000
-	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/sink v0.0.0
+	github.com/stablekernel/crucible/sink/bridge v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/state v0.0.0
 	github.com/stablekernel/crucible/state/expr v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/telemetry v0.0.0
 	github.com/stablekernel/crucible/transport v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.81.1
 )
