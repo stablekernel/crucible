@@ -61,6 +61,30 @@ var referencePackages = []referencePackage{
 		mod: "state/expr", pkg: ".", slug: "state-expr", title: "state/expr", order: 7,
 		desc: "The rich-expression tier: CEL-backed guards, assigns, and time predicates.",
 	},
+	{
+		mod: "sink", pkg: ".", slug: "sink", title: "sink", order: 8,
+		desc: "The fire-and-forget fan-out emitter: a Manifold dispatches one payload to many Outlets.",
+	},
+	{
+		mod: "sink", pkg: "./sinktest", slug: "sink-sinktest", title: "sink/sinktest", order: 9,
+		desc: "Conformance harness that verifies any Outlet implementation against the contract.",
+	},
+	{
+		mod: "sink/bridge", pkg: ".", slug: "sink-bridge", title: "sink/bridge", order: 10,
+		desc: "Optional state-to-sink bridge: fan every machine transition out through a Manifold.",
+	},
+	{
+		mod: "sink/sql", pkg: ".", slug: "sink-sql", title: "sink/sql", order: 11,
+		desc: "A database/sql destination through a narrow Tx interface, with no driver dependency.",
+	},
+	{
+		mod: "sink/dynamo", pkg: ".", slug: "sink-dynamo", title: "sink/dynamo", order: 12,
+		desc: "An Amazon DynamoDB destination covering the full item-write surface.",
+	},
+	{
+		mod: "sink/statsd", pkg: ".", slug: "sink-statsd", title: "sink/statsd", order: 13,
+		desc: "A StatsD/DogStatsD destination with a stateful, interval-flushing aggregator.",
+	},
 }
 
 // generateReference renders each documented package to a Starlight Markdown
