@@ -37,13 +37,18 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # --quiet exits 0 (no diff) only when every changed path is excluded —
-          # i.e. the PR is docs-only → code=false. Any other path (Go, go.mod/sum,
-          # workflows, config) yields a diff → code=true. If the diff errors for
-          # any reason, control falls through to code=true (fail-safe: run CI).
+          # i.e. the PR touches only docs/markdown or build-inert files →
+          # code=false. Any other path (Go, go.mod/sum, go.work, .golangci.yml,
+          # workflows) yields a diff → code=true. If the diff errors for any
+          # reason, control falls through to code=true (fail-safe: run CI).
+          # NOTE: the excluded set is deliberately limited to files that cannot
+          # affect a Go build or the CI itself — do NOT add go.work, workflows,
+          # or lint config here.
           if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \
-            ':(exclude)*.md' ':(exclude)docs/**' ':(exclude)LICENSE' ':(exclude)NOTICE'; then
+            ':(exclude)*.md' ':(exclude)docs/**' ':(exclude)LICENSE' ':(exclude)NOTICE' \
+            ':(exclude).gitignore' ':(exclude).gitattributes' ':(exclude).env.example'; then
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "Docs-only change; skipping Go lint/test/vuln/coverage/bench." >> "$GITHUB_STEP_SUMMARY"
+            echo "Docs/config-only change; skipping Go lint/test/vuln/coverage/bench." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "code=true" >> "$GITHUB_OUTPUT"
           fi
