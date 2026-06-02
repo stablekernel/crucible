@@ -37,16 +37,18 @@ import (
 var modules = []string{
 	"state", "telemetry", "telemetry/slog", "telemetry/otel", "telemetry/datadog",
 	"sink", "sink/bridge", "sink/file", "sink/http", "sink/prometheus", "sink/slog",
-	"sink/sql", "examples/sinkflow",
 }
 
-// sinkDestinations are the standalone SDK-backed sink destination modules, kept
-// out of the workspace (see modules above). Each builds via its own go.mod and
-// replace directives, so the SinkDestinations target runs with GOWORK=off.
+// sinkDestinations are the standalone sink modules kept out of the workspace
+// (see modules above): the SDK-backed destinations plus sink/sql and the
+// flagship example, whose integration tests pull a driver. Each builds via its
+// own go.mod and replace directives, so the SinkDestinations and Integration
+// targets run with GOWORK=off.
 var sinkDestinations = []string{
 	"sink/cloudwatch", "sink/dynamo", "sink/eventbridge", "sink/firehose",
 	"sink/gcppubsub", "sink/kafka", "sink/kinesis", "sink/nats", "sink/otel",
-	"sink/redis", "sink/s3", "sink/sns", "sink/sqs", "sink/statsd", "sink/timestream",
+	"sink/redis", "sink/s3", "sink/sns", "sink/sql", "sink/sqs", "sink/statsd",
+	"sink/timestream", "examples/sinkflow",
 }
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.
@@ -389,6 +391,35 @@ func SinkDestinations() error {
 		}
 		if err := sh.RunWithV(env, "go", "-C", dir, "run", govulncheck, "./..."); err != nil {
 			return fmt.Errorf("govulncheck failed for %q: %w", mod, err)
+		}
+	}
+	return nil
+}
+
+// integrationModules are every sink module that ships a //go:build integration
+// test, run by Integration with GOWORK=off. It is the workspace sink modules
+// plus the standalone ones.
+var integrationModules = append(
+	[]string{"sink/file", "sink/http", "sink/prometheus", "sink/slog"},
+	sinkDestinations...,
+)
+
+// Integration runs the //go:build integration leg for every sink module with
+// GOWORK=off. The hermetic destinations (sql, http, file, slog, prometheus,
+// statsd, otel) run end-to-end; the container-backed destinations drive a real
+// emulator via testcontainers and skip cleanly when Docker is unavailable. This
+// target is excluded from the default Check, which stays hermetic and fast.
+func Integration() error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	env := map[string]string{"GOWORK": "off"}
+	for _, mod := range integrationModules {
+		dir := filepath.Join(root, mod)
+		fmt.Printf("==> integration: %s\n", mod)
+		if err := sh.RunWithV(env, "go", "test", "-C", dir, "-tags", "integration", "./..."); err != nil {
+			return fmt.Errorf("integration test failed for %q: %w", mod, err)
 		}
 	}
 	return nil
