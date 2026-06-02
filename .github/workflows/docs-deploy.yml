@@ -1,0 +1,65 @@
+name: Deploy docs
+
+# Publishes the Starlight docs site to GitHub Pages on every push to main that
+# touches the docs source, the suite's Go source (so regenerated API/diagrams
+# stay current — see the DS2 TODO below), or this workflow.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'state/**'
+      - '.github/workflows/docs-deploy.yml'
+
+# Least-privilege: read the repo, mint an OIDC token for Pages, write the
+# Pages deployment. No other scopes.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialize Pages deployments. Do NOT cancel in progress: a half-applied Pages
+# deploy can leave the live site inconsistent, so let each one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+
+      # TODO(DS2): before the site build, regenerate derived docs content:
+      #   - API reference via gomarkdoc (writes Markdown into docs/src/content)
+      #   - Mermaid diagram sources via `go generate ./...`
+      # These steps need Go set up (actions/setup-go) and will run from the repo
+      # root, not the docs/ working-directory. Left as a clearly-marked seam.
+
+      - name: Build site
+        run: npm run build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,53 @@
+---
+title: Crucible
+description: Forge event-driven services in Go. Thin seams, no-op defaults, no forced dependencies.
+template: splash
+hero:
+  tagline: Forge event-driven services in Go.
+  image:
+    # HERO IMAGE PLACEHOLDER — replaced with generated art in a later PR.
+    alt: "Placeholder hero: a molten crucible glowing beneath a steel frame."
+    file: ../../assets/placeholders/hero.svg
+  actions:
+    - text: Start here
+      link: /crucible/start/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/stablekernel/crucible
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+**Thin seams, no-op defaults, no forced dependencies.** Crucible gives you the
+event-driven primitives — statecharts, durable execution, clustering, transport
+— and stays out of your way everywhere else.
+
+<CardGrid stagger>
+  <Card title="Concepts" icon="open-book">
+    Learn the model: states, events, guards, and the seams that keep Crucible
+    pluggable. [Read the concepts](/crucible/concepts/overview/)
+  </Card>
+  <Card title="Authoring guides" icon="pencil">
+    Build your first statechart and wire it into a service.
+    [Author a state machine](/crucible/authoring/state-machines/)
+  </Card>
+  <Card title="Serialization & visualization" icon="seti:json">
+    Serialize machines, render diagrams, and inspect them.
+    [Explore serialization](/crucible/serialization/overview/)
+  </Card>
+  <Card title="Analysis & verification" icon="approve-check">
+    Statically analyze and verify your machines before they ship.
+    [See analysis](/crucible/analysis/overview/)
+  </Card>
+  <Card title="Reference" icon="information">
+    API reference for every Crucible module.
+    [Browse the reference](/crucible/reference/overview/)
+  </Card>
+  <Card title="Examples" icon="puzzle">
+    End-to-end, runnable examples.
+    [Open the examples](/crucible/examples/overview/)
+  </Card>
+</CardGrid>
