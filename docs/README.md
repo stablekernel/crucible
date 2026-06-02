@@ -18,6 +18,15 @@ root** (not from `docs/`). CI and the Pages deploy workflow run it explicitly
 before `astro build`, so the published reference and diagrams are always fresh
 and can never drift from the source.
 
+## Images
+
+Brand and illustration art is generated externally. Labeled placeholders live in
+`src/assets/placeholders/`; the full set of slots — with a shared visual style guide
+and a ready-to-use prompt for each — is in [`IMAGE-PROMPTS.md`](./IMAGE-PROMPTS.md).
+In-page illustration slots are marked in the content with an `IMAGE-SLOT: <slug>`
+comment. To add real art: generate it from the manifest, drop it in, and swap the
+placeholder reference.
+
 ## Local development
 
 From the repository root:
