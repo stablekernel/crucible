@@ -272,12 +272,27 @@ func TestConformance(t *testing.T) {
 func TestConformanceFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+
+	// The harness calls the factory several times, so collect every opened outlet
+	// and close them all when the test ends. Registered after t.TempDir, this
+	// cleanup runs first (cleanups are LIFO) and releases the file handles before
+	// TempDir's RemoveAll — Windows cannot delete a file that is still open.
+	var opened []csink.Outlet
+	t.Cleanup(func() {
+		for _, o := range opened {
+			if s, ok := o.(csink.Shutdowner); ok {
+				_ = s.Shutdown(context.Background())
+			}
+		}
+	})
+
 	sinktest.OutletConformance(t, func() csink.Outlet {
 		path := filepath.Join(dir, t.Name()+".jsonl")
 		o, err := filesink.Open(path)
 		if err != nil {
 			t.Fatalf("Open() error = %v", err)
 		}
+		opened = append(opened, o)
 		return o
 	})
 }
