@@ -11,8 +11,8 @@ Four questions over a guard node and the machine's `ContextSchema`:
 
 ```go
 g := state.And(
-    f("status").Eq(state.Str[string]("paid")),
-    f("total").Gt(state.Float[string](10)),
+    state.Field[string]("status").Eq(state.Str[string]("paid")),
+    state.Field[string]("total").Gt(state.Float[string](10)),
 )
 
 symbolic.Satisfiable(g, schema)   // is there any context that makes g true?
@@ -27,7 +27,7 @@ To sweep a whole machine, `Overlaps` walks every same-event transition pair and 
 ```go
 overlaps, err := symbolic.Overlaps(m)
 for _, o := range overlaps {
-    fmt.Printf("ambiguous on %v from %v\n", o.Event, o.Source)
+    fmt.Printf("ambiguous on %v from %v: %v vs %v\n", o.On, o.From, o.ToA, o.ToB)
 }
 ```
 
