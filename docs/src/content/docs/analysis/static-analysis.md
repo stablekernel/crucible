@@ -23,7 +23,7 @@ for _, f := range report.Findings {
 The kinds split into what the IR *proves* and what it *suggests*:
 
 - **`unreachable_state`** / **`dead_transition`** — *exact*. Reachability ignores guards (a guard can only ever remove an edge at run time, never add one), so a statically unreachable state is unreachable in every run. Severity `error`.
-- **`nondeterministic`** — *exact* for the guardless case: two or more guardless transitions on the same event, or competing guardless "always" transitions. Guarded overlaps are deferred to [symbolic analysis](/analysis/symbolic-guards/).
+- **`nondeterministic`** — *exact* for the guardless case: two or more guardless transitions on the same event, or competing guardless "always" transitions. Guarded overlaps are deferred to [symbolic analysis](/crucible/analysis/symbolic-guards/).
 - **`dead_end`** / **`cannot_reach_final`** — *heuristic* `warning`s: a non-final state with no exit, or a state from which no final state is reachable. A guard that is always false at run time could make these real, but the IR can't decide that.
 
 Scope a pass with `analysis.Only(kinds...)` or `analysis.Without(kinds...)`.

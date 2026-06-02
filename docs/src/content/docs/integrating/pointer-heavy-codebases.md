@@ -24,11 +24,11 @@ func (o *Order) project() OrderView {
 
 ### Why value semantics is load-bearing
 
-A value `C` is not a stylistic preference — it is what makes the kernel's guarantees hold. Under a value context every step is a pure function of `(state, context, event)`, which is exactly what lets you **snapshot** an instance, **replay** it deterministically, persist it **durably**, and **verify** it statically (the entire [analysis & verification](/analysis/overview/) toolbox assumes it). `C = *T` is an available escape hatch, but choosing it forfeits all of that: a guard or action could mutate shared state under you, and snapshot/replay/verify stop meaning anything. Project a value; keep the guarantees.
+A value `C` is not a stylistic preference — it is what makes the kernel's guarantees hold. Under a value context every step is a pure function of `(state, context, event)`, which is exactly what lets you **snapshot** an instance, **replay** it deterministically, persist it **durably**, and **verify** it statically (the entire [analysis & verification](/crucible/analysis/overview/) toolbox assumes it). `C = *T` is an available escape hatch, but choosing it forfeits all of that: a guard or action could mutate shared state under you, and snapshot/replay/verify stop meaning anything. Project a value; keep the guarantees.
 
 ### The boundary recipe
 
-On the way in, when you hydrate an aggregate that *claims* to be in some state, use [`Assay`](/authoring/assay/) to check it is legally there before you resume driving it:
+On the way in, when you hydrate an aggregate that *claims* to be in some state, use [`Assay`](/crucible/authoring/assay/) to check it is legally there before you resume driving it:
 
 ```go
 order := repo.Load(ctx, id)              // hydrated externally

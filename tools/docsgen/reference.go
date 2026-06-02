@@ -142,19 +142,65 @@ var (
 	// is identical regardless of the checkout's git status (detached worktree,
 	// shallow clone, etc.), keeping the generator deterministic.
 	godocSourceLink = regexp.MustCompile(`\s*\[\]\(<https://github\.com/[^>]+>\)`)
+	// godocHeadingLine matches an ATX heading line so heading-only rewrites can be
+	// applied without touching body prose.
+	godocHeadingLine = regexp.MustCompile(`(?m)^#{1,6} .*$`)
+	// godocHeadingEscape matches a backslash immediately before an ASCII
+	// punctuation character. godoc headings are plain text, so gomarkdoc's GitHub
+	// formatter over-escapes them; worse, headings sourced from godoc's own
+	// heading syntax get double-escaped (e.g. "\\\-"), which CommonMark renders as
+	// a literal "\-" on the page. Stripping every escape inside a heading line
+	// yields the intended plain text and renders identically.
+	godocHeadingEscape = regexp.MustCompile(`\\([!-/:-@[-` + "`" + `{-~])`)
+	// godocBodyEscape matches a backslash before a punctuation character that
+	// carries no inline-Markdown meaning mid-text. Unescaping only this set
+	// removes gomarkdoc's cosmetic over-escaping from prose while leaving
+	// load-bearing escapes (emphasis, links, code, html, headings, tables:
+	// * _ [ ] ` < > # |) intact. Applied iteratively so any double-escape
+	// collapses fully. These body escapes already render cleanly, so this only
+	// tidies the generated Markdown source; it never changes rendered output.
+	godocBodyEscape = regexp.MustCompile(`\\([-().,:;!?&'"+=@~])`)
 )
 
 // normalizeGodoc post-processes one package's gomarkdoc output so it renders
 // cleanly inside Starlight: it drops the DO NOT EDIT banner, removes the
 // duplicate package-name H1 (the frontmatter title becomes the page heading),
-// strips git-derived source links for determinism, and trims surrounding blank
-// lines. title is accepted for symmetry and future heading rewrites.
+// strips git-derived source links for determinism, removes gomarkdoc's cosmetic
+// backslash-escaping so no escape artifact survives to the rendered page, and
+// trims surrounding blank lines. title is accepted for symmetry and future
+// heading rewrites.
 func normalizeGodoc(raw, _ string) string {
 	out := godocDoNotEdit.ReplaceAllString(raw, "")
 	out = strings.TrimLeft(out, "\n")
 	out = godocLeadingH1.ReplaceAllString(out, "")
 	out = godocSourceLink.ReplaceAllString(out, "")
+	out = unescapeGodoc(out)
 	return strings.TrimSpace(out) + "\n"
+}
+
+// unescapeGodoc removes gomarkdoc's over-escaping. Heading lines are godoc plain
+// text and need no escaping, so every escaped punctuation character in a heading
+// is unescaped (this also kills the double-escapes that otherwise leak a literal
+// "\-" into the rendered heading). Body text is unescaped only before punctuation
+// with no inline-Markdown meaning. Both passes run iteratively so any
+// double-escape collapses fully without disturbing load-bearing escapes.
+func unescapeGodoc(s string) string {
+	s = godocHeadingLine.ReplaceAllStringFunc(s, func(line string) string {
+		return collapseEscapes(line, godocHeadingEscape)
+	})
+	return collapseEscapes(s, godocBodyEscape)
+}
+
+// collapseEscapes applies re (a `\\(<char>)` matcher) repeatedly until the text
+// stops changing, so chains like "\\\-" reduce to the bare character.
+func collapseEscapes(s string, re *regexp.Regexp) string {
+	for {
+		next := re.ReplaceAllString(s, "$1")
+		if next == s {
+			return s
+		}
+		s = next
+	}
 }
 
 // wrapReference prepends Starlight frontmatter to a normalized package page.
