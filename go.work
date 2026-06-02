@@ -8,6 +8,7 @@ use (
 	./examples/dispatch
 	./magefiles
 	./sink
+	./sink/sql
 	./state
 	./state/expr
 	./telemetry
