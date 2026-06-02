@@ -28,3 +28,8 @@ go.work.sum
 docs/node_modules/
 docs/dist/
 docs/.astro/
+
+# Generated docs content (produced by `go run ./tools/docsgen` at build time;
+# regenerated fresh in CI and on deploy, so never committed — avoids drift).
+docs/src/content/docs/reference/
+docs/src/content/docs/_generated/

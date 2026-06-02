@@ -1,0 +1,22 @@
+---
+title: Examples
+description: Runnable, end-to-end examples.
+---
+
+import OrderDiagram from '../_generated/diagrams/_fooddelivery-order.md';
+
+Crucible ships runnable examples that double as the suite's living documentation.
+The flagship is the **food-delivery order** machine in `examples/fooddelivery`.
+
+## Order lifecycle
+
+The diagram below is generated at build time from the real `fooddelivery.NewModel()`
+machine — the same machine the example's tests exercise — so it can never drift from
+the code. It exercises a hierarchical fulfillment flow, a parallel watchdog region,
+a registry-bound guard, and timer-driven escalation.
+
+<OrderDiagram />
+
+The Mermaid source is produced by the machine's `ToMermaid()` method and embedded as a
+generated partial; see the [`state` reference](/crucible/reference/state/) for the
+visualization API.

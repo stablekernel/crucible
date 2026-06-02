@@ -419,6 +419,16 @@ jobs:
         working-directory: docs
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      # Regenerate the API reference (gomarkdoc) and Mermaid diagram partials from
+      # the Go source before the site build, so the PR docs build validates the
+      # generated content. Runs from the repo root, not the docs/ default dir.
+      - name: Generate API reference + diagrams
+        working-directory: .
+        run: go run ./tools/docsgen
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
