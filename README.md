@@ -1,5 +1,10 @@
 # Crucible
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/stablekernel/crucible/state.svg)](https://pkg.go.dev/github.com/stablekernel/crucible/state)
+[![Go Report Card](https://goreportcard.com/badge/github.com/stablekernel/crucible/state)](https://goreportcard.com/report/github.com/stablekernel/crucible/state)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/stablekernel/crucible?filename=state%2Fgo.mod)](./state/go.mod)
+[![Docs](https://img.shields.io/badge/docs-crucible-E8702A)](https://stablekernel.github.io/crucible/)
+[![Discussions](https://img.shields.io/github/discussions/stablekernel/crucible)](https://github.com/stablekernel/crucible/discussions)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 **Forge event-driven services in Go.**
