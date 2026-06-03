@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/redis
 
-go 1.25.0
+go 1.25.11
 
 require (
 	github.com/redis/go-redis/v9 v9.20.0

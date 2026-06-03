@@ -1,22 +1,26 @@
 version: 2
 updates:
-  # Library module: the state kernel.
+  # Go modules across the whole suite. The "/**" glob covers every module that
+  # carries a go.mod (the state kernel, telemetry adapters, transport, wasm, the
+  # sink core, every SDK-backed sink destination, the examples, and the build
+  # tooling). The SDK destinations are where transitive advisories (x/crypto,
+  # x/net, x/sys, and the cloud SDKs themselves) surface, so they must be watched
+  # too. Updates are grouped per module so each module's bumps land in a single
+  # PR rather than one PR per dependency.
   - package-ecosystem: gomod
-    directory: /state
+    directories:
+      - "/**"
     schedule:
       interval: weekly
+    groups:
+      go-modules:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore"
 
-  # Build-automation module.
-  - package-ecosystem: gomod
-    directory: /magefiles
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "chore"
-
-  # GitHub Actions workflows.
+  # GitHub Actions workflows. Keeps the SHA-pinned action references current
+  # (Dependabot updates both the pin and its version comment).
   - package-ecosystem: github-actions
     directory: /
     schedule:

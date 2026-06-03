@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/e2e
 
-go 1.25.0
+go 1.25.11
 
 replace (
 	github.com/stablekernel/crucible/cluster => ../cluster

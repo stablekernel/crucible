@@ -1,4 +1,4 @@
-go 1.25.0
+go 1.25.11
 
 // Sink modules with a non-stdlib dependency are intentionally NOT listed here:
 // the SDK-backed destinations (the AWS family, redis, nats, kafka, gcppubsub,

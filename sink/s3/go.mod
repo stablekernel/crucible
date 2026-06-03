@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/s3
 
-go 1.25.0
+go 1.25.11
 
 require github.com/aws/aws-sdk-go-v2/service/s3 v1.102.2
 
