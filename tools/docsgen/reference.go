@@ -106,23 +106,27 @@ var referencePackages = []referencePackage{
 		desc: "A CloudEvents codec with structured and binary content modes.",
 	},
 	{
-		mod: "source/retry", pkg: ".", slug: "source-retry", title: "source/retry", order: 19,
+		mod: "source/cdc", pkg: ".", slug: "source-cdc", title: "source/cdc", order: 19,
+		desc: "A change-data-capture codec: decode a Debezium/OpenCDC change event into a typed ChangeEvent and drive a statechart per primary key.",
+	},
+	{
+		mod: "source/retry", pkg: ".", slug: "source-retry", title: "source/retry", order: 20,
 		desc: "Classification-aware retry middleware: backoff for Retryable, straight to DLQ for Poison and InvalidForState.",
 	},
 	{
-		mod: "source/dlq", pkg: ".", slug: "source-dlq", title: "source/dlq", order: 20,
+		mod: "source/dlq", pkg: ".", slug: "source-dlq", title: "source/dlq", order: 21,
 		desc: "Layered dead-letter middleware whose parking topic is itself an Inlet, so draining it is first-class replay.",
 	},
 	{
-		mod: "source/idempotency", pkg: ".", slug: "source-idempotency", title: "source/idempotency", order: 21,
+		mod: "source/idempotency", pkg: ".", slug: "source-idempotency", title: "source/idempotency", order: 22,
 		desc: "A Deduper seam with a no-op default; for the state-machine binding, dedup is transition idempotency.",
 	},
 	{
-		mod: "source/schema", pkg: ".", slug: "source-schema", title: "source/schema", order: 22,
+		mod: "source/schema", pkg: ".", slug: "source-schema", title: "source/schema", order: 23,
 		desc: "An optional proto/Avro/JSON-Schema validator that runs before the handler, routing invalid payloads to the DLQ.",
 	},
 	{
-		mod: "source/statemachine", pkg: ".", slug: "source-statemachine", title: "source/statemachine", order: 23,
+		mod: "source/statemachine", pkg: ".", slug: "source-statemachine", title: "source/statemachine", order: 24,
 		desc: "The state-to-source bridge: an inbound message drives a transition and the ack is tied to the durable transition.",
 	},
 }

@@ -63,6 +63,7 @@ stability label.
 | `source/jetstream`    | NATS JetStream Inlet over nats.go: pull consumer, ack/nak/term, MaxAckPending.    | experimental |
 | `source/redis`        | Redis Streams Inlet over go-redis: consumer group, XACK/pending-claim, DLQ.       | experimental |
 | `source/cloudevents`  | CloudEvents codec with structured and binary content modes.                      | experimental |
+| `source/cdc`          | Change-data-capture codec: decode Debezium/OpenCDC change events, drive by key.   | experimental |
 | `source/statemachine` | Bridge: an inbound message drives a transition, ack tied to the durable commit.  | experimental |
 
 source also ships composable reliability middleware as its own opt-in modules
@@ -83,8 +84,9 @@ snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `sink` egress seam and its destination
 adapters, and the `source` ingress seam with its Kafka, JetStream, and Redis
-Streams adapters, CloudEvents codec, reliability middleware, and state-machine
-bridge, are now available and documented; the `broker` module is planned.
+Streams adapters, CloudEvents and CDC codecs, reliability middleware, and
+state-machine bridge, are now available and documented; the `broker` module is
+planned.
 
 ## Roadmap: event-driven seams
 
@@ -99,7 +101,10 @@ and forcing nothing third-party on the consumer:
   [Docs](https://stablekernel.github.io/crucible/sink/overview/).
 - [x] **`source`**: ingress. Subscribe external streams and drive machines, with
   the ack tied to a durable transition; the symmetric counterpart to `sink`.
-  [Docs](https://stablekernel.github.io/crucible/source/overview/).
+  [Docs](https://stablekernel.github.io/crucible/source/overview/). The
+  `source/cdc` codec decodes Debezium/OpenCDC change-event topics into typed
+  change events; a native database write-ahead-log connector (logical replication
+  slot, binlog) remains future work.
 - [ ] **`bellows`** _(exploring)_: resilience seam. Circuit-breaking and
   backpressure around the IO edges.
 
