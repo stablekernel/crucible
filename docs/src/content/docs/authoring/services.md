@@ -5,6 +5,9 @@ sidebar:
   order: 6
 ---
 
+<!-- IMAGE-SLOT: invoked-service — sky-squid dispatching a glowing courier-orb to an external system, a return thread carrying the onDone signal home — 16:9 -->
+![Services](../../../assets/invoked-service.png)
+
 A **service** is asynchronous work scoped to a state — authorize a payment, run a cancellation saga, call an external API. Unlike an effect (fire-and-forget data the host dispatches), a service has a lifecycle: it starts when the state is entered, and its completion feeds back into the machine as an event.
 
 Declare an invocation with `Invoke`, naming the service plus its `onDone` and `onError` events. The service is a context-aware function that may block and return a value or an error:
@@ -40,7 +43,3 @@ id := state.InvokeID("order", Authorizing, 0)
 ```
 
 The arguments are the machine name, the originating state, and the invocation's index on that state (zero-based, in case a state invokes several). That id is how you correlate a long-running call with the machine instance that launched it — and how the host knows which completion event to feed back.
-
-<!-- IMAGE-SLOT: invoked-service — sky-squid dispatching a glowing courier-orb to an external system, a return thread carrying the onDone signal home — 16:9 -->
-
-![Services](../../../assets/invoked-service.png)

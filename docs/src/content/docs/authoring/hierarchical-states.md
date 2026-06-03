@@ -5,6 +5,9 @@ sidebar:
   order: 1
 ---
 
+<!-- IMAGE-SLOT: nested-rings — sky-squid cradling concentric glowing state rings, an inner child ring nested inside the Active super ring — 16:9 -->
+![Hierarchical states](../../../assets/nested-rings.png)
+
 A flat machine forces every state to repeat the same escape hatches. A **super state** (a compound state) lets a cluster of substates share one parent, so a transition declared on the parent applies to every child below it. Declare a super state with `SuperState`, name its starting child with `Initial`, add children with `State`, then close the block with `EndSuperState`.
 
 ```go
@@ -38,7 +41,3 @@ stateDiagram-v2
 ```
 
 The active configuration is always a *path*: `Active.EnRoute`, never just `EnRoute`. Events bubble up — a child handles them first, and an unhandled event rises to the parent. This is what lets the order's drop-off transition live once on `Active` and still fire while the kitchen is plating or the courier is riding.
-
-<!-- IMAGE-SLOT: nested-rings — sky-squid cradling concentric glowing state rings, an inner child ring nested inside the Active super ring — 16:9 -->
-
-![Hierarchical states](../../../assets/nested-rings.png)

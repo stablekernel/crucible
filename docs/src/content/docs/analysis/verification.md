@@ -5,6 +5,9 @@ sidebar:
   order: 3
 ---
 
+<!-- IMAGE-SLOT: witness-path — a glowing statechart with one luminous traced route lit end-to-end while the rest dims, a foundry ledger annotating the event sequence beside it — 16:9 -->
+![A property checked with a witness path](../../../assets/witness-path.png)
+
 `state/verify` goes past structure to *properties*. You ask a question; it answers with a verdict and a **witness** — the event sequence that proves (or disproves) the claim, computed without ever firing an event.
 
 One entry point, composed with options:
@@ -39,6 +42,3 @@ fmt.Printf("always delivered: %t; stuck at %q via %v\n",
 ```
 
 A witness is the difference between "this might be wrong" and "here is exactly how it goes wrong." Pair coverage with `verify.CoveringSuite(m)` to seed conformance tests from structure alone.
-
-<!-- IMAGE-SLOT: witness-path — a glowing statechart with one luminous traced route lit end-to-end while the rest dims, a foundry ledger annotating the event sequence beside it — 16:9 -->
-![A property checked with a witness path](../../../assets/witness-path.png)

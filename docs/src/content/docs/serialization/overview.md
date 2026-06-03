@@ -5,6 +5,9 @@ sidebar:
   order: 1
 ---
 
+<!-- IMAGE-SLOT: ir-interchange — a glowing statechart ingot being poured into a JSON mold and re-cast back into a running machine, sky-squid inspecting both forms as identical — 16:9 -->
+![The IR pours losslessly between code and JSON.](../../../assets/ir-interchange.png)
+
 A Crucible machine has two faces. One is the running instance — guards firing,
 reducers folding context, actors and services doing work. The other is the
 machine's *definition*: the states, the transitions, the hierarchy, the named
@@ -19,10 +22,6 @@ host registry binds those names back to Go functions when the machine is
 re-quenched. So the IR round-trips through JSON without ever trying to serialize
 a closure, and two machines — one forged in code, one loaded from JSON — are the
 same machine.
-
-<!-- IMAGE-SLOT: ir-interchange — a glowing statechart ingot being poured into a JSON mold and re-cast back into a running machine, sky-squid inspecting both forms as identical — 16:9 -->
-
-![The IR pours losslessly between code and JSON.](../../../assets/ir-interchange.png)
 
 This split unlocks the workflow Crucible is built around:
 

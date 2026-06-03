@@ -5,6 +5,9 @@ sidebar:
   order: 6
 ---
 
+<!-- IMAGE-SLOT: sink-shutdown-drain — a foundry at end of shift: the sky-squid tipping the last measured pour out of a reservoir ladle before banking the fire, channels running clear; ember/copper cooling to steel — 16:9 -->
+![Draining the last batch before banking the fire](../../../assets/sink-shutdown-drain.png)
+
 Buffered outlets hold payloads that have not yet reached their destination. On a
 clean shutdown you want those drained, the background loops stopped, and any
 held resources released — within a deadline.
@@ -52,6 +55,3 @@ defer p.Stop()
 Because draining is bounded by the context you pass, a wedged destination can
 never hang your shutdown forever — it fails the deadline, the error is joined and
 returned, and your process exits. Thin seams, predictable teardown.
-
-<!-- IMAGE-SLOT: sink-shutdown-drain — a foundry at end of shift: the sky-squid tipping the last measured pour out of a reservoir ladle before banking the fire, channels running clear; ember/copper cooling to steel — 16:9 -->
-![Draining the last batch before banking the fire](../../../assets/sink-shutdown-drain.png)

@@ -5,6 +5,9 @@ sidebar:
   order: 10
 ---
 
+<!-- IMAGE-SLOT: snapshot-restore — a foundry pour freezing a glowing workpiece into a labeled ingot, then re-melting it into an identical mold — 16:9 -->
+![Snapshot and restore](../../../assets/snapshot-restore.png)
+
 A long-lived workflow outlives the process running it. Crucible lets you **snapshot** a running instance to a clean, serializable value and **restore** it into a fresh machine — same configuration, same context, same pending work.
 
 `Snapshot()` yields a typed `Snapshot[S, E, C]` carrying the active configuration, the bound context, history, and traces:
@@ -35,9 +38,6 @@ inst.Configuration() // every active leaf (length N for N parallel regions)
 inst.Entity()        // the bound context value
 inst.History()       // the ordered Fire traces
 ```
-
-<!-- IMAGE-SLOT: snapshot-restore — a foundry pour freezing a glowing workpiece into a labeled ingot, then re-melting it into an identical mold — 16:9 -->
-![Snapshot and restore](../../../assets/snapshot-restore.png)
 
 ```mermaid
 stateDiagram-v2
