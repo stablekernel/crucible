@@ -133,17 +133,17 @@ func WithMaxAttempts(n int) Option {
 }
 
 // WithBackoff sets an exponential-with-optional-jitter schedule: the delay before
-// attempt n+1 is base*factor^(n-1), capped at max. With jitter true the delay is
-// scaled by a uniform random factor in [0,1) (full jitter) to de-correlate
+// attempt n+1 is base*factor^(n-1), capped at maxDelay. With jitter true the delay
+// is scaled by a uniform random factor in [0,1) (full jitter) to de-correlate
 // retries across consumers. A base <= 0 or factor < 1 is ignored.
-func WithBackoff(base, max time.Duration, factor float64, jitter bool) Option {
+func WithBackoff(base, maxDelay time.Duration, factor float64, jitter bool) Option {
 	return func(c *config) {
 		if base <= 0 || factor < 1 {
 			return
 		}
 		c.backoff = expBackoff{
 			base:   base,
-			max:    max,
+			max:    maxDelay,
 			factor: factor,
 			jitter: jitter,
 			randF:  rand.Float64,

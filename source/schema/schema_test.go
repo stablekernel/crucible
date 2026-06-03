@@ -70,15 +70,15 @@ func TestMiddleware_InvalidTerminatesAsPoison(t *testing.T) {
 	if !errors.Is(got.Err, source.ErrPoison) {
 		t.Errorf("err not ErrPoison: %v", got.Err)
 	}
-	var se *schema.SchemaError
+	var se *schema.Error
 	if !errors.As(got.Err, &se) {
-		t.Fatalf("err not *SchemaError: %v", got.Err)
+		t.Fatalf("err not *schema.Error: %v", got.Err)
 	}
 	if se.Subject != "orders" {
-		t.Errorf("SchemaError.Subject = %q, want orders", se.Subject)
+		t.Errorf("schema.Error.Subject = %q, want orders", se.Subject)
 	}
 	if !errors.Is(se, cause) {
-		t.Errorf("SchemaError does not unwrap to cause: %v", se)
+		t.Errorf("schema.Error does not unwrap to cause: %v", se)
 	}
 }
 
@@ -160,12 +160,12 @@ func TestContentTypeValidator(t *testing.T) {
 func TestSchemaError(t *testing.T) {
 	t.Parallel()
 	inner := errors.New("bad")
-	se := &schema.SchemaError{Subject: "s", Err: inner}
+	se := &schema.Error{Subject: "s", Err: inner}
 	if !errors.Is(se, source.ErrPoison) {
-		t.Error("SchemaError should match ErrPoison")
+		t.Error("schema.Error should match ErrPoison")
 	}
 	if !errors.Is(se, inner) {
-		t.Error("SchemaError should unwrap to inner")
+		t.Error("schema.Error should unwrap to inner")
 	}
 	if se.Error() == "" {
 		t.Error("empty Error()")

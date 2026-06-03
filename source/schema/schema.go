@@ -2,8 +2,8 @@
 
 // Package schema provides a validating [source.Middleware] for the crucible source
 // seam: it checks a message against a caller-supplied [Validator] before the
-// handler runs, and rejects an invalid message as poison ([source.Term] with a
-// [SchemaError], which reports [source.ErrPoison]) so it routes straight to
+// handler runs, and rejects an invalid message as poison ([source.Term] with an
+// [Error], which reports [source.ErrPoison]) so it routes straight to
 // dead-letter instead of wasting redeliveries.
 //
 // The package defines the [Validator] interface and a simple [ContentTypeValidator]
@@ -24,7 +24,7 @@ import (
 // from several lanes at once.
 type Validator interface {
 	// Validate checks m and returns nil if it conforms, or an error describing why
-	// it does not. The middleware wraps a non-nil error in a [SchemaError].
+	// it does not. The middleware wraps a non-nil error in an [Error].
 	Validate(ctx context.Context, m source.Message) error
 }
 
@@ -34,12 +34,12 @@ type ValidatorFunc func(ctx context.Context, m source.Message) error
 // Validate implements [Validator].
 func (f ValidatorFunc) Validate(ctx context.Context, m source.Message) error { return f(ctx, m) }
 
-// SchemaError wraps a validation failure with the subject the message arrived on
+// Error wraps a validation failure with the subject the message arrived on
 // and the underlying reason. It is errors.Is / errors.As friendly via Unwrap and
 // reports [source.ErrPoison] from Is, so a schema rejection is recognized as
-// poison (and dead-lettered) with a single errors.Is(err, source.ErrPoison) check
-// — never match on its Error string. It mirrors the shape of source.DecodeError.
-type SchemaError struct {
+// poison (and dead-lettered) with a single errors.Is(err, source.ErrPoison) check;
+// never match on its Error string. It mirrors the shape of source.DecodeError.
+type Error struct {
 	// Subject is the topic or subject the invalid message arrived on.
 	Subject string
 	// Err is the wrapped underlying validation error.
@@ -47,20 +47,20 @@ type SchemaError struct {
 }
 
 // Error implements error.
-func (e *SchemaError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("source/schema: validation failed for subject %q: %v", e.Subject, e.Err)
 }
 
 // Unwrap returns the wrapped validation error so errors.As reaches it.
-func (e *SchemaError) Unwrap() error { return e.Err }
+func (e *Error) Unwrap() error { return e.Err }
 
-// Is reports a *SchemaError as matching [source.ErrPoison], so middleware can
+// Is reports an *Error as matching [source.ErrPoison], so middleware can
 // route a schema rejection to dead-letter as poison without string-matching.
-func (e *SchemaError) Is(target error) bool { return target == source.ErrPoison }
+func (e *Error) Is(target error) bool { return target == source.ErrPoison }
 
 // Middleware returns a [source.Middleware] that validates each message with v
 // before invoking the wrapped handler. A message that fails validation is
-// rejected with [source.Term] carrying a [SchemaError] (classified
+// rejected with [source.Term] carrying an [Error] (classified
 // [source.Poison]); the handler is never invoked. A valid message flows to the
 // handler unchanged. A nil validator makes the middleware a pass-through.
 func Middleware(v Validator) source.Middleware {
@@ -70,7 +70,7 @@ func Middleware(v Validator) source.Middleware {
 		}
 		return func(ctx context.Context, m source.Message) source.Result {
 			if err := v.Validate(ctx, m); err != nil {
-				return source.Term(&SchemaError{Subject: m.Subject(), Err: err})
+				return source.Term(&Error{Subject: m.Subject(), Err: err})
 			}
 			return next(ctx, m)
 		}
