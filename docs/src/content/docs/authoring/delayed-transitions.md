@@ -34,7 +34,7 @@ for _, fr := range sch.Tick(ctx) {
 In production you swap the `FakeClock` for the system clock — the same `After` declaration, the same `Scheduler.Tick`, no `time.Sleep` anywhere in the kernel.
 
 <!-- IMAGE-SLOT: delayed-timer — a foundry hourglass wired to a molten-edge switch, sand draining toward an SLA-breach spark — 16:9 -->
-![Delayed timer](../../../assets/placeholders/hero.svg)
+![Delayed timer](../../../assets/delayed-timer.png)
 
 ```mermaid
 stateDiagram-v2

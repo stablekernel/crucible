@@ -40,4 +40,4 @@ Contrast this with an **assign**. An assign rewrites the machine's own context (
 
 <!-- IMAGE-SLOT: effect-conveyor — sky-squid placing sealed effect parcels onto a conveyor belt labelled "host dispatches", kernel booth stays still — 16:9 -->
 
-![Actions and effects](../../../assets/placeholders/hero.svg)
+![Actions and effects](../../../assets/effect-conveyor.png)

@@ -43,4 +43,4 @@ The arguments are the machine name, the originating state, and the invocation's 
 
 <!-- IMAGE-SLOT: invoked-service — sky-squid dispatching a glowing courier-orb to an external system, a return thread carrying the onDone signal home — 16:9 -->
 
-![Services](../../../assets/placeholders/hero.svg)
+![Services](../../../assets/invoked-service.png)

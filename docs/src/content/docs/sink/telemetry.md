@@ -57,4 +57,4 @@ with whatever backend you wire behind it — the telemetry module ships `slog`,
 OpenTelemetry, and Datadog adapters — and sink never knows which one it is.
 
 <!-- IMAGE-SLOT: sink-telemetry-thread — a single glowing thread (one trace) running from a state-transition spark, through the manifold's fan-out, down into each destination, all lit the same ember hue; sky-squid following the thread — 16:9 -->
-![One trace threading transition → emit → writes](../../../assets/placeholders/hero.svg)
+![One trace threading transition → emit → writes](../../../assets/sink-telemetry-thread.png)

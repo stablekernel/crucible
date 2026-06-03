@@ -41,4 +41,4 @@ The active configuration is always a *path*: `Active.EnRoute`, never just `EnRou
 
 <!-- IMAGE-SLOT: nested-rings — sky-squid cradling concentric glowing state rings, an inner child ring nested inside the Active super ring — 16:9 -->
 
-![Hierarchical states](../../../assets/placeholders/hero.svg)
+![Hierarchical states](../../../assets/nested-rings.png)

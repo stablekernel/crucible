@@ -35,4 +35,4 @@ flowchart LR
 Evolution pairs with live migration: when a diff is breaking, the bump is your signal to run the deprecation lifecycle — stand up the new definition alongside the old, migrate in-flight instances, then retire the old one — rather than swapping it under running state.
 
 <!-- IMAGE-SLOT: evolution-diff — two glowing statechart castings side by side with changed nodes haloed, a sky-squid foundry-stamp reading MINOR over the safe one and MAJOR over the breaking one — 16:9 -->
-![Diffing two machine definitions](../../../assets/placeholders/hero.svg)
+![Diffing two machine definitions](../../../assets/evolution-diff.png)

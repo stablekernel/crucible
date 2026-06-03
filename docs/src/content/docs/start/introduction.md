@@ -12,7 +12,7 @@ own state, event, and context types, and built so that advancing a machine is a
 **pure function**.
 
 <!-- IMAGE-SLOT: state-kernel-hero — a glowing crucible casting a luminous statechart (nodes and directed arcs) as molten metal pours into a mold, sky-squid mascot peering over the rim; conveys "forge a state machine from abstract definition into a running instance" — 16:9 -->
-![Placeholder hero: a molten crucible casting a statechart into shape.](../../../assets/placeholders/hero.svg)
+![A molten crucible casting a statechart into shape.](../../../assets/state-kernel-hero.png)
 
 ## What makes it different
 

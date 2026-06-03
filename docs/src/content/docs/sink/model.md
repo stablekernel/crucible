@@ -89,4 +89,4 @@ Most destinations are not hand-written outlets, though — they are
 The next page covers what happens to a payload once it enters the Manifold.
 
 <!-- IMAGE-SLOT: sink-manifold-cutaway — a cutaway of a foundry manifold casting: one molten inlet channel branching into several outlet runners, each runner stamped with a destination glyph; sky-squid inspecting — 16:9 -->
-![The Manifold casting: one inlet, many outlet runners](../../../assets/placeholders/hero.svg)
+![The Manifold casting: one inlet, many outlet runners](../../../assets/sink-manifold-cutaway.png)

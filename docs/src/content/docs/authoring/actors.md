@@ -42,7 +42,7 @@ sys.Deliver(ctx, ref, kitchenCook)
 When the child reaches its final state, the system fires the parent's completion signal (`PlatedUp`), threading the actor's output into the parent's reducer.
 
 <!-- IMAGE-SLOT: actors-supervision-tree — a foundry overseer routing molten message-sparks between glowing child crucibles, parent above, kitchen and courier below — 16:9 -->
-![Actor supervision](../../../assets/placeholders/hero.svg)
+![Actor supervision](../../../assets/actors-supervision-tree.png)
 
 ```mermaid
 stateDiagram-v2

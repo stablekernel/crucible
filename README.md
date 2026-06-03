@@ -7,6 +7,10 @@
 [![Discussions](https://img.shields.io/github/discussions/stablekernel/crucible)](https://github.com/stablekernel/crucible/discussions)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
+<p align="center">
+  <img src="docs/src/assets/mascot.png" alt="The Crucible sky-squid mascot" width="220">
+</p>
+
 **Forge event-driven services in Go.**
 
 Crucible is a multi-module Go toolkit for building event-driven services. Its

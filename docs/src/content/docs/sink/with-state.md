@@ -71,4 +71,4 @@ See also: [Effects and purity](/crucible/concepts/effects-and-purity/) and
 the `sink/bridge` [reference](/crucible/reference/sink-bridge/).
 
 <!-- IMAGE-SLOT: sink-bridge-handoff — a state-machine gear-train handing a glowing transition token across a clean seam to the sink manifold, which fans it to destinations; two sky-squids (state + sink) shaking tongs over the seam; ember/copper on steel — 16:9 -->
-![The state→sink bridge handing a transition across the seam](../../../assets/placeholders/hero.svg)
+![The state→sink bridge handing a transition across the seam](../../../assets/sink-bridge-handoff.png)

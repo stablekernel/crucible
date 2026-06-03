@@ -32,7 +32,7 @@ if errors.As(err, &assayErr) {
 The error type is uniform across both modes; only how many failures it carries differs.
 
 <!-- IMAGE-SLOT: assay-gate — a foundry inspector assaying an incoming ingot against a glowing requirement-template at the gate, rejecting a flawed casting — 16:9 -->
-![Assay at the trust boundary](../../../assets/placeholders/hero.svg)
+![Assay at the trust boundary](../../../assets/assay-gate.png)
 
 ```mermaid
 stateDiagram-v2

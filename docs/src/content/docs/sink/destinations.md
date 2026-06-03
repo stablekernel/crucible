@@ -102,4 +102,4 @@ type and registry you already have. The catalog is a convenience, never a
 gate.
 
 <!-- IMAGE-SLOT: sink-destination-molds — a rack of distinct casting molds (each etched with a destination glyph: a database, a cloud, a gauge, a stream), interchangeable on the same manifold runner; sky-squid swapping one in — 16:9 -->
-![Interchangeable destination molds on one manifold](../../../assets/placeholders/hero.svg)
+![Interchangeable destination molds on one manifold](../../../assets/sink-destination-molds.png)

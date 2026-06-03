@@ -87,4 +87,4 @@ defer p.Stop()
 the Poller takes its clock as an option for deterministic tests.
 
 <!-- IMAGE-SLOT: sink-reservoir-pour — a foundry reservoir/ladle filling to a fill-line then tipping a measured batch into a mold, a second ladle on an interval timer; sky-squid tending; ember/copper on steel — 16:9 -->
-![Reservoir buffering and releasing in batches](../../../assets/placeholders/hero.svg)
+![Reservoir buffering and releasing in batches](../../../assets/sink-reservoir-pour.png)
