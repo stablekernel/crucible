@@ -60,7 +60,7 @@ sink is the first of a small family of bring-your-own-adapter **IO seams**
 and forcing nothing third-party on the consumer.
 
 <!-- IMAGE-SLOT: sink-overview-fanout — a sky-squid smith at a crucible pouring one molten stream that splits into several channels feeding labelled molds (sql, dynamo, statsd, webhook); ember/copper on steel — 16:9 -->
-![One inlet fanning out to many destinations](../../../assets/placeholders/hero.svg)
+![One inlet fanning out to many destinations](../../../assets/sink-overview-fanout.png)
 
 ## Next
 

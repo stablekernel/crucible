@@ -40,4 +40,4 @@ machine := builder.Quench() // panics on errors Temper merely reported
 `Temper` hands you the findings as data; `Quench` is the always-call finalizer that turns the same defects into a loud panic. Lint early, freeze with confidence.
 
 <!-- IMAGE-SLOT: temper-pass — a foundry worker running a glowing statechart casting under a diagnostic scanner that lights orphaned nodes amber and severed edges red, before the quench tank — 16:9 -->
-![The Temper diagnostics pass](../../../assets/placeholders/hero.svg)
+![The Temper diagnostics pass](../../../assets/temper-pass.png)

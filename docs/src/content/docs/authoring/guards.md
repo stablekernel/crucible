@@ -46,4 +46,4 @@ Guards are pure and side-effect free: they read context, they never mutate it. K
 
 <!-- IMAGE-SLOT: gatekeeper — sky-squid as a luminous gatekeeper checking a glowing condition card before opening a transition arch — 3:2 -->
 
-![Guards](../../../assets/placeholders/hero.svg)
+![Guards](../../../assets/gatekeeper.png)

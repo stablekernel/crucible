@@ -37,7 +37,7 @@ inst.History()       // the ordered Fire traces
 ```
 
 <!-- IMAGE-SLOT: snapshot-restore — a foundry pour freezing a glowing workpiece into a labeled ingot, then re-melting it into an identical mold — 16:9 -->
-![Snapshot and restore](../../../assets/placeholders/hero.svg)
+![Snapshot and restore](../../../assets/snapshot-restore.png)
 
 ```mermaid
 stateDiagram-v2

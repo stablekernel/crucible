@@ -26,4 +26,4 @@ Three properties make this comfortable inside an existing codebase:
 The most common adoption question is "my domain is a big mutable aggregate behind a relational store — how does a value-semantic kernel fit that?" It fits cleanly, but the recipe matters. The next page, [pointer-heavy codebases](/crucible/integrating/pointer-heavy-codebases/), is the field guide: don't make the aggregate your context — project it.
 
 <!-- IMAGE-SLOT: decision-core-seam — a glowing crucible decision-core at center emitting effect-sparks across a clean seam to a host that routes them to broker, store, and RPC; sky-squid working the seam — 16:9 -->
-![The kernel as a pure decision core](../../../assets/placeholders/hero.svg)
+![The kernel as a pure decision core](../../../assets/decision-core-seam.png)

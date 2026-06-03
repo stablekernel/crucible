@@ -54,4 +54,4 @@ never hang your shutdown forever — it fails the deadline, the error is joined 
 returned, and your process exits. Thin seams, predictable teardown.
 
 <!-- IMAGE-SLOT: sink-shutdown-drain — a foundry at end of shift: the sky-squid tipping the last measured pour out of a reservoir ladle before banking the fire, channels running clear; ember/copper cooling to steel — 16:9 -->
-![Draining the last batch before banking the fire](../../../assets/placeholders/hero.svg)
+![Draining the last batch before banking the fire](../../../assets/sink-shutdown-drain.png)

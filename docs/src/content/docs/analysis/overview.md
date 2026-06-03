@@ -18,6 +18,6 @@ The toolbox, from cheapest to most thorough:
 - **`state/evolution`** — diff two machine definitions and classify the SemVer impact: breaking versus additive.
 
 <!-- IMAGE-SLOT: analysis-toolbox — a foundry inspection bench laying out five glowing instruments around a translucent statechart ingot, sky-squid examining it under a loupe; conveys "the machine is data you can measure" — 16:9 -->
-![The analysis toolbox](../../../assets/placeholders/hero.svg)
+![The analysis toolbox](../../../assets/analysis-toolbox.png)
 
 Every check here is pure and deterministic. Nothing fires an event or touches IO. Start with [static analysis](/crucible/analysis/static-analysis/) for the cheapest wins, then reach for [verification](/crucible/analysis/verification/) when you need a proof you can read.

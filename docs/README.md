@@ -20,12 +20,13 @@ and can never drift from the source.
 
 ## Images
 
-Brand and illustration art is generated externally. Labeled placeholders live in
-`src/assets/placeholders/`, and in-page illustration slots are marked in the content
-with an `IMAGE-SLOT: <slug>` comment. The prompt manifest — the shared visual style
-guide and a ready-to-use prompt for each slot — is maintained outside this repo. To
-add real art: generate it from that manifest, drop it in, and swap the placeholder
-reference.
+Brand and illustration art lives in `src/assets/` (logo, hero, mascot, and one
+image per in-page slot) and `public/` (favicon, social card). Each in-page
+illustration slot is marked in the content with an `IMAGE-SLOT: <slug>` comment,
+and the matching `<slug>.png` sits alongside it in `src/assets/`. The prompt
+manifest — the shared visual style guide and a ready-to-use prompt for each slot —
+is maintained outside this repo; regenerate from it and replace the matching file
+to refresh any image.
 
 ## Local development
 

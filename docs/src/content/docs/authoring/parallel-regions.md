@@ -50,4 +50,4 @@ The Watchdog is observational — it records a breach without blocking fulfillme
 
 <!-- IMAGE-SLOT: orthogonal-lanes — sky-squid with two tentacles steering two parallel glowing lanes split by a dashed divider, kitchen lane and timer lane — 16:9 -->
 
-![Parallel regions](../../../assets/placeholders/hero.svg)
+![Parallel regions](../../../assets/orthogonal-lanes.png)

@@ -47,4 +47,4 @@ Keep assigns and actions distinct. An **assign** changes the machine's own conte
 
 <!-- IMAGE-SLOT: reducer-fold — sky-squid folding a ribbon of context through ordered stations, each stamping the next value — 3:2 -->
 
-![Assigns](../../../assets/placeholders/hero.svg)
+![Assigns](../../../assets/reducer-fold.png)

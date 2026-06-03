@@ -25,8 +25,8 @@ export default defineConfig({
       description:
         'Crucible is a Go suite for forging event-driven services: thin seams, no-op defaults, no forced dependencies.',
       logo: {
-        src: './src/assets/placeholders/logo.svg',
-        alt: 'Crucible wordmark (placeholder)',
+        src: './src/assets/logo.svg',
+        alt: 'Crucible logo',
         replacesTitle: false,
       },
       social: [
@@ -38,10 +38,10 @@ export default defineConfig({
       ],
       customCss: ['./src/styles/crucible.css'],
       head: [
-        // Social card / og:image. Replaced with generated art in a later PR.
+        // Social card / og:image (generated brand art).
         {
           tag: 'meta',
-          attrs: { property: 'og:image', content: '/crucible/social-card.svg' },
+          attrs: { property: 'og:image', content: '/crucible/social-card.png' },
         },
         {
           tag: 'meta',

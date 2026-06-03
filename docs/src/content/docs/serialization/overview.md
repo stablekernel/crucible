@@ -22,7 +22,7 @@ same machine.
 
 <!-- IMAGE-SLOT: ir-interchange — a glowing statechart ingot being poured into a JSON mold and re-cast back into a running machine, sky-squid inspecting both forms as identical — 16:9 -->
 
-![The IR pours losslessly between code and JSON.](../../../assets/placeholders/hero.svg)
+![The IR pours losslessly between code and JSON.](../../../assets/ir-interchange.png)
 
 This split unlocks the workflow Crucible is built around:
 

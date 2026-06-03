@@ -29,7 +29,7 @@ b.Transition(Previewing).On(Resume).GoTo(EditingHistory)
 A history pseudo-state is structure, not a real child: it never counts toward the compound's substates and is never eligible as the initial state. The kernel resolves it at transition time — if the compound was last in `Formatting`, `Resume` lands you back in `Formatting`, not `Composing`.
 
 <!-- IMAGE-SLOT: history-resume — a foundry ledger glowing with the last-cast configuration, an arrow looping a worker back to the exact mold they left — 16:9 -->
-![History resume](../../../assets/placeholders/hero.svg)
+![History resume](../../../assets/history-resume.png)
 
 ```mermaid
 stateDiagram-v2
