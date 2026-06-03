@@ -36,7 +36,7 @@ func jrnlMachine() *state.Machine[string, string, *snapCtx] {
 // alongside the human-readable Event label, and that the payload round-trips.
 func TestTrace_EventPayloadRoundTrips(t *testing.T) {
 	m := jrnlMachine()
-	inst := m.Cast(&snapCtx{}, state.WithInitialState("idle"))
+	inst := m.Cast(&snapCtx{}, state.WithInitialState("idle"), state.WithFullTrace[string]())
 	res := inst.Fire(context.Background(), "go")
 	if res.Err != nil {
 		t.Fatalf("Fire: %v", res.Err)

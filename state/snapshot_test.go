@@ -78,7 +78,7 @@ func parallelSnapMachine() *state.Machine[string, string, *snapCtx] {
 // mid-run and asserts the snapshot holds its configuration, context, and history.
 func TestSnapshot_PreservesConfigurationContextHistory(t *testing.T) {
 	m := flatSnapMachine()
-	inst := m.Cast(&snapCtx{}, state.WithInitialState("idle"))
+	inst := m.Cast(&snapCtx{}, state.WithInitialState("idle"), state.WithUnboundedHistory[string]())
 	ctx := context.Background()
 	inst.Fire(ctx, "go")
 

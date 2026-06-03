@@ -188,7 +188,7 @@ func TestReenter_SelfTransitionRunsExitEntry(t *testing.T) {
 	// Reenter: exit then entry of the source run around the effects.
 	mr := build(true)
 	er := &trec{}
-	resr := mr.Cast(er, state.WithInitialState("s")).Fire(context.Background(), "ping")
+	resr := mr.Cast(er, state.WithInitialState("s"), state.WithFullTrace[string]()).Fire(context.Background(), "ping")
 	if resr.Err != nil {
 		t.Fatalf("reenter Fire err = %v", resr.Err)
 	}
@@ -220,7 +220,7 @@ func TestRaise_FeedsSameMacrostepRTC(t *testing.T) {
 		Initial("a"))
 
 	rec := &trec{}
-	inst := m.Cast(rec, state.WithInitialState("a"))
+	inst := m.Cast(rec, state.WithInitialState("a"), state.WithFullTrace[string]())
 	res := inst.Fire(context.Background(), "go")
 	if res.Err != nil {
 		t.Fatalf("Fire(go) err = %v", res.Err)

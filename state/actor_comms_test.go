@@ -297,7 +297,7 @@ func TestComm_IRRoundTrip(t *testing.T) {
 
 	// And the rehydrated machine actually emits the comm effects when fired.
 	entity := &trec{}
-	inst := m2.Cast(entity, state.WithInitialState("a"))
+	inst := m2.Cast(entity, state.WithInitialState("a"), state.WithFullTrace[string]())
 	res := inst.Fire(context.Background(), "toB")
 	if res.Err != nil {
 		t.Fatalf("Fire err = %v", res.Err)

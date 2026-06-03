@@ -123,7 +123,7 @@ func (i *Instance[S, E, C]) afterEffectsOnEntry(entries []S, tr *Trace) []Effect
 				Event: t.On,
 				State: fmtState(s),
 			})
-			tr.Microsteps = append(tr.Microsteps, "schedule."+id)
+			tr.note("schedule." + id)
 		}
 	}
 	return out
@@ -184,7 +184,7 @@ func (i *Instance[S, E, C]) afterEffectsOnExit(exits []S, tr *Trace) []Effect {
 			}
 			id := scheduleID(m.name, s, ti)
 			out = append(out, CancelScheduled{ID: id})
-			tr.Microsteps = append(tr.Microsteps, "cancel."+id)
+			tr.note("cancel." + id)
 		}
 	}
 	return out

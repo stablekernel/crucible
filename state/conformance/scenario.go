@@ -165,7 +165,9 @@ func RunAgainst[S comparable, E comparable, C any](
 	codec EventCodec[E],
 	startState S,
 ) ScenarioResult[S] {
-	inst := m.Cast(entity, state.WithInitialState(startState))
+	// Full trace is required so EffectsEmitted, GuardsEvaluated, and the cascade
+	// fields are populated for scenario assertion evaluation.
+	inst := m.Cast(entity, state.WithInitialState(startState), state.WithFullTrace[S]())
 	res := ScenarioResult[S]{FinalState: startState}
 	tr := Trace{MachineID: m.Name(), FromState: sc.InitialState}
 

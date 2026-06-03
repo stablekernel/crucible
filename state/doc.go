@@ -171,10 +171,26 @@
 //
 // Observability is Trace-first: the structured Trace is the canonical surface,
 // recording matched transitions, guard and policy evaluations, emitted effects,
-// and the outcome as pure data. An optional WithLogger(*slog.Logger) (no-op by
-// default) is the only logging seam; the kernel never logs unless asked and
-// never imports a third-party logger. Determinism is preserved by injecting
-// time and identifier seams rather than calling time.Now or rand directly.
+// and the outcome as pure data. Observability is opt-in, in keeping with the
+// suite's no-op-default convention. By default an instance runs in LITE trace
+// mode: each Fire still returns a Trace, but only the always-present fields
+// (Machine, Event, FromState, MatchedAt, Outcome) are populated — enough for
+// structured logging and a settled result, with no per-step diagnostic
+// allocation. FULL trace mode populates the rich per-step fields
+// (GuardsEvaluated, EffectsEmitted, ExitedStates, EnteredStates, AssignsApplied,
+// Microsteps, EventPayload, SelectedTransition) and is enabled by attaching any
+// observer at Cast: WithFullTrace, WithInspector, or one of the history options
+// below. WithLogger(*slog.Logger) (no-op by default) reads only the always-present
+// fields, so a logger-only instance stays lite; the kernel never logs unless
+// asked and never imports a third-party logger.
+//
+// Trace history is retained only when requested, and is bounded by default:
+// WithHistory(n) keeps the last n settled traces in a ring buffer (n <= 0
+// disables retention), so a long-lived instance never grows its history without
+// limit. WithUnboundedHistory opts into unbounded retention when a consumer
+// genuinely wants every trace. With no history option, History returns nil.
+// Determinism is preserved by injecting time and identifier seams rather than
+// calling time.Now or rand directly.
 //
 // As a library, the kernel never exits the process — it never calls os.Exit or
 // log.Fatal on an operational error. Panics are reserved strictly for
@@ -183,7 +199,7 @@
 // # Status
 //
 // The kernel implements the Forge/Temper/Quench build path, Cast/Fire pure step
-// semantics with guards, actions, typed errors and an always-recorded Trace,
+// semantics with guards, actions, typed errors and an opt-in structured Trace,
 // Assay/Requirements, PlanPath (BFS), FireSeq/FireEach batch helpers, and
 // lossless ToJSON/LoadFromJSON/Provide round-trip.
 //

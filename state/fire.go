@@ -58,7 +58,21 @@ func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) Fir
 		next = mws[k](next)
 	}
 	res := next(ctx, event)
-	i.history = append(i.history, res.Trace)
+	// Retain the trace according to the history mode selected at Cast:
+	//   unbounded → append; ring buffer → fill then overwrite; neither → no-op.
+	switch {
+	case i.histUnbounded:
+		i.history = append(i.history, res.Trace)
+	case i.histLimit > 0:
+		if len(i.history) < i.histLimit {
+			// Ring not yet full: fill forward.
+			i.history = append(i.history, res.Trace)
+		} else {
+			// Ring full: overwrite oldest entry at histHead, then advance.
+			i.history[i.histHead] = res.Trace
+			i.histHead = (i.histHead + 1) % i.histLimit
+		}
+	}
 	// Surface the settled result to a registered inspector as event/transition/
 	// snapshot observations. The call is gated on a non-nil inspector inside
 	// emitInspection, so an un-inspected Fire is unchanged and performs no IO.
@@ -163,14 +177,16 @@ func marshalEventPayload[E comparable](event E) json.RawMessage {
 
 // seedTrace builds a fresh Trace for an internal sub-step (a raised event or an
 // eventless transition), tagged with the active leaf so the microstep record is
-// self-describing.
+// self-describing. The trace inherits the instance's full mode so all sub-steps
+// within a macrostep are internally consistent.
 func (i *Instance[S, E, C]) seedTrace(event string) Trace {
 	return Trace{
 		Machine:   i.machine.name,
 		Event:     event,
-		FromState: fmtState(i.current),
-		MatchedAt: fmtState(i.current),
+		FromState: i.machine.label(i.current),
+		MatchedAt: i.machine.label(i.current),
 		Outcome:   OutcomeInvalidTransition,
+		full:      i.traceFull,
 	}
 }
 
@@ -219,7 +235,12 @@ func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
 
 // absorbMicrosteps folds an internal sub-step's observable trace detail into the
 // macrostep's running trace, preserving order across the run-to-completion loop.
+// In lite mode the sub-step carries no rich fields, so the early-return also
+// avoids any append calls.
 func absorbMicrosteps(dst *Trace, sub Trace) {
+	if !dst.full {
+		return
+	}
 	if sub.Event != "" {
 		dst.Microsteps = append(dst.Microsteps, sub.Event)
 	}
@@ -258,12 +279,17 @@ func (i *Instance[S, E, C]) fireOnce(ctx context.Context, event E) FireResult[S]
 	from := i.current
 
 	tr := Trace{
-		Machine:      m.name,
-		Event:        fmt.Sprint(event),
-		EventPayload: marshalEventPayload(event),
-		FromState:    fmtState(from),
-		MatchedAt:    fmtState(from),
-		Outcome:      OutcomeInvalidTransition,
+		Machine:   m.name,
+		Event:     fmt.Sprint(event),
+		FromState: m.label(from),
+		MatchedAt: m.label(from),
+		Outcome:   OutcomeInvalidTransition,
+		full:      i.traceFull,
+	}
+	// EventPayload is only marshaled in full mode: it allocates and the
+	// journal/replay seam is not needed when no observer reads the trace.
+	if i.traceFull {
+		tr.EventPayload = marshalEventPayload(event)
 	}
 
 	if _, ok := m.stateByName(from); !ok {
@@ -319,9 +345,9 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 		// bubble: distinct from "no handler", which would keep climbing. The event
 		// is ignored — no state change, no effects, a success outcome.
 		if forbids(n.state, event) {
-			tr.MatchedAt = fmtState(anc)
+			tr.MatchedAt = m.label(anc)
 			tr.Outcome = OutcomeSuccess
-			tr.Microsteps = append(tr.Microsteps, "forbidden."+fmt.Sprint(event)+"@"+fmtState(anc))
+			tr.note("forbidden." + fmt.Sprint(event) + "@" + m.label(anc))
 			return FireResult[S]{NewState: from, Trace: tr}
 		}
 		candidates := matchingTransitions(n.state, event)
@@ -331,7 +357,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 		for _, t := range candidates {
 			passed := true
 			for _, g := range t.Guards {
-				tr.GuardsEvaluated = append(tr.GuardsEvaluated, g.Name)
+				tr.recordGuard(g.Name)
 				ok, gErr := m.evalGuard(g, entity)
 				if gErr != nil {
 					tr.Outcome = OutcomeGuardPanic
@@ -364,7 +390,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 				}
 			}
 			if passed {
-				tr.MatchedAt = fmtState(anc)
+				tr.MatchedAt = m.label(anc)
 				return i.commit(ctx, t, from, anc, entity, i.eventData(event), tr)
 			}
 		}
@@ -443,7 +469,11 @@ func (i *Instance[S, E, C]) commit(
 	_ = ctx
 	m := i.machine
 
-	tr.SelectedTransition = projectTransition(t)
+	// SelectedTransition calls projectTransition which allocates several slices;
+	// skip it entirely in lite mode.
+	if tr.full {
+		tr.SelectedTransition = projectTransition(t)
+	}
 
 	// cur threads the context by value through the cascade. Actions in a phase read
 	// cur as it stood at phase entry (read-only); the assigns of that phase then
@@ -525,7 +555,7 @@ func (i *Instance[S, E, C]) commit(
 	// Exit actions then exit assigns: innermost -> outermost. Each state's exit
 	// actions read cur (pre-assign), then its exit assigns fold cur.
 	for _, s := range exits {
-		tr.ExitedStates = append(tr.ExitedStates, fmtState(s))
+		tr.recordExit(m.label(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
 			continue
@@ -609,7 +639,7 @@ func (i *Instance[S, E, C]) commit(
 	// Entry actions then entry assigns: outermost -> innermost. Each state's entry
 	// actions read cur (pre-assign), then its entry assigns fold cur.
 	for _, s := range entries {
-		tr.EnteredStates = append(tr.EnteredStates, fmtState(s))
+		tr.recordEntry(m.label(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
 			continue
@@ -702,11 +732,13 @@ func (i *Instance[S, E, C]) isInternal(t *Transition[S, E, C], from S) bool {
 func (i *Instance[S, E, C]) enqueueRaised(t *Transition[S, E, C], tr *Trace) {
 	for _, ev := range t.Raise {
 		i.raised = append(i.raised, ev)
-		tr.Microsteps = append(tr.Microsteps, "raise."+fmt.Sprint(ev))
+		tr.note("raise." + fmt.Sprint(ev))
 	}
 }
 
-// transName renders a transition label for diagnostics.
+// transName renders a transition label for diagnostics. Sites that hold a
+// machine pointer should call m.label instead; this free function is retained
+// for cascade.go and other files that pass already-formatted strings.
 func transName[S comparable](from, to S) string {
 	return fmt.Sprintf("%s->%s", fmtState(from), fmtState(to))
 }
@@ -718,13 +750,13 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	for _, a := range refs {
 		e, aerr := i.machine.evalAction(a, entity)
 		if aerr != nil {
-			tr.EffectsEmitted = append(tr.EffectsEmitted, a.Name)
+			tr.recordEffect(a.Name)
 			return effects, a.Name, aerr
 		}
 		effects = append(effects, e)
-		tr.EffectsEmitted = append(tr.EffectsEmitted, fmt.Sprintf("%s:%s", a.Name, effectLabel(e)))
+		tr.recordEffect(fmt.Sprintf("%s:%s", a.Name, effectLabel(e)))
 		if ms, ok := commMicrostep(e); ok {
-			tr.Microsteps = append(tr.Microsteps, ms)
+			tr.note(ms)
 		}
 	}
 	return effects, "", nil
@@ -768,11 +800,11 @@ func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *T
 	for _, a := range refs {
 		next, err := i.machine.evalAssign(a, cur, eventData)
 		if err != nil {
-			tr.AssignsApplied = append(tr.AssignsApplied, a.Name)
+			tr.recordAssign(a.Name)
 			return cur, a.Name, err
 		}
 		cur = next
-		tr.AssignsApplied = append(tr.AssignsApplied, a.Name)
+		tr.recordAssign(a.Name)
 	}
 	return cur, "", nil
 }
@@ -839,7 +871,7 @@ func (i *Instance[S, E, C]) FireSeq(ctx context.Context, events []E, opts ...Fir
 	}
 
 	var br BatchResult[S]
-	merged := Trace{Machine: i.machine.name, Outcome: OutcomeSuccess}
+	merged := Trace{Machine: i.machine.name, Outcome: OutcomeSuccess, full: i.traceFull}
 	for _, ev := range events {
 		res := i.Fire(ctx, ev, opts...)
 		br.Steps = append(br.Steps, res)
@@ -861,8 +893,12 @@ func (i *Instance[S, E, C]) FireSeq(ctx context.Context, events []E, opts ...Fir
 }
 
 // mergeTrace appends one step's trace into the running merged trace, preserving
-// order across the batch.
+// order across the batch. In lite mode the per-step rich fields are empty so the
+// early-return avoids spurious append calls.
 func mergeTrace(dst *Trace, step Trace) {
+	if !dst.full {
+		return
+	}
 	if step.Event != "" {
 		dst.Microsteps = append(dst.Microsteps, step.Event)
 	}

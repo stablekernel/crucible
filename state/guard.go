@@ -372,7 +372,7 @@ func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) 
 			name = g.Ref.Name
 		}
 		if tr != nil {
-			tr.GuardsEvaluated = append(tr.GuardsEvaluated, name)
+			tr.recordGuard(name)
 		}
 		ok, err := i.machine.evalGuard(*g.Ref, entity)
 		if err != nil {
@@ -386,7 +386,7 @@ func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) 
 	case GuardStateIn:
 		name := stateInName(*g.In)
 		if tr != nil {
-			tr.GuardsEvaluated = append(tr.GuardsEvaluated, name)
+			tr.recordGuard(name)
 		}
 		if i.inConfiguration(*g.In) {
 			return guardEval{ok: true}
@@ -439,7 +439,7 @@ func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) 
 		// trace records the rendered expression so a failure names the comparison.
 		name := renderGuardExpr(g)
 		if tr != nil {
-			tr.GuardsEvaluated = append(tr.GuardsEvaluated, name)
+			tr.recordGuard(name)
 		}
 		ok, err := evalCorePredicate(g, entity)
 		if err != nil {

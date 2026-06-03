@@ -153,7 +153,7 @@ func (i *Instance[S, E, C]) invokeEffectsOnEntry(entries []S, tr *Trace) []Effec
 				OnError: inv.OnError,
 				State:   fmtState(s),
 			})
-			tr.Microsteps = append(tr.Microsteps, "service.start."+id)
+			tr.note("service.start." + id)
 		}
 	}
 	return out
@@ -178,7 +178,7 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 			}
 			id := invocationID(m.name, s, ix, inv)
 			out = append(out, StopService{ID: id})
-			tr.Microsteps = append(tr.Microsteps, "service.stop."+id)
+			tr.note("service.stop." + id)
 		}
 	}
 	return out

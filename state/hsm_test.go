@@ -42,7 +42,7 @@ func TestCompound_EntersInitialChild(t *testing.T) {
 // when entering a compound state.
 func TestCompound_EntryCascadeOrder(t *testing.T) {
 	m := buildJobMachine()
-	inst := m.Cast(&Job{Status: Queued})
+	inst := m.Cast(&Job{Status: Queued}, state.WithFullTrace[JobStatus]())
 	res := inst.Fire(context.Background(), Enqueue)
 	notes := notesFrom(res.Effects)
 	want := []string{"entry:Running", "entry:Starting"}
@@ -93,7 +93,7 @@ func TestCompound_BubblesToAncestor(t *testing.T) {
 // when leaving a compound state via an ancestor transition.
 func TestCompound_ExitCascadeOrder(t *testing.T) {
 	m := buildJobMachine()
-	inst := m.Cast(&Job{Status: Executing})
+	inst := m.Cast(&Job{Status: Executing}, state.WithFullTrace[JobStatus]())
 	res := inst.Fire(context.Background(), Cancel)
 	notes := notesFrom(res.Effects)
 	// Exit innermost (Executing) then outermost (Running); Canceled is a leaf

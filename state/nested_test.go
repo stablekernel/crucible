@@ -189,7 +189,7 @@ func fireLvl(t *testing.T, inst *state.Instance[lvl, lvlEvent, *box], ev lvlEven
 // running entry actions outermost-first across all three levels.
 func TestNested_EntryCascadeToDeepestLeaf(t *testing.T) {
 	m := buildNested(t)
-	inst := m.Cast(&box{State: l0})
+	inst := m.Cast(&box{State: l0}, state.WithFullTrace[lvl]())
 	res := fireLvl(t, inst, enter)
 
 	if got := inst.Current(); got != c1 {
@@ -210,7 +210,7 @@ func TestNested_EntryCascadeToDeepestLeaf(t *testing.T) {
 // spine innermost-first: C1, C, B, A.
 func TestNested_ExitCascadeInnermostFirst(t *testing.T) {
 	m := buildNested(t)
-	inst := m.Cast(&box{State: c1})
+	inst := m.Cast(&box{State: c1}, state.WithFullTrace[lvl]())
 	res := fireLvl(t, inst, park)
 
 	if got := inst.Current(); got != parked {
@@ -264,7 +264,7 @@ func TestNested_BubblesAcrossMultipleAncestors(t *testing.T) {
 // ancestor's OnDone runs, innermost-first, recorded as done microsteps.
 func TestNested_OnDonePropagatesUpward(t *testing.T) {
 	m := buildNested(t)
-	inst := m.Cast(&box{State: c2})
+	inst := m.Cast(&box{State: c2}, state.WithFullTrace[lvl]())
 	res := fireLvl(t, inst, finishC)
 
 	if got := inst.Current(); got != cFinal {
@@ -296,7 +296,7 @@ func TestNested_OnDonePropagatesUpward(t *testing.T) {
 // not A's default spine leaf C1. This is the capability the v1 DSL gate blocked.
 func TestNested_DeepHistoryFromDSL(t *testing.T) {
 	m := buildNested(t)
-	inst := m.Cast(&box{State: l0})
+	inst := m.Cast(&box{State: l0}, state.WithFullTrace[lvl]())
 
 	fireLvl(t, inst, enter) // L0 -> A -> B -> C -> C1
 	if got := inst.Current(); got != c1 {

@@ -235,7 +235,7 @@ func (i *Instance[S, E, C]) actorEffectsOnEntry(entries []S, tr *Trace) []Effect
 				State:    fmtState(s),
 				SystemID: inv.SystemID,
 			})
-			tr.Microsteps = append(tr.Microsteps, "actor.spawn."+id)
+			tr.note("actor.spawn." + id)
 		}
 	}
 	return out
@@ -260,7 +260,7 @@ func (i *Instance[S, E, C]) actorEffectsOnExit(exits []S, tr *Trace) []Effect {
 			}
 			id := actorInvocationID(m.name, s, ix, inv)
 			out = append(out, StopActor{ID: id})
-			tr.Microsteps = append(tr.Microsteps, "actor.stop."+id)
+			tr.note("actor.stop." + id)
 		}
 	}
 	return out

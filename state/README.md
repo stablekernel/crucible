@@ -76,6 +76,11 @@ A complete statechart feature surface:
   event/transition/snapshot/actor stream, and `WaitFor(ctx, inst, predicate)`
   (plus `WaitInState` / `WaitDone`) that drives an instance until a predicate
   over its snapshot holds.
+- **Opt-in tracing**: a Fire is lite by default (settled result and outcome,
+  no per-step diagnostic allocation); `WithFullTrace`, `WithInspector`, or the
+  history options populate the rich per-step Trace. Trace history is opt-in and
+  bounded — `WithHistory(n)` keeps the last `n` traces in a ring buffer, with
+  `WithUnboundedHistory` available when every trace is wanted.
 - **Path enumeration**: `PlanPath` finds the shortest sequence to a target;
   `state/analysis` adds `ShortestPaths` and `SimplePaths` over the whole graph.
 

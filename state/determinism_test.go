@@ -254,7 +254,7 @@ func projectOrder(res state.FireResult[ordState], cur ordCtx) orderTrace {
 func runOrderingScenario(t *testing.T) []orderTrace {
 	t.Helper()
 	m := forgeOrdering()
-	inst := m.Cast(ordCtx{}, state.WithInitialState[ordState](ordStart))
+	inst := m.Cast(ordCtx{}, state.WithInitialState[ordState](ordStart), state.WithFullTrace[ordState]())
 
 	events := []ordEvent{ordGo, ordAlphaE, ordBetaE, ordCross}
 	steps := make([]orderTrace, 0, len(events))
@@ -285,7 +285,7 @@ func TestGoldenEmissionOrder(t *testing.T) {
 // iteration) reorders EffectsEmitted / AssignsApplied / ContextLog and fails here.
 func TestGoldenCrossRegionFold(t *testing.T) {
 	m := forgeOrdering()
-	inst := m.Cast(ordCtx{}, state.WithInitialState[ordState](ordStart))
+	inst := m.Cast(ordCtx{}, state.WithInitialState[ordState](ordStart), state.WithFullTrace[ordState]())
 	// Drive into the parallel configuration, then fire the shared Tick.
 	for _, ev := range []ordEvent{ordGo, ordTick} {
 		res := inst.Fire(context.Background(), ev)
