@@ -85,6 +85,46 @@ var referencePackages = []referencePackage{
 		mod: "sink/statsd", pkg: ".", slug: "sink-statsd", title: "sink/statsd", order: 13,
 		desc: "A StatsD/DogStatsD destination with a stateful, interval-flushing aggregator.",
 	},
+	{
+		mod: "source", pkg: ".", slug: "source", title: "source", order: 14,
+		desc: "The stream-consume engine: an Inlet yields messages, a Hopper runs the ordered-concurrency consume loop and ack model.",
+	},
+	{
+		mod: "source", pkg: "./memsource", slug: "source-memsource", title: "source/memsource", order: 15,
+		desc: "An in-memory deterministic Inlet plus a test harness for the consume loop.",
+	},
+	{
+		mod: "source/kafka", pkg: ".", slug: "source-kafka", title: "source/kafka", order: 16,
+		desc: "A Kafka/RedPanda Inlet over franz-go: group consumer, cooperative rebalance, mark-commit-after-process.",
+	},
+	{
+		mod: "source/jetstream", pkg: ".", slug: "source-jetstream", title: "source/jetstream", order: 17,
+		desc: "A NATS JetStream Inlet over nats.go: pull consumer, ack/nak/term/inProgress, MaxAckPending backpressure.",
+	},
+	{
+		mod: "source/cloudevents", pkg: ".", slug: "source-cloudevents", title: "source/cloudevents", order: 18,
+		desc: "A CloudEvents codec with structured and binary content modes.",
+	},
+	{
+		mod: "source/retry", pkg: ".", slug: "source-retry", title: "source/retry", order: 19,
+		desc: "Classification-aware retry middleware: backoff for Retryable, straight to DLQ for Poison and InvalidForState.",
+	},
+	{
+		mod: "source/dlq", pkg: ".", slug: "source-dlq", title: "source/dlq", order: 20,
+		desc: "Layered dead-letter middleware whose parking topic is itself an Inlet, so draining it is first-class replay.",
+	},
+	{
+		mod: "source/idempotency", pkg: ".", slug: "source-idempotency", title: "source/idempotency", order: 21,
+		desc: "A Deduper seam with a no-op default; for the state-machine binding, dedup is transition idempotency.",
+	},
+	{
+		mod: "source/schema", pkg: ".", slug: "source-schema", title: "source/schema", order: 22,
+		desc: "An optional proto/Avro/JSON-Schema validator that runs before the handler, routing invalid payloads to the DLQ.",
+	},
+	{
+		mod: "source/statemachine", pkg: ".", slug: "source-statemachine", title: "source/statemachine", order: 23,
+		desc: "The state-to-source bridge: an inbound message drives a transition and the ack is tied to the durable transition.",
+	},
 }
 
 // generateReference renders each documented package to a Starlight Markdown
