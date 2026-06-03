@@ -4,6 +4,9 @@ go 1.25.11
 
 replace github.com/stablekernel/crucible/state => ../state
 
-require github.com/tetratelabs/wazero v1.12.0
+require (
+	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/tetratelabs/wazero v1.12.0
+)
 
-require golang.org/x/sys v0.44.0 // indirect
+require golang.org/x/sys v0.45.0 // indirect
