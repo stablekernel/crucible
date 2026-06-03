@@ -7,6 +7,8 @@ replace (
 	github.com/stablekernel/crucible/durable => ../durable
 	github.com/stablekernel/crucible/sink => ../sink
 	github.com/stablekernel/crucible/sink/bridge => ../sink/bridge
+	github.com/stablekernel/crucible/source => ../source
+	github.com/stablekernel/crucible/source/statemachine => ../source/statemachine
 	github.com/stablekernel/crucible/state => ../state
 	github.com/stablekernel/crucible/state/expr => ../state/expr
 	github.com/stablekernel/crucible/telemetry => ../telemetry
@@ -18,6 +20,8 @@ require (
 	github.com/stablekernel/crucible/durable v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/sink v0.0.0
 	github.com/stablekernel/crucible/sink/bridge v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/source v0.0.0
+	github.com/stablekernel/crucible/source/statemachine v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/state v0.0.0
 	github.com/stablekernel/crucible/state/expr v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/telemetry v0.0.0
