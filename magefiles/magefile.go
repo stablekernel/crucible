@@ -56,12 +56,12 @@ var sinkDestinations = []string{
 
 // sourceDestinations are the standalone source modules kept out of the workspace
 // (see modules above): the SDK-backed sources (source/kafka via franz-go,
-// source/jetstream via nats.go, source/cloudevents via the CloudEvents SDK) plus
-// the flagship examples/sourcedrive. Each builds via its own go.mod and replace
-// directives, so the SourceDestinations and Integration targets run with
-// GOWORK=off.
+// source/jetstream via nats.go, source/redis via go-redis, source/cloudevents
+// via the CloudEvents SDK) plus the flagship examples/sourcedrive. Each builds
+// via its own go.mod and replace directives, so the SourceDestinations and
+// Integration targets run with GOWORK=off.
 var sourceDestinations = []string{
-	"source/kafka", "source/jetstream", "source/cloudevents", "examples/sourcedrive",
+	"source/kafka", "source/jetstream", "source/redis", "source/cloudevents", "examples/sourcedrive",
 }
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.

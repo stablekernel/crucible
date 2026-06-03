@@ -65,6 +65,7 @@ jobs:
         module:
           - source/kafka
           - source/jetstream
+          - source/redis
           - source/cloudevents
           - examples/sourcedrive
     runs-on: ${{ matrix.os }}
@@ -116,6 +117,7 @@ jobs:
           - source/statemachine
           - source/kafka
           - source/jetstream
+          - source/redis
           - source/cloudevents
           - examples/sourcedrive
     runs-on: ubuntu-latest

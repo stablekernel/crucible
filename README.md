@@ -61,6 +61,7 @@ stability label.
 | `source`              | Ingress seam: consume streams and drive statecharts; ack on durable transition.  | experimental |
 | `source/kafka`        | Kafka/RedPanda Inlet over franz-go: group consumer, mark-commit-after-process.   | experimental |
 | `source/jetstream`    | NATS JetStream Inlet over nats.go: pull consumer, ack/nak/term, MaxAckPending.    | experimental |
+| `source/redis`        | Redis Streams Inlet over go-redis: consumer group, XACK/pending-claim, DLQ.       | experimental |
 | `source/cloudevents`  | CloudEvents codec with structured and binary content modes.                      | experimental |
 | `source/statemachine` | Bridge: an inbound message drives a transition, ack tied to the durable commit.  | experimental |
 
@@ -81,9 +82,9 @@ snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis
 `evolution`, and `conformance` companion packages. Treat its API as experimental
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `sink` egress seam and its destination
-adapters, and the `source` ingress seam with its Kafka and JetStream adapters,
-CloudEvents codec, reliability middleware, and state-machine bridge, are now
-available and documented; the `broker` module is planned.
+adapters, and the `source` ingress seam with its Kafka, JetStream, and Redis
+Streams adapters, CloudEvents codec, reliability middleware, and state-machine
+bridge, are now available and documented; the `broker` module is planned.
 
 ## Roadmap: event-driven seams
 
