@@ -246,7 +246,12 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// (WithClock); the scheduler reads it when arming and ticking timers.
 	buf := make([]state.JournalEntry, 0)
 	recClock := newRecordingClock(r.cfg.clock, &buf)
-	castOpts := append([]state.CastOption[S]{state.WithClock[S](recClock)}, opts...)
+	// Force unbounded full-trace history: the runner journals each step's Trace
+	// (notably the EventPayload) and derives both the step ordinal and the checkpoint
+	// snapshots from the instance's retained Trace history, so a recover can replay it
+	// byte-identically. WithUnboundedHistory elevates to full trace and retains every
+	// step; it is prepended so a caller's opts cannot downgrade it.
+	castOpts := append([]state.CastOption[S]{state.WithClock[S](recClock), state.WithUnboundedHistory[S]()}, opts...)
 	inst := r.machine.Cast(input, castOpts...)
 
 	// Persist a baseline checkpoint at baselineStep (below the first fired step)
@@ -530,7 +535,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	recClock := newRecordingClock(r.cfg.clock, &buf)
 	repClock := newReplayClock(clockReadings(tail), recClock)
 
-	inst, err := r.machine.Restore(snap, state.WithRestoreClock[S](repClock))
+	inst, err := r.machine.Restore(snap, state.WithRestoreClock[S](repClock), state.WithRestoreUnboundedHistory[S]())
 	if err != nil {
 		return nil, fmt.Errorf("durable: restoring checkpoint for %q: %w", id, err)
 	}

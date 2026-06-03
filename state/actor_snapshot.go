@@ -97,7 +97,17 @@ func (a *actorAdapter[S, E, C]) RestoreJSON(b []byte) error {
 	if err := json.Unmarshal(b, &snap); err != nil {
 		return &SnapshotError{Op: "unmarshal", Reason: "actor child decode failed: " + err.Error()}
 	}
-	restored, err := a.inst.machine.Restore(snap, WithRestoreClock[S](a.inst.clock))
+	restoreOpts := []RestoreOption[S]{WithRestoreClock[S](a.inst.clock)}
+	// Preserve the actor's observability mode across an in-place restore so a
+	// journal/replay host keeps recording the child's rich trace, and (under a
+	// durable parent) keeps retaining its history so the child still round-trips.
+	switch {
+	case a.inst.histUnbounded:
+		restoreOpts = append(restoreOpts, WithRestoreUnboundedHistory[S]())
+	case a.inst.traceFull:
+		restoreOpts = append(restoreOpts, WithRestoreFullTrace[S]())
+	}
+	restored, err := a.inst.machine.Restore(snap, restoreOpts...)
 	if err != nil {
 		return err
 	}
@@ -245,6 +255,7 @@ func (s *ActorSystem[S, E, C]) restoreActor(ctx context.Context, snap actorSnaps
 	if err != nil {
 		return &SnapshotError{Op: "restore", State: snap.ID, Reason: "actor re-spawn failed: " + err.Error()}
 	}
+	s.propagateTrace(inst)
 
 	ra := &runningActor[E]{
 		inst:  inst,

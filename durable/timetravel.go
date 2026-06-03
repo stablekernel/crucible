@@ -210,7 +210,10 @@ func restoreBaseline[S comparable, E comparable, C any](
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling baseline snapshot: %w", err)
 	}
-	inst, err := m.Restore(snap, state.WithRestoreClock[S](repClock))
+	// Reconstruct in the same full-trace, unbounded-history mode the runner records
+	// in, so a time-travel reconstruction's Trace history is byte-identical to the
+	// live run it replays.
+	inst, err := m.Restore(snap, state.WithRestoreClock[S](repClock), state.WithRestoreUnboundedHistory[S]())
 	if err != nil {
 		return nil, fmt.Errorf("restoring baseline snapshot: %w", err)
 	}

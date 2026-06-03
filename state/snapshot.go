@@ -465,6 +465,8 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		historyShallow: copyMap(snap.HistoryShallow),
 		historyDeep:    copyLeafMap(snap.HistoryDeep),
 		clock:          clock,
+		traceFull:      rcfg.traceFull,
+		histUnbounded:  rcfg.histUnbounded,
 	}
 	return inst, nil
 }
