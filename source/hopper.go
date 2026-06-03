@@ -44,6 +44,7 @@ type Hopper struct {
 	middleware  []Middleware
 	concurrency int
 	maxInFlight int
+	batch       batchConfig
 
 	received telemetry.Counter
 	acked    telemetry.Counter
@@ -51,6 +52,7 @@ type Hopper struct {
 	term     telemetry.Counter
 	dropped  telemetry.Counter
 	failed   telemetry.Counter
+	batches  telemetry.Counter
 	lag      telemetry.Gauge
 
 	closeOnce sync.Once
@@ -74,12 +76,14 @@ func New(opts ...Option) *Hopper {
 		middleware:  append([]Middleware(nil), cfg.middleware...),
 		concurrency: cfg.concurrency,
 		maxInFlight: cfg.maxInFlight,
+		batch:       cfg.batch,
 		received:    m.Counter("source.received", telemetry.WithDescription("messages received from the subscription")),
 		acked:       m.Counter("source.acked", telemetry.WithDescription("messages acknowledged after successful handling")),
 		nak:         m.Counter("source.nak", telemetry.WithDescription("messages nak'd for redelivery")),
 		term:        m.Counter("source.term", telemetry.WithDescription("messages terminated (dead-lettered)")),
 		dropped:     m.Counter("source.dropped", telemetry.WithDescription("messages acked and discarded as out of scope")),
 		failed:      m.Counter("source.failed", telemetry.WithDescription("settle failures observed after handling")),
+		batches:     m.Counter("source.batches", telemetry.WithDescription("batches handed to a batch handler")),
 		lag:         m.Gauge("source.lag", telemetry.WithUnit("{message}"), telemetry.WithDescription("unconsumed messages behind the stream tail")),
 		closed:      make(chan struct{}),
 	}
@@ -269,16 +273,12 @@ func (hp *Hopper) process(ctx context.Context, handler Handler, d *delivery) {
 
 	// Decode (when a registry is configured) and attach the value to the message
 	// the handler sees. A decode failure is poison: terminate, do not retry.
-	dec := m
-	if hp.registry != nil {
-		v, err := hp.registry.Decode(m)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(telemetry.StatusError, "decode failed")
-			hp.settle(ctx, span, d, Term(err))
-			return
-		}
-		dec = &decoded{Message: m, value: v}
+	dec, decErr := hp.decodeFor(m)
+	if decErr != nil {
+		span.RecordError(decErr)
+		span.SetStatus(telemetry.StatusError, "decode failed")
+		hp.settle(ctx, span, d, Term(decErr))
+		return
 	}
 
 	r := handler(ctx, dec)
@@ -290,6 +290,21 @@ func (hp *Hopper) process(ctx context.Context, handler Handler, d *delivery) {
 		telemetry.String("source.class", r.Class.String()),
 	)
 	hp.settle(ctx, span, d, r)
+}
+
+// decodeFor decodes m through the configured registry and wraps it so the
+// handler reads the typed value via [Decoded]. With no registry it returns m
+// unchanged. A decode failure is poison: the caller terminates the message
+// rather than retrying.
+func (hp *Hopper) decodeFor(m Message) (Message, error) {
+	if hp.registry == nil {
+		return m, nil
+	}
+	v, err := hp.registry.Decode(m)
+	if err != nil {
+		return nil, err
+	}
+	return &decoded{Message: m, value: v}, nil
 }
 
 // settle applies r to the message via the subscription, counts the outcome, and

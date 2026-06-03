@@ -14,6 +14,25 @@ import (
 // goroutines.
 type Handler func(ctx context.Context, m Message) Result
 
+// BatchHandler processes a slice of decoded messages at once and returns one
+// [Result] per message, positionally aligned: the Result at index i settles the
+// message at index i. It is the batch analog of [Handler], invoked by a Hopper
+// run in batch mode (see [WithBatch] and [Hopper.RunBatch]); the engine
+// accumulates messages per ordered lane up to a size or a max-wait bound, hands
+// them to the BatchHandler in one call, then settles each message by its
+// corresponding Result.
+//
+// A BatchHandler MUST return exactly len(ms) results. Returning a different
+// length is a programming error: the engine settles the messages it can pair
+// with a result and terminates any leftover as poison (see [ErrBatchResultCount])
+// so a miscounted batch never silently strands messages.
+//
+// Like [Handler], a BatchHandler must be safe for concurrent use: distinct lanes
+// invoke it in parallel. Messages within a single call always share one ordered
+// lane and arrive in delivery order, so a BatchHandler may rely on per-key
+// ordering within ms.
+type BatchHandler func(ctx context.Context, ms []Message) []Result
+
 // Action is the disposition the Hopper applies to a message after its handler
 // returns. It maps onto each backend's native settle vocabulary.
 type Action uint8

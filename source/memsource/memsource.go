@@ -76,6 +76,8 @@ type Inlet struct {
 	now    func() time.Time
 	nextID func() string
 
+	batched bool
+
 	mu      sync.Mutex
 	queue   []source.Message
 	ledger  *Ledger
@@ -98,6 +100,14 @@ func New(opts ...Option) *Inlet {
 		o(in)
 	}
 	return in
+}
+
+// WithBatched is an [Option] that makes the Inlet's subscriptions implement
+// [source.Batched], so a [source.Hopper] run in batch mode exercises the
+// whole-batch fetch path (NextBatch/SettleBatch) rather than per-message
+// accumulation. The default subscription is the honest per-message common path.
+func WithBatched() Option {
+	return func(in *Inlet) { in.batched = true }
 }
 
 // WithMessages is an [Option] that pre-queues msgs at construction, equivalent
@@ -155,6 +165,9 @@ func (in *Inlet) Subscribe(_ context.Context, _ source.SubscribeConfig) (source.
 	defer in.mu.Unlock()
 	s := &subscription{inlet: in, signal: make(chan struct{}, 1)}
 	in.subs = append(in.subs, s)
+	if in.batched {
+		return &batchedSubscription{subscription: s}, nil
+	}
 	return s, nil
 }
 

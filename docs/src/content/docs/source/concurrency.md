@@ -60,3 +60,62 @@ knows when the consumer is live.
 Ordered-key concurrency is heavily property- and fuzz-tested, and the
 [`memsource`](/crucible/source/reliability/#testing-the-loop) harness lets you
 assert ordering and ack outcomes deterministically with no broker.
+
+## Batch consume
+
+Some handlers are far cheaper per message in groups: a bulk database upsert, a
+single round trip to an index, a vectorized transform. For those, the Hopper has
+a batch mode that accumulates messages per ordered lane and hands them to a
+`BatchHandler` in one call, then settles each message by its own result.
+
+```go
+func(ctx context.Context, ms []source.Message) []source.Result
+```
+
+The contract is positional: the result at index `i` settles the message at index
+`i`, so a batch can ack some messages, nak others, and dead-letter the rest in a
+single pass. A `BatchHandler` must return exactly one result per message; if it
+returns too few, the unmatched messages are terminated as poison
+(`ErrBatchResultCount`) rather than silently stranded.
+
+Enable it with `WithBatch(size, maxWait)` and drive the run with `RunBatch` (or
+`ReceiveBatch`) instead of `Run`:
+
+```go
+hp := source.New(
+    source.WithConcurrency(8),
+    source.WithBatch(100, 50*time.Millisecond),
+)
+err := hp.RunBatch(ctx, sub, func(ctx context.Context, ms []source.Message) []source.Result {
+    res := make([]source.Result, len(ms))
+    // ... handle ms as a group, fill res[i] for each ms[i] ...
+    return res
+})
+```
+
+Each lane buffers up to `size` messages, or until `maxWait` elapses since its
+first buffered message, then flushes. A partial batch left when the run drains is
+flushed before exit, so nothing is lost on shutdown. The `maxWait` timer reads an
+injectable clock (`WithBatchClock`) so a time-triggered flush is deterministic in
+tests.
+
+### Ordering and backpressure still hold
+
+Batch mode keeps every guarantee of the per-message path. A batch only ever
+contains messages from a single ordered lane, delivered in order, so per-key
+ordering is preserved within and across batches. A lane never overlaps two
+batches: it settles the whole group before accepting more. `WithConcurrency`
+bounds how many lanes run their handler at once, and `WithMaxInFlight` still caps
+delivered-but-unsettled messages. When both are set, size the in-flight window to
+at least the batch size (or supply a positive `maxWait`) so a lane can always
+reach a flush.
+
+### Backend batches
+
+When the subscription advertises the `Batched` capability, the engine fetches
+whole batches from the backend and regroups them by key into lanes, rather than
+accumulating one message at a time. Kafka satisfies it naturally (a `PollRecords`
+fetch is already a batch), and JetStream satisfies it through its pull-consumer
+fetch. An adapter without the capability is driven one message at a time and the
+engine does the accumulation; batch mode works either way, the capability just
+skips a layer of per-message hand-off.

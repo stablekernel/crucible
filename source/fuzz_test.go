@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stablekernel/crucible/source"
@@ -71,6 +72,87 @@ func FuzzOrderedSettle(f *testing.F) {
 		}
 
 		// Per key, the processed sequence must be exactly 0,1,2,... in order.
+		for key, want := range perKeyCount {
+			got := processed[key]
+			if len(got) != want {
+				t.Fatalf("key %s processed %d messages, want %d", key, len(got), want)
+			}
+			for i, seq := range got {
+				if seq != i {
+					t.Fatalf("key %s out of order: position %d has seq %d", key, i, seq)
+				}
+			}
+		}
+	})
+}
+
+// FuzzBatchOrderedSettle hammers the batch-mode ordering invariant: across any
+// interleaving of keys, any concurrency bound, and any batch size, every message
+// is handled exactly once (no loss, no duplication) and within a single key the
+// messages are processed in delivery order — the same contract as the per-message
+// path, now through accumulated batches.
+func FuzzBatchOrderedSettle(f *testing.F) {
+	f.Add(uint8(10), uint8(3), uint8(4), uint8(2))
+	f.Add(uint8(64), uint8(8), uint8(1), uint8(7))
+	f.Add(uint8(1), uint8(1), uint8(1), uint8(1))
+	f.Add(uint8(100), uint8(16), uint8(7), uint8(16))
+	f.Add(uint8(0), uint8(4), uint8(2), uint8(3))
+
+	f.Fuzz(func(t *testing.T, count, conc, keyspace, size uint8) {
+		if conc == 0 {
+			conc = 1
+		}
+		if keyspace == 0 {
+			keyspace = 1
+		}
+		if size == 0 {
+			size = 1
+		}
+
+		perKeyCount := make(map[string]int)
+		var msgs []memsource.Msg
+		for i := 0; i < int(count); i++ {
+			key := "k" + strconv.Itoa(i%int(keyspace))
+			seq := perKeyCount[key]
+			perKeyCount[key]++
+			msgs = append(msgs, memsource.Msg{
+				Key:   key,
+				Value: []byte(strconv.Itoa(seq)),
+			})
+		}
+
+		var mu sync.Mutex
+		processed := make(map[string][]int)
+
+		h := memsource.NewHarness(
+			t,
+			[]source.Option{
+				source.WithConcurrency(int(conc)),
+				// A short max-wait guarantees forward progress regardless of how the
+				// keys distribute across lanes (a lane that cannot fill still flushes).
+				source.WithBatch(int(size), time.Millisecond),
+			},
+			msgs...,
+		)
+		h.RunBatch(func(_ context.Context, ms []source.Message) []source.Result {
+			res := make([]source.Result, len(ms))
+			mu.Lock()
+			for i, m := range ms {
+				seq, err := strconv.Atoi(string(m.Value()))
+				if err != nil {
+					res[i] = source.Term(err)
+					continue
+				}
+				processed[string(m.Key())] = append(processed[string(m.Key())], seq)
+				res[i] = source.Ack()
+			}
+			mu.Unlock()
+			return res
+		})
+
+		if got := h.Ledger().Len(); got != int(count) {
+			t.Fatalf("settled %d messages, want %d (no loss or duplication)", got, count)
+		}
 		for key, want := range perKeyCount {
 			got := processed[key]
 			if len(got) != want {

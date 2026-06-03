@@ -413,6 +413,63 @@ func (s *subscription) Settle(ctx context.Context, m source.Message, r source.Re
 	}
 }
 
+// NextBatch returns up to limit messages, satisfying [source.Batched]. It blocks
+// for at least one message (like [Next]), then opportunistically drains further
+// messages the pull consumer has already buffered (bounded by WithPullMaxMessages)
+// without blocking for slow arrivals, so a batch reflects what is ready rather
+// than waiting to fill. Each message is settled individually through
+// [SettleBatch] or the engine's per-message Settle. NextBatch is single-consumer,
+// like Next.
+func (s *subscription) NextBatch(ctx context.Context, limit int) ([]source.Message, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	// Block for the first message, mapping drain/cancel exactly as Next does.
+	first, err := s.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]source.Message, 0, limit)
+	msgs = append(msgs, first)
+
+	// Drain already-buffered messages without blocking for new arrivals: a tiny
+	// deadline turns the iterator's wait into a non-blocking poll, so we collect
+	// what the pull consumer prefetched and return promptly.
+	for len(msgs) < limit {
+		s.mu.Lock()
+		iter := s.iter
+		closed := s.closed
+		s.mu.Unlock()
+		if iter == nil || closed {
+			break
+		}
+		pollCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+		msg, perr := iter.Next(jetstream.NextContext(pollCtx))
+		cancel()
+		if perr != nil {
+			// No more ready right now (deadline), or the stream ended: return what
+			// we have. A real error surfaces on the next NextBatch call.
+			break
+		}
+		msgs = append(msgs, newMessage(msg))
+	}
+	return msgs, nil
+}
+
+// SettleBatch applies r to every message in ms in one call, satisfying
+// [source.Batched]. It settles each message through the same per-message ack
+// vocabulary as [Settle], returning the first error encountered while still
+// attempting every message.
+func (s *subscription) SettleBatch(ctx context.Context, ms []source.Message, r source.Result) error {
+	var firstErr error
+	for _, m := range ms {
+		if err := s.Settle(ctx, m, r); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Close stops the message iterator and marks the subscription drained. It is
 // idempotent. In-flight messages already returned by Next are left for the
 // caller to settle; once stopped, Next returns [source.ErrDrained].
@@ -532,4 +589,5 @@ var (
 	_ source.Seekable        = (*subscription)(nil)
 	_ source.OrderedDelivery = (*subscription)(nil)
 	_ source.LagReporter     = (*subscription)(nil)
+	_ source.Batched         = (*subscription)(nil)
 )
