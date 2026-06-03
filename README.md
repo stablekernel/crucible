@@ -1,17 +1,21 @@
-# Crucible
+<h1 align="center">Crucible</h1>
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/stablekernel/crucible/state.svg)](https://pkg.go.dev/github.com/stablekernel/crucible/state)
-[![Go Report Card](https://goreportcard.com/badge/github.com/stablekernel/crucible/state)](https://goreportcard.com/report/github.com/stablekernel/crucible/state)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/stablekernel/crucible?filename=state%2Fgo.mod)](./state/go.mod)
-[![Docs](https://img.shields.io/badge/docs-crucible-E8702A)](https://stablekernel.github.io/crucible/)
-[![Discussions](https://img.shields.io/github/discussions/stablekernel/crucible)](https://github.com/stablekernel/crucible/discussions)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/stablekernel/crucible/state"><img src="https://pkg.go.dev/badge/github.com/stablekernel/crucible/state.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/stablekernel/crucible/state"><img src="https://goreportcard.com/badge/github.com/stablekernel/crucible/state" alt="Go Report Card"></a>
+  <a href="./state/go.mod"><img src="https://img.shields.io/github/go-mod/go-version/stablekernel/crucible?filename=state%2Fgo.mod" alt="Go Version"></a>
+  <a href="https://stablekernel.github.io/crucible/"><img src="https://img.shields.io/badge/docs-crucible-E8702A" alt="Docs"></a>
+  <a href="https://github.com/stablekernel/crucible/actions/workflows/docs-deploy.yml"><img src="https://github.com/stablekernel/crucible/actions/workflows/docs-deploy.yml/badge.svg" alt="Deploy docs"></a>
+  <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"></a>
+  <a href="./CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant 2.1"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
+</p>
 
 <p align="center">
   <img src="docs/src/assets/mascot.png" alt="The Crucible sky-squid mascot" width="220">
 </p>
 
-**Forge event-driven services in Go.**
+<p align="center"><strong>Forge event-driven services in Go.</strong></p>
 
 Crucible is a multi-module Go toolkit for building event-driven services. Its
 design philosophy is **thin seams, no-op defaults, no forced dependencies**:
