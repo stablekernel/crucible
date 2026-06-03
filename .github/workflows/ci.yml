@@ -131,6 +131,12 @@ jobs:
       - name: golangci-lint (sink/slog)
         working-directory: sink/slog
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (source)
+        working-directory: source
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (source/statemachine)
+        working-directory: source/statemachine
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
 
   # The state-machine race-test matrix lives in a reusable workflow so its legs
   # render as a single collapsible "state machine tests / …" tree in the checks
@@ -152,6 +158,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/sink.yml
+
+  # Every source-domain check (in-workspace race tests, the SDK-backed source
+  # module matrix, and the integration leg) groups under a single collapsible
+  # "source / …" tree via this reusable workflow.
+  source:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/source.yml
 
   vuln:
     needs: changes
@@ -219,6 +233,12 @@ jobs:
         run: go run "$GOVULNCHECK" ./...
       - name: govulncheck (sink/slog)
         working-directory: sink/slog
+        run: go run "$GOVULNCHECK" ./...
+      - name: govulncheck (source)
+        working-directory: source
+        run: go run "$GOVULNCHECK" ./...
+      - name: govulncheck (source/statemachine)
+        working-directory: source/statemachine
         run: go run "$GOVULNCHECK" ./...
 
   coverage:
@@ -418,6 +438,26 @@ jobs:
           echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+      - name: coverage gate (source)
+        working-directory: source
+        # The ingestion core holds a tighter floor than the suite default: the
+        # Hopper, Handler, codec, and capability seams are the load-bearing surface.
+        env:
+          THRESHOLD: "90"
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+      - name: coverage gate (source/statemachine)
+        working-directory: source/statemachine
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
 
   # Benchmark regression gate. Runs the state benchmarks on the PR head and on
   # the PR base on the SAME runner, then benchstat-diffs them. Running both refs
@@ -550,7 +590,7 @@ jobs:
   # never blocks a merge.
   gate:
     if: always()
-    needs: [changes, lint, tests, sink, vuln, coverage, docs]
+    needs: [changes, lint, tests, sink, source, vuln, coverage, docs]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a required job did not pass
@@ -561,4 +601,4 @@ jobs:
       - name: Required jobs passed
         run: echo "Required jobs passed or were skipped (${{ join(needs.*.result, ', ') }})."
 
-# As modules land (broker, store, sink), add their dirs to each job.
+# As modules land (broker, store, sink, source), add their dirs to each job.
