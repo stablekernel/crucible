@@ -30,11 +30,17 @@ func (fullCap) SettleBatch(context.Context, []source.Message, source.Result) err
 	return nil
 }
 
-func (fullCap) Begin(_ context.Context, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (fullCap) Begin(_ context.Context, _ source.Message, fn func(context.Context, source.Tx) error) error {
+	return fn(context.Background(), txStub{})
 }
-func (fullCap) Seen(context.Context, string) (bool, error) { return false, nil }
-func (fullCap) Lag(context.Context) (int64, error)         { return 0, nil }
+
+// txStub is a no-op [source.Tx] that records nothing; it satisfies the produce
+// handle the capability hands to a transactional work function.
+type txStub struct{}
+
+func (txStub) Produce(context.Context, ...source.ProducedRecord) error { return nil }
+func (fullCap) Seen(context.Context, string) (bool, error)             { return false, nil }
+func (fullCap) Lag(context.Context) (int64, error)                     { return 0, nil }
 
 func TestCapabilities_DetectedByTypeAssertion(t *testing.T) {
 	t.Parallel()
@@ -72,7 +78,7 @@ func TestCapabilities_DetectedByTypeAssertion(t *testing.T) {
 	_ = c.SeekToEnd(context.Background())
 	_, _ = c.NextBatch(context.Background(), 1)
 	_ = c.SettleBatch(context.Background(), nil, source.Ack())
-	_ = c.Begin(context.Background(), func(context.Context) error { return nil })
+	_ = c.Begin(context.Background(), nil, func(context.Context, source.Tx) error { return nil })
 	_, _ = c.Seen(context.Background(), "k")
 	_, _ = c.Lag(context.Background())
 }

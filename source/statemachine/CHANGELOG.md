@@ -12,6 +12,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - `Drive` binding: routes a `source.Message` to an instance key and event, loads
   the instance through a `Store`, fires the event, hands the emitted effects to a
   `Sink`, persists the new state, and acks only after the durable commit.
+- `DriveTx` binding: the exactly-once consume-process-produce mode for a
+  `source.Transactional` subscription (Kafka EOS). It fires the transition,
+  produces the emitted effects through a `TxSink` onto the open transaction,
+  persists the new state, and lets the transaction commit the produced records
+  and the consumed offset atomically, returning `source.Manual`. A `TxSink`
+  (`TxSinkFunc`) maps each effect to records on a `source.Tx`. `ErrNotTransactional`
+  reports a nil `Transactional` or `TxSink` at wiring time.
 - `DriveFunc` binding: the stateless mode, firing each message against a
   caller-supplied `FireFunc` with no persistence.
 - `Store` interface and `Record` type for durable instance persistence, with the

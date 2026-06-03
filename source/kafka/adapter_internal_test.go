@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,13 +60,23 @@ func TestOptionsApply(t *testing.T) {
 	WithDLQTopic("orders.DLQ")(&cfg)
 	WithMaxPollRecords(128)(&cfg)
 	WithBalancer(kgo.CooperativeStickyBalancer())(&cfg)
-	WithTransactional()(&cfg)
+	WithTransactional("orders-eos-v1")(&cfg)
 
 	if len(cfg.seedBrokers) != 2 || cfg.clientID != "crucible" || cfg.dlqTopic != "orders.DLQ" {
 		t.Errorf("config = %+v, want seeds/clientID/dlq applied", cfg)
 	}
-	if cfg.maxPoll != 128 || len(cfg.balancers) != 1 || !cfg.transact {
+	if cfg.maxPoll != 128 || len(cfg.balancers) != 1 || !cfg.transact || cfg.transactID != "orders-eos-v1" {
 		t.Errorf("config = %+v, want maxPoll/balancer/transact applied", cfg)
+	}
+}
+
+func TestWithTransactionalEmptyIDIgnored(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{}
+	WithTransactional("")(&cfg)
+	if cfg.transact || cfg.transactID != "" {
+		t.Errorf("WithTransactional(\"\") = %+v, want non-transactional", cfg)
 	}
 }
 
@@ -365,10 +376,236 @@ func TestBeginWithoutTransactionalFails(t *testing.T) {
 	t.Parallel()
 
 	sub := newSub(&fakePoller{})
-	err := sub.Begin(context.Background(), func(context.Context) error { return nil })
+	m := newMessage(rec("orders", 0, 0, "k", "v"))
+	err := sub.Begin(context.Background(), m, func(context.Context, source.Tx) error { return nil })
 	if !errors.Is(err, errNotTransactional) {
 		t.Fatalf("Begin() = %v, want errNotTransactional", err)
 	}
+}
+
+// fakeTransactor is a hand-rolled [transactor] that records the begin/produce/end
+// call sequence so the EOS choreography is asserted with no broker. It returns a
+// scripted commit/abort outcome and optional errors at each step.
+type fakeTransactor struct {
+	mu sync.Mutex
+
+	calls     []string        // ordered record of begin/produce/end
+	produced  [][]*kgo.Record // records per ProduceSync call
+	beginErr  error
+	produceTr error
+	endErr    error
+	committed bool
+}
+
+func (f *fakeTransactor) Begin() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "begin")
+	return f.beginErr
+}
+
+func (f *fakeTransactor) ProduceSync(_ context.Context, rs ...*kgo.Record) kgo.ProduceResults {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "produce")
+	f.produced = append(f.produced, rs)
+	out := make(kgo.ProduceResults, len(rs))
+	for i, r := range rs {
+		out[i] = kgo.ProduceResult{Record: r, Err: f.produceTr}
+	}
+	return out
+}
+
+func (f *fakeTransactor) End(_ context.Context, commit kgo.TransactionEndTry) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if commit == kgo.TryCommit {
+		f.calls = append(f.calls, "end-commit")
+	} else {
+		f.calls = append(f.calls, "end-abort")
+	}
+	return f.committed, f.endErr
+}
+
+func newTxSub(ft *fakeTransactor) (*subscription, *fakePoller) {
+	fp := &fakePoller{}
+	return &subscription{client: fp, group: "g", dlqTopic: "orders.DLQ", transactSess: ft}, fp
+}
+
+func TestBeginCommitsOnSuccessAfterProduce(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, fp := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		return tx.Produce(ctx, source.ProducedRecord{
+			Topic:   "orders.out",
+			Key:     []byte("A-1"),
+			Value:   []byte("emitted"),
+			Headers: source.Headers{{Key: "message-id", Value: "evt-1"}},
+		})
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v, want nil", err)
+	}
+	// The consumed record is marked (inside the tx, before End-commit) so its
+	// offset commits atomically with the produced record.
+	if got := fp.markedCount(); got != 1 {
+		t.Errorf("marked = %d, want 1 (consumed offset marked on commit)", got)
+	}
+	if got, want := ft.calls, []string{"begin", "produce", "end-commit"}; !equalStrings(got, want) {
+		t.Fatalf("call order = %v, want %v", got, want)
+	}
+	if len(ft.produced) != 1 || len(ft.produced[0]) != 1 {
+		t.Fatalf("produced = %#v, want one record in one ProduceSync", ft.produced)
+	}
+	pr := ft.produced[0][0]
+	if pr.Topic != "orders.out" || string(pr.Key) != "A-1" || string(pr.Value) != "emitted" {
+		t.Errorf("produced record = %+v, want orders.out/A-1/emitted", pr)
+	}
+	if len(pr.Headers) != 1 || pr.Headers[0].Key != "message-id" || string(pr.Headers[0].Value) != "evt-1" {
+		t.Errorf("produced headers = %+v, want message-id=evt-1", pr.Headers)
+	}
+}
+
+func TestBeginAbortsAndReturnsWorkError(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{}
+	sub, fp := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+	boom := errors.New("handler boom")
+
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		_ = tx.Produce(ctx, source.ProducedRecord{Topic: "orders.out", Value: []byte("v")})
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Begin() = %v, want the work error", err)
+	}
+	// On abort the consumed record is NOT marked, so the input is redelivered.
+	if got := fp.markedCount(); got != 0 {
+		t.Errorf("marked = %d on abort, want 0 (offset not committed)", got)
+	}
+	if got, want := ft.calls, []string{"begin", "produce", "end-abort"}; !equalStrings(got, want) {
+		t.Fatalf("call order = %v, want %v (abort on work error)", got, want)
+	}
+}
+
+func TestBeginAbortsWhenProduceFails(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{produceTr: errors.New("produce rejected")}
+	sub, fp := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		// A failed produce is returned by the work function, aborting the tx.
+		return tx.Produce(ctx, source.ProducedRecord{Topic: "orders.out", Value: []byte("v")})
+	})
+	if err == nil {
+		t.Fatal("Begin() = nil, want the produce error")
+	}
+	if got := fp.markedCount(); got != 0 {
+		t.Errorf("marked = %d on produce failure, want 0", got)
+	}
+	if got, want := ft.calls, []string{"begin", "produce", "end-abort"}; !equalStrings(got, want) {
+		t.Fatalf("call order = %v, want %v", got, want)
+	}
+}
+
+func TestBeginReportsBrokerAbortOnSuccessfulWork(t *testing.T) {
+	t.Parallel()
+
+	// Work succeeds but End reports the transaction did not commit (a fence/abort
+	// by the broker, e.g. a rebalance): Begin surfaces errTransactionAborted so
+	// the caller treats the cycle as not-committed and the input is redelivered.
+	ft := &fakeTransactor{committed: false}
+	sub, _ := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+
+	err := sub.Begin(context.Background(), m, func(context.Context, source.Tx) error { return nil })
+	if !errors.Is(err, errTransactionAborted) {
+		t.Fatalf("Begin() = %v, want errTransactionAborted", err)
+	}
+	if got, want := ft.calls, []string{"begin", "end-commit"}; !equalStrings(got, want) {
+		t.Fatalf("call order = %v, want %v", got, want)
+	}
+}
+
+func TestBeginPropagatesBeginError(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{beginErr: errors.New("cannot begin")}
+	sub, _ := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+	ran := false
+	err := sub.Begin(context.Background(), m, func(context.Context, source.Tx) error {
+		ran = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("Begin() = nil, want the begin error")
+	}
+	if ran {
+		t.Error("work function ran despite a begin failure")
+	}
+}
+
+func TestBeginRejectsForeignMessage(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, _ := newTxSub(ft)
+	err := sub.Begin(context.Background(), foreignMessage{}, func(context.Context, source.Tx) error { return nil })
+	if !errors.Is(err, errNotKafkaMessage) {
+		t.Fatalf("Begin(foreign) = %v, want errNotKafkaMessage", err)
+	}
+}
+
+func TestTxProduceRejectsEmptyTopic(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, _ := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		return tx.Produce(ctx, source.ProducedRecord{Value: []byte("no topic")})
+	})
+	if !errors.Is(err, errEmptyTopic) {
+		t.Fatalf("Begin() = %v, want errEmptyTopic", err)
+	}
+}
+
+func TestTxProduceNoRecordsIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, _ := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 7, "A-1", "placed"))
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		return tx.Produce(ctx) // no records
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v, want nil", err)
+	}
+	if got, want := ft.calls, []string{"begin", "end-commit"}; !equalStrings(got, want) {
+		t.Fatalf("call order = %v, want %v (no produce for an empty batch)", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestPartitionOrderedMarker(t *testing.T) {

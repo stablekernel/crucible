@@ -81,6 +81,7 @@ type config struct {
 	balancers   []kgo.GroupBalancer
 	maxPoll     int
 	transact    bool
+	transactID  string
 	extraOpts   []kgo.Opt
 	client      *kgo.Client
 }
@@ -177,12 +178,25 @@ func WithMaxPollRecords(n int) Option {
 }
 
 // WithTransactional enables Kafka exactly-once semantics: the subscription
-// satisfies [source.Transactional], fencing settlement of consumed records
-// inside a producer transaction so consume-process-produce is atomic. It
-// requires a transactional ID, which franz-go derives; the inlet builds a
-// kgo.GroupTransactSession instead of a plain client.
-func WithTransactional() Option {
-	return func(c *config) { c.transact = true }
+// satisfies [source.Transactional], fencing the records produced while
+// processing and the consumed offset inside one producer transaction so
+// consume-process-produce is atomic. The inlet builds a kgo.GroupTransactSession
+// instead of a plain client, configured with the given transactional ID,
+// read-committed fetch isolation (so it never reads another producer's
+// uncommitted records), and no auto-commit (the transaction commits offsets).
+//
+// transactionalID must be stable and unique to this logical consumer across
+// restarts: it is the producer fencing token Kafka uses to detect a zombie
+// instance. Reusing one transactional ID across two live consumers of the same
+// partitions fences one of them. An empty transactionalID is ignored and the
+// inlet stays non-transactional.
+func WithTransactional(transactionalID string) Option {
+	return func(c *config) {
+		if transactionalID != "" {
+			c.transact = true
+			c.transactID = transactionalID
+		}
+	}
 }
 
 // WithClientOptions appends raw franz-go options for tuning this package does
@@ -290,6 +304,32 @@ func (in *Inlet) consumeOpts(sc source.SubscribeConfig) []kgo.Opt {
 	return opts
 }
 
+// transactOpts assembles the franz-go options for an EOS group transact session:
+// the base group options without auto-commit (the transaction commits offsets),
+// the transactional ID that fences a zombie producer, and read-committed fetch
+// isolation so the consumer never reads another producer's uncommitted records.
+// Auto-committing is disabled during transactional consuming, so this path does
+// NOT add AutoCommitMarks; the engine still marks records, and End commits the
+// marked offsets transactionally.
+func (in *Inlet) transactOpts(sc source.SubscribeConfig) []kgo.Opt {
+	opts := in.baseOpts()
+	opts = append(opts,
+		kgo.ConsumeTopics(sc.Topics...),
+		kgo.TransactionalID(in.cfg.transactID),
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+		// A safe processing window: a rebalance cannot move partitions mid-batch,
+		// and franz-go aborts the in-flight transaction on a rebalance.
+		kgo.BlockRebalanceOnPoll(),
+	)
+	if sc.Group != "" {
+		opts = append(opts, kgo.ConsumerGroup(sc.Group))
+	}
+	if len(in.cfg.balancers) > 0 {
+		opts = append(opts, kgo.Balancers(in.cfg.balancers...))
+	}
+	return opts
+}
+
 // Subscribe builds (or reuses) the franz-go client for cfg and returns a live
 // [source.Subscription]. At least one topic is required. The returned
 // subscription owns the rebalance hooks, so it must be installed before the
@@ -306,6 +346,11 @@ func (in *Inlet) Subscribe(_ context.Context, cfg source.SubscribeConfig) (sourc
 
 	if in.client == nil {
 		opts := in.consumeOpts(cfg)
+		if in.cfg.transact {
+			// The transactional path uses read-committed isolation, a
+			// transactional ID, and no auto-commit; build its own option set.
+			opts = in.transactOpts(cfg)
+		}
 		// The subscription's rebalance trampolines are installed at client
 		// build time so assign/revoke callbacks registered later still fire.
 		opts = append(opts,

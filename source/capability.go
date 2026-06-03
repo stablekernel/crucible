@@ -113,14 +113,66 @@ type Batched interface {
 	SettleBatch(ctx context.Context, ms []Message, r Result) error
 }
 
-// Transactional is a [Subscription] that can fence message settlement inside a
-// transaction, so consume-process-produce is atomic (exactly-once into a sink).
+// Transactional is a [Subscription] that can fence message settlement and the
+// records produced while processing inside one transaction, so a
+// consume-process-produce cycle is atomic: the produced records and the consumed
+// offsets are committed together or not at all (exactly-once into a sink).
 // Satisfied by Kafka (EOS) only. JetStream has no equivalent and does NOT
 // implement it — the capability is absent rather than faked.
+//
+// The contract is read-only on the message side: a transaction does not change
+// how a delivered [Message] is settled (the engine still marks/commits the
+// consumed offsets); it adds an atomic boundary that ties any records produced
+// through the [Tx] to that settlement. Use it through the state-machine bridge
+// (Drive) or directly: assert a subscription to Transactional, then run the
+// produce side of the work inside [Transactional.Begin].
 type Transactional interface {
-	// Begin starts a transaction; settlement of messages received during it is
-	// committed or aborted atomically with the work done inside fn.
-	Begin(ctx context.Context, fn func(ctx context.Context) error) error
+	// Begin starts a transaction around processing the consumed message m and runs
+	// fn inside it, handing fn a [Tx] to produce records on. If fn returns nil the
+	// transaction commits: every record produced through tx is flushed AND m's
+	// consumed offset is committed in one atomic unit, so the emitted records and
+	// the ack of the input that produced them are exactly-once. If fn returns an
+	// error, or the consumer is fenced by a rebalance, the transaction aborts: the
+	// produced records are discarded and m's offset is not committed, so m is
+	// redelivered. Begin returns fn's error on abort, or a non-nil error if the
+	// commit itself failed.
+	//
+	// m must be a message this subscription delivered. Begin is the only settle
+	// path for m when used transactionally: the caller does NOT also call
+	// [Subscription.Settle] for m, because Begin commits its offset itself.
+	Begin(ctx context.Context, m Message, fn func(ctx context.Context, tx Tx) error) error
+}
+
+// Tx is the backend-neutral produce handle a [Transactional.Begin] hands to its
+// work function: records produced through it are buffered into the in-flight
+// transaction and committed atomically with the consumed offsets, or discarded
+// if the transaction aborts. It carries no vendor type; a power user who needs
+// the native producer reaches it through the subscription's As escape hatch
+// instead. A Tx is valid only for the duration of the Begin call that produced
+// it; using it afterward is a programming error.
+type Tx interface {
+	// Produce enqueues records into the open transaction. They are not visible to
+	// a read-committed consumer until the transaction commits. A non-nil error
+	// means the produce failed (so the work function should return it, aborting the
+	// transaction); a nil error means the records are buffered, not yet committed.
+	Produce(ctx context.Context, records ...ProducedRecord) error
+}
+
+// ProducedRecord is a backend-neutral record emitted inside a [Tx]: a topic (or
+// subject), an optional partitioning key, a value, and optional headers. It is
+// the produce-side mirror of the read-only [Message] the consumer delivers, kept
+// free of vendor types so the bridge can build it without importing an adapter.
+type ProducedRecord struct {
+	// Topic is the destination topic (Kafka) or subject the record is produced to.
+	// It is required; an empty Topic is a programming error.
+	Topic string
+	// Key is the optional partitioning key. An empty key lets the backend choose a
+	// partition.
+	Key []byte
+	// Value is the record payload.
+	Value []byte
+	// Headers are optional record headers carried alongside the value.
+	Headers Headers
 }
 
 // Deduper is a [Subscription] (or an inlet seam) that suppresses re-delivery of
