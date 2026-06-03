@@ -41,6 +41,42 @@ func ExampleHopper() {
 	// order B qty 5
 }
 
+// ExampleHopper_batch shows batch consume: WithBatch accumulates up to size
+// messages per ordered lane, the BatchHandler processes them in one call, and the
+// engine settles each message by its corresponding Result (positionally aligned).
+func ExampleHopper_batch() {
+	in := memsource.New(memsource.WithMessages(
+		memsource.Msg{Key: "A", Value: []byte(`{"id":"A","qty":2}`)},
+		memsource.Msg{Key: "A", Value: []byte(`{"id":"A","qty":3}`)},
+		memsource.Msg{Key: "A", Value: []byte(`{"id":"A","qty":5}`)},
+	))
+
+	hp := source.New(
+		source.WithCodec(source.NewJSONCodec[orderPlaced]()),
+		source.WithBatch(2, 0), // batches of up to 2; the third flushes on drain
+	)
+
+	sub, _ := in.Subscribe(context.Background(), source.SubscribeConfig{Topics: []string{"orders"}})
+	_ = sub.Close()
+
+	_ = hp.RunBatch(context.Background(), sub, func(_ context.Context, ms []source.Message) []source.Result {
+		total := 0
+		for _, m := range ms {
+			v, _ := source.Decoded(m)
+			total += v.(orderPlaced).Qty
+		}
+		fmt.Printf("batch of %d, qty sum %d\n", len(ms), total)
+		res := make([]source.Result, len(ms))
+		for i := range res {
+			res[i] = source.Ack()
+		}
+		return res
+	})
+	// Output:
+	// batch of 2, qty sum 5
+	// batch of 1, qty sum 5
+}
+
 // ExampleChain shows middleware composition: the first middleware listed is the
 // outermost, so a message flows outer to inner and the result returns inner to
 // outer.

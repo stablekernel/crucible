@@ -123,6 +123,89 @@ func (s *subscription) takeBuffered() (*kgo.Record, bool) {
 	return rec, true
 }
 
+// takeBatch pops up to limit records from the buffer and counts them in flight.
+// It reports false only when the buffer is empty, so [NextBatch] can fall through
+// to a poll.
+func (s *subscription) takeBatch(limit int) ([]*kgo.Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.buffer) == 0 {
+		return nil, false
+	}
+	n := limit
+	if n > len(s.buffer) {
+		n = len(s.buffer)
+	}
+	recs := s.buffer[:n:n]
+	s.buffer = s.buffer[n:]
+	s.inFlight += n
+	return recs, true
+}
+
+// NextBatch returns up to limit buffered records, polling the broker when the
+// buffer is empty, satisfying [source.Batched]. franz-go already fetches in
+// batches (PollRecords), so this exposes a poll's records as a group rather than
+// draining them one at a time; the engine settles each through SettleBatch.
+// NextBatch is single-consumer, like Next.
+func (s *subscription) NextBatch(ctx context.Context, limit int) ([]source.Message, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	for {
+		if recs, ok := s.takeBatch(limit); ok {
+			msgs := make([]source.Message, len(recs))
+			for i, rec := range recs {
+				msgs[i] = newMessage(rec)
+			}
+			return msgs, nil
+		}
+
+		s.mu.Lock()
+		drained := s.closed && s.inFlight == 0
+		s.mu.Unlock()
+		if drained {
+			return nil, source.ErrDrained
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		s.client.AllowRebalance()
+		fetches := s.client.PollRecords(ctx, s.maxPoll)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if errs := fetches.Errors(); len(errs) > 0 {
+			for _, fe := range errs {
+				if fe.Err != nil && fe.Err != context.Canceled && fe.Err != context.DeadlineExceeded {
+					return nil, fmt.Errorf("source/kafka: poll %s[%d]: %w", fe.Topic, fe.Partition, fe.Err)
+				}
+			}
+		}
+		recs := fetches.Records()
+		if len(recs) == 0 {
+			continue
+		}
+		s.mu.Lock()
+		s.buffer = recs
+		s.mu.Unlock()
+	}
+}
+
+// SettleBatch applies r to every message in ms in one call, satisfying
+// [source.Batched]. It settles each record through the same per-record path as
+// [Settle] (mark, produce-to-DLQ, or no-op), returning the first error
+// encountered while still attempting every message.
+func (s *subscription) SettleBatch(ctx context.Context, ms []source.Message, r source.Result) error {
+	var firstErr error
+	for _, m := range ms {
+		if err := s.Settle(ctx, m, r); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Settle applies r to a record previously returned by Next, translating the
 // [source.Action] onto Kafka's commit/produce vocabulary per the ack model.
 // Settle may be called from many worker goroutines and is safe for concurrent
@@ -285,4 +368,5 @@ var (
 	_ source.PartitionOrdered = (*subscription)(nil)
 	_ source.LagReporter      = (*subscription)(nil)
 	_ source.Transactional    = (*subscription)(nil)
+	_ source.Batched          = (*subscription)(nil)
 )

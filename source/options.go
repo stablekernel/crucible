@@ -4,6 +4,7 @@ package source
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/stablekernel/crucible/telemetry"
 )
@@ -19,6 +20,19 @@ type config struct {
 	middleware  []Middleware
 	concurrency int
 	maxInFlight int
+
+	// batch holds the batch-mode tuning; batch.enabled is false unless WithBatch
+	// is supplied, in which case RunBatch/ReceiveBatch accumulate per lane.
+	batch batchConfig
+}
+
+// batchConfig holds the resolved batch-mode seams. now is injected (mirroring
+// sink.Reservoir) so max-wait flushing is deterministic in tests.
+type batchConfig struct {
+	enabled bool
+	size    int
+	maxWait time.Duration
+	now     func() time.Time
 }
 
 // defaultConfig returns the no-op defaults: a discarding logger, the no-op
@@ -34,6 +48,9 @@ func defaultConfig() config {
 		meter:       telemetry.NopMeter(),
 		concurrency: 1,
 		maxInFlight: 0,
+		batch: batchConfig{
+			now: time.Now,
+		},
 	}
 }
 
@@ -136,6 +153,55 @@ func WithMaxInFlight(n int) Option {
 	return func(c *config) {
 		if n >= 0 {
 			c.maxInFlight = n
+		}
+	}
+}
+
+// WithBatch enables batch mode for a Hopper driven with [Hopper.RunBatch] or
+// [Hopper.ReceiveBatch]. Within each ordered lane the engine accumulates up to
+// size messages, or until maxWait elapses since the lane's first buffered
+// message, then invokes the [BatchHandler] once with the accumulated slice and
+// settles each message by its corresponding [Result]. Per-key ordering and the
+// [WithMaxInFlight] bound are preserved: a lane never overlaps two batches, and a
+// batch is settled before the lane accepts more.
+//
+// When the subscription implements [Batched], whole fetched batches are handed to
+// lanes as a unit (still re-grouped by key so a lane only ever sees its own keys
+// in order); otherwise the engine accumulates per-message under the size/maxWait
+// policy. maxWait uses the clock from [WithBatchClock] (default time.Now), so a
+// max-wait flush is deterministic in tests.
+//
+// A size < 1 is treated as 1 (every message is its own batch). A maxWait <= 0
+// disables the timer, so a lane flushes only when it reaches size or the run
+// drains. WithBatch only takes effect for the RunBatch/ReceiveBatch entry points;
+// it is ignored by the per-message [Hopper.Run] and [Hopper.Receive].
+//
+// Tuning note: a lane buffers up to size delivered-but-unsettled messages, each
+// holding a [WithMaxInFlight] slot until the batch is dispatched. Set maxInFlight
+// to at least size (times the number of concurrently filling lanes you expect),
+// or supply a positive maxWait, so a lane can always reach a flush. With both
+// maxWait <= 0 and maxInFlight < size a single busy lane can stall waiting for
+// slots it will never get; the size/maxWait pair is the intended steady-state
+// trigger.
+func WithBatch(size int, maxWait time.Duration) Option {
+	return func(c *config) {
+		if size < 1 {
+			size = 1
+		}
+		c.batch.enabled = true
+		c.batch.size = size
+		c.batch.maxWait = maxWait
+	}
+}
+
+// WithBatchClock injects the clock the batch engine reads to time a lane's
+// max-wait flush, for deterministic tests (mirroring sink.WithReservoirClock).
+// The default is time.Now. A nil clock is ignored. It has no effect unless
+// [WithBatch] is also supplied.
+func WithBatchClock(now func() time.Time) Option {
+	return func(c *config) {
+		if now != nil {
+			c.batch.now = now
 		}
 	}
 }

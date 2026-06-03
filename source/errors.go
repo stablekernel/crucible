@@ -33,6 +33,13 @@ var ErrPoison = errors.New("source: poison message")
 // errors.Is rather than by string-matching the underlying error.
 var ErrRetryable = errors.New("source: retryable error")
 
+// ErrBatchResultCount reports that a [BatchHandler] returned a result slice
+// whose length does not match the batch it was given. The Hopper settles the
+// messages it can pair with a result and terminates any unmatched message as
+// poison carrying this sentinel, so a miscounted batch fails loudly rather than
+// stranding messages. Match it with errors.Is.
+var ErrBatchResultCount = errors.New("source: batch handler returned wrong number of results")
+
 // ErrInvalidForState classifies a well-formed message that is not legal for its
 // target's current state — a guard rejection from the state-machine bridge. It
 // is the errors.Is-matchable sentinel for the [InvalidForState] classification,

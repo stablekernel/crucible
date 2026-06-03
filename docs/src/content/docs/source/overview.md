@@ -91,7 +91,7 @@ no-op and forcing nothing third-party on the consumer.
 ## Next
 
 - [The Inlet and Hopper model](/crucible/source/model/): the vocabulary and the ack model.
-- [Ordered concurrency and backpressure](/crucible/source/concurrency/): the spine.
+- [Ordered concurrency and backpressure](/crucible/source/concurrency/): the spine, including batch consume.
 - [Adapters](/crucible/source/adapters/): Kafka and JetStream, plus the per-backend capability table.
 - [Reliability middleware](/crucible/source/reliability/): retry, DLQ, idempotency, schema.
 - [Codecs and headers](/crucible/source/codecs/): the instance-scoped registry and CloudEvents.

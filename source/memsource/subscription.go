@@ -64,7 +64,15 @@ func (s *subscription) notify() {
 }
 
 // Next returns the next queued message, blocking until one is queued, the
-// context is canceled, or the subscription is closed and drained.
+// context is canceled, or the subscription is closed and its queue is empty.
+//
+// Drain reports ErrDrained as soon as the subscription is closed and no queued
+// message remains, independent of messages still in flight: settling those is the
+// engine's drain responsibility (it finishes its lanes after the fetch loop
+// stops), not a precondition for "nothing left to fetch". Gating drain on
+// in-flight==0 would deadlock batch mode, where the engine holds a trailing
+// partial batch unsettled until the fetch loop closes its lanes — which it cannot
+// do while still blocked here waiting for that very batch to settle.
 func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 	for {
 		if m, ok := s.inlet.take(); ok {
@@ -75,7 +83,7 @@ func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 		}
 
 		s.mu.Lock()
-		drained := s.closed && s.inFlight == 0
+		drained := s.closed
 		s.mu.Unlock()
 		if drained {
 			return nil, source.ErrDrained
@@ -120,3 +128,51 @@ func (s *subscription) Close() error {
 }
 
 var _ source.Subscription = (*subscription)(nil)
+
+// batchedSubscription is a [subscription] that also satisfies [source.Batched],
+// used to exercise the engine's whole-batch fetch path. It is opt-in via
+// [WithBatched] so the default memsource subscription stays the honest
+// per-message common path.
+type batchedSubscription struct {
+	*subscription
+}
+
+// NextBatch returns up to limit queued messages, blocking for at least one
+// (delegating to Next) and then draining whatever else is queued without
+// blocking, so the engine receives a backend-shaped batch.
+func (b *batchedSubscription) NextBatch(ctx context.Context, limit int) ([]source.Message, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	first, err := b.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+	msgs := []source.Message{first}
+	for len(msgs) < limit {
+		m, ok := b.inlet.take()
+		if !ok {
+			break
+		}
+		b.mu.Lock()
+		b.inFlight++
+		b.mu.Unlock()
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
+}
+
+// SettleBatch settles every message in ms with r, recording each on the ledger.
+func (b *batchedSubscription) SettleBatch(ctx context.Context, ms []source.Message, r source.Result) error {
+	for _, m := range ms {
+		if err := b.Settle(ctx, m, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var (
+	_ source.Subscription = (*batchedSubscription)(nil)
+	_ source.Batched      = (*batchedSubscription)(nil)
+)

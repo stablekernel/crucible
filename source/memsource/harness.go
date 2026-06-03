@@ -28,7 +28,16 @@ type Harness struct {
 // t.Cleanup.
 func NewHarness(tb testing.TB, opts []source.Option, msgs ...Msg) *Harness {
 	tb.Helper()
-	in := New(WithMessages(msgs...))
+	return NewHarnessWith(tb, opts, nil, msgs...)
+}
+
+// NewHarnessWith is [NewHarness] with extra inlet options, e.g. [WithBatched] to
+// exercise the engine's whole-batch fetch path or [WithClock] for a deterministic
+// settle clock. inletOpts is applied after the pre-queued msgs.
+func NewHarnessWith(tb testing.TB, opts []source.Option, inletOpts []Option, msgs ...Msg) *Harness {
+	tb.Helper()
+	all := append([]Option{WithMessages(msgs...)}, inletOpts...)
+	in := New(all...)
 	hp := source.New(opts...)
 	tb.Cleanup(func() { _ = hp.Close() })
 	return &Harness{tb: tb, inlet: in, hopper: hp}
@@ -72,6 +81,34 @@ func (h *Harness) RunFor(timeout time.Duration, handler source.Handler) {
 
 	if err := h.hopper.Run(ctx, sub, handler); err != nil {
 		h.tb.Fatalf("memsource: Hopper.Run returned %v", err)
+	}
+}
+
+// RunBatch drives the queued messages through bh in batch mode, the batch analog
+// of [Run]. The Hopper must have been built with [source.WithBatch] for batching
+// to take effect; otherwise every batch holds one message. It closes the inlet's
+// subscription so the Hopper drains once the queue empties, flushing any partial
+// final batch, and fails the test on an unexpected run error. It uses a bounded
+// 5s timeout; use [RunBatchFor] to override.
+func (h *Harness) RunBatch(bh source.BatchHandler) {
+	h.tb.Helper()
+	h.RunBatchFor(5*time.Second, bh)
+}
+
+// RunBatchFor is [RunBatch] with an explicit timeout.
+func (h *Harness) RunBatchFor(timeout time.Duration, bh source.BatchHandler) {
+	h.tb.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	sub, err := h.inlet.Subscribe(ctx, source.SubscribeConfig{})
+	if err != nil {
+		h.tb.Fatalf("memsource: Subscribe failed: %v", err)
+	}
+	_ = sub.Close()
+
+	if err := h.hopper.RunBatch(ctx, sub, bh); err != nil {
+		h.tb.Fatalf("memsource: Hopper.RunBatch returned %v", err)
 	}
 }
 
