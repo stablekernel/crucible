@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	kafkasource "github.com/stablekernel/crucible/source/kafka"
 )
@@ -53,4 +54,18 @@ func RunKafka(ctx context.Context, logger *slog.Logger, cfg KafkaConfig) error {
 
 	f := NewFulfillment()
 	return Run(ctx, logger, inlet, f, []string{cfg.Topic}, cfg.Group)
+}
+
+// SplitBrokers splits a comma-separated broker list into trimmed, non-empty
+// seed-broker addresses. It lives in the package (not the cmd shell) so the
+// flag-parsing entrypoint stays a thin, untested wrapper around tested logic.
+func SplitBrokers(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

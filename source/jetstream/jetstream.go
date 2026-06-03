@@ -349,10 +349,16 @@ func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	msg, err := iter.Next()
+	// Pass the caller's context to the iterator so a deadline or cancellation
+	// bounds the wait: without it the iterator blocks indefinitely when no
+	// message arrives, which would let a Hopper (or test) hang past its deadline.
+	msg, err := iter.Next(jetstream.NextContext(ctx))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgIteratorClosed) {
 			return nil, source.ErrDrained
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("jetstream: next: %w", err)
 	}

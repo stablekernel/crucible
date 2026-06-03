@@ -12,6 +12,8 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/redpanda"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/stablekernel/crucible/source"
@@ -44,6 +46,12 @@ func TestIntegrationConsumeAckTermRoundTrip(t *testing.T) {
 		dlq   = "orders.DLQ"
 		group = "orders-consumer"
 	)
+
+	// Create the source and dead-letter topics up front so neither the producer
+	// below nor the Inlet's internal DLQ producer races topic auto-creation. The
+	// Inlet's DLQ client does not enable AllowAutoTopicCreation, so the DLQ topic
+	// must exist before the first Term settles.
+	createTopics(ctx, t, broker, topic, dlq)
 
 	// Produce two records with a separate client.
 	prod, err := kgo.NewClient(
@@ -132,6 +140,32 @@ func TestIntegrationConsumeAckTermRoundTrip(t *testing.T) {
 	}
 	if !hasHeader(recs[0].Headers, "crucible-class", "poison") {
 		t.Errorf("dlq record missing crucible-class=poison header: %+v", recs[0].Headers)
+	}
+}
+
+// createTopics creates the given topics (one partition, replication factor one)
+// against the broker and waits for the admin call to succeed, so produces never
+// race auto-creation. An already-exists result is treated as success.
+func createTopics(ctx context.Context, t *testing.T, broker string, topics ...string) {
+	t.Helper()
+	admClient, err := kgo.NewClient(kgo.SeedBrokers(broker))
+	if err != nil {
+		t.Fatalf("admin client error = %v", err)
+	}
+	defer admClient.Close()
+
+	adm := kadm.NewClient(admClient)
+	createCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := adm.CreateTopics(createCtx, 1, 1, nil, topics...)
+	if err != nil {
+		t.Fatalf("CreateTopics(%v) error = %v", topics, err)
+	}
+	for _, ct := range resp {
+		if ct.Err != nil && !errors.Is(ct.Err, kerr.TopicAlreadyExists) {
+			t.Fatalf("CreateTopics(%q) error = %v", ct.Topic, ct.Err)
+		}
 	}
 }
 

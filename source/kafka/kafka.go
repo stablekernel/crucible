@@ -344,6 +344,11 @@ func (in *Inlet) Close() error {
 	if !in.ownsClient || in.client == nil {
 		return nil
 	}
+	// Release any rebalance the final poll left blocked. With
+	// BlockRebalanceOnPoll set, LeaveGroup during Close waits for an
+	// AllowRebalance that the now-stopped poll loop will never make, so Close
+	// would deadlock; calling it here lets the client leave the group cleanly.
+	in.client.AllowRebalance()
 	if in.transactSess != nil {
 		in.transactSess.Close()
 	} else {
