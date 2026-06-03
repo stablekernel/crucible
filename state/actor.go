@@ -294,6 +294,19 @@ func NewActor[S comparable, E comparable, C any](inst *Instance[S, E, C], output
 	return a
 }
 
+// inheritObservability puts the actor's backing child instance into the parent's
+// trace mode: full trace, and (for a durable parent) unbounded history retention so
+// the actor's own snapshot round-trips its Traces. The ActorSystem calls it (via an
+// optional-interface assertion) when its parent runs that way, so a journal/replay
+// host that drives the parent — the durable runner — records each actor's rich
+// per-step trace and EventPayload too. It is an internal observability gate, not
+// part of the ActorInstance contract, so a host's own ActorInstance implementation
+// is unaffected.
+func (a *actorAdapter[S, E, C]) inheritObservability(full, unbounded bool) {
+	a.inst.traceFull = full
+	a.inst.histUnbounded = unbounded
+}
+
 // isActorEffect reports whether an effect is one the ActorSystem acts on: a
 // lifecycle effect (SpawnActor / StopActor) or an actor-communication send effect
 // (SendTo / SendParent / RespondToSender / ForwardEvent). Other effects (e.g. a

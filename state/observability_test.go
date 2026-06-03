@@ -396,6 +396,69 @@ func TestHistory_DefaultReturnsNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. Restore trace mode: WithRestoreFullTrace / WithRestoreUnboundedHistory.
+// ---------------------------------------------------------------------------
+
+// TestRestore_TraceModeOptIn asserts a restored instance is lite by default (a
+// subsequent Fire omits rich fields and does not retain new traces), that
+// WithRestoreFullTrace restores full per-step traces without continued retention,
+// and that WithRestoreUnboundedHistory restores full traces AND keeps retaining
+// them — the mode the durable runner relies on for byte-identical replay. (Restore
+// always seeds history from the snapshot's traces, so the distinguishing behavior
+// is whether later Fires are rich and whether they keep accumulating.)
+func TestRestore_TraceModeOptIn(t *testing.T) {
+	m := buildToggleMachine()
+	ctx := context.Background()
+
+	src := m.Cast(nil, state.WithInitialState[toggleState](toggleA), state.WithUnboundedHistory[toggleState]())
+	src.Fire(ctx, toggleGo)
+	snap := src.Snapshot()
+
+	// Default restore: lite Fire (no rich fields) and no further retention.
+	lite, err := m.Restore(snap)
+	if err != nil {
+		t.Fatalf("Restore (default): %v", err)
+	}
+	base := len(lite.History())
+	r := lite.Fire(ctx, toggleGo)
+	if len(r.Trace.EnteredStates) != 0 || len(r.Trace.EffectsEmitted) != 0 {
+		t.Errorf("default restore should fire lite, got rich fields: %+v", r.Trace)
+	}
+	if got := len(lite.History()); got != base {
+		t.Errorf("default restore should not retain new traces: %d -> %d", base, got)
+	}
+
+	// WithRestoreFullTrace: rich Fire, but still no continued retention.
+	full, err := m.Restore(snap, state.WithRestoreFullTrace[toggleState]())
+	if err != nil {
+		t.Fatalf("Restore (full trace): %v", err)
+	}
+	fbase := len(full.History())
+	rf := full.Fire(ctx, toggleGo)
+	if len(rf.Trace.EnteredStates) == 0 || len(rf.Trace.EffectsEmitted) == 0 {
+		t.Errorf("WithRestoreFullTrace should populate rich fields, got %+v", rf.Trace)
+	}
+	if got := len(full.History()); got != fbase {
+		t.Errorf("WithRestoreFullTrace should not retain new traces: %d -> %d", fbase, got)
+	}
+
+	// WithRestoreUnboundedHistory: rich Fire AND continued unbounded retention.
+	dur, err := m.Restore(snap, state.WithRestoreUnboundedHistory[toggleState]())
+	if err != nil {
+		t.Fatalf("Restore (unbounded): %v", err)
+	}
+	dbase := len(dur.History())
+	dur.Fire(ctx, toggleGo)
+	dur.Fire(ctx, toggleGo)
+	if got := len(dur.History()); got != dbase+2 {
+		t.Errorf("WithRestoreUnboundedHistory should keep retaining: %d -> %d (want +2)", dbase, got)
+	}
+	if h := dur.History(); len(h[len(h)-1].EnteredStates) == 0 {
+		t.Errorf("retained trace under unbounded restore should be full, got %+v", h[len(h)-1])
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 6. Label cache: m.label correctness.
 // ---------------------------------------------------------------------------
 

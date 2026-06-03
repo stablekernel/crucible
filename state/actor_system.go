@@ -287,6 +287,22 @@ func (s *ActorSystem[S, E, C]) absorb(ctx context.Context, effects []Effect, cur
 // spawn creates and registers a running actor from a SpawnActor effect. On an
 // unbound Src it fires the parent's onError (when usable) so completion still
 // routes.
+// propagateTrace puts a freshly spawned or restored child actor into full trace
+// mode when the parent instance runs in full mode, so the parent's observability
+// choice (notably a journal/replay host such as the durable runner) reaches the
+// whole actor subtree. It uses an optional-interface assertion so a host's own
+// ActorInstance implementation is left untouched.
+func (s *ActorSystem[S, E, C]) propagateTrace(inst ActorInstance) {
+	if s.parent == nil || !s.parent.traceFull {
+		return
+	}
+	if ft, ok := inst.(interface {
+		inheritObservability(full, unbounded bool)
+	}); ok {
+		ft.inheritObservability(s.parent.traceFull, s.parent.histUnbounded)
+	}
+}
+
 func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 	s.mu.Lock()
 	behavior, ok := s.palette[e.Src.Name]
@@ -305,6 +321,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 		s.routeError(ctx, e, err)
 		return
 	}
+	s.propagateTrace(inst)
 
 	ra := &runningActor[E]{
 		inst:  inst,

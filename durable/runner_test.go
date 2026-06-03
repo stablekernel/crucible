@@ -95,7 +95,10 @@ func parallelMachine() *state.Machine[string, string, *runCtx] {
 // recovered instance must match byte-for-byte.
 func liveSnapshotBytes[C any](t *testing.T, m *state.Machine[string, string, C], initial string, entity C, events []string) []byte {
 	t.Helper()
-	inst := m.Cast(entity, state.WithInitialState(initial))
+	// The Runner records in full-trace, unbounded-history mode, so the never-durable
+	// reference must run in the same mode for a byte-identical snapshot comparison;
+	// a plain (lite) cast would omit the recorded Trace history.
+	inst := m.Cast(entity, state.WithInitialState(initial), state.WithUnboundedHistory[string]())
 	ctx := context.Background()
 	for _, ev := range events {
 		if res := inst.Fire(ctx, ev); res.Err != nil {
