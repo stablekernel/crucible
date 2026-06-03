@@ -69,4 +69,4 @@ Stability label: **experimental** (pre-v1).
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).
+Apache 2.0. See [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).

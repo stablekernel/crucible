@@ -21,7 +21,7 @@ m.Sink(ctx, OrderShipped{OrderID: "ord-42"})
 
 `Client` is a narrow two-method interface (`PutRecord`, `PutRecords`) satisfied
 structurally by `*github.com/aws/aws-sdk-go-v2/service/kinesis.Client`. Tests
-use a hand-rolled fake — no AWS credentials needed.
+use a hand-rolled fake, no AWS credentials needed.
 
 ## Op constructors
 

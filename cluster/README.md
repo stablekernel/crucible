@@ -14,13 +14,13 @@ Import path: `github.com/stablekernel/crucible/cluster`
 `state` runs a machine and its child-machine actors in one process. `cluster`
 spreads that across nodes: a parent on one node addresses and drives an actor
 running on another, failures are supervised with restart/backoff strategies, and
-a running instance can be migrated to a different node — all over a pluggable
+a running instance can be migrated to a different node, all over a pluggable
 `Transport`, with the kernel left **pure and stdlib-only**.
 
 The runtime is **additive** over the kernel. It consumes seams the kernel already
-reserves — the opaque `ActorRef` (whose `Node` locator names the owning host), the
+reserves (the opaque `ActorRef` whose `Node` locator names the owning host, the
 injectable `ActorSystem`, the `Snapshot`/`Restore` pair, and the typed
-`ActorEscalation`/`EscalationHandler` — and needs no kernel change beyond the
+`ActorEscalation`/`EscalationHandler`) and needs no kernel change beyond the
 additive `ActorRef.Node` locator. The core is itself stdlib-only; transport
 dependencies live behind the `Transport` interface, out of the core.
 
@@ -81,7 +81,7 @@ system clock), so it is deterministic under a `state.FakeClock` in tests.
 
 `Capture` snapshots a running instance, its actor tree, and its machine definition
 into a wire-shippable `Checkpoint`; `Restore` rebuilds it on another node, resuming
-in place. The move is **gated on schema compatibility**: `Restore` diffs the
+in place. The move is **gated on schema compatibility**. `Restore` diffs the
 source and target machine definitions with [`state/evolution`](../state/evolution)
 and refuses a breaking target with `ErrIncompatibleMigration`, so an instance never
 resumes against a definition that would misread its state.

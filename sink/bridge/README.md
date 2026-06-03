@@ -1,7 +1,7 @@
 # sink/bridge
 
 Composes a [`crucible/state`](../../state) machine with a [`crucible/sink`](../)
-`Manifold` so every state transition fans out to all attached destinations —
+`Manifold` so every state transition fans out to all attached destinations,
 without either core importing the other.
 
 ```go

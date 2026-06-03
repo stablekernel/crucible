@@ -36,7 +36,7 @@ When reporting, please include:
 
 ## Supply chain
 
-The pure kernel (`state`) is **stdlib-only** by design — a tiny dependency graph
+The pure kernel (`state`) is **stdlib-only** by design: a tiny dependency graph
 is a tiny attack surface. IO modules keep their dependency sets small and
 justified. We run `govulncheck` in CI, use Dependabot for dependency updates,
 and treat release provenance as a first-class concern.

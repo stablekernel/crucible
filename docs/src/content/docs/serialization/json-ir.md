@@ -24,7 +24,7 @@ if err != nil {
 ## Load
 
 `LoadFromJSON` rehydrates the IR. It is generic over the same state, event, and
-context types the machine was forged with, and it returns an `*IR` — pure data,
+context types the machine was forged with, and it returns an `*IR`: pure data,
 not yet a runnable machine.
 
 ```go
@@ -48,7 +48,7 @@ m := ir.Provide(reg).Quench()
 ```
 
 If a ref does not resolve, it surfaces at `Quench` as the same typed error the
-fluent DSL raises for an unregistered binding — a JSON-authored machine and a
+fluent DSL raises for an unregistered binding: a JSON-authored machine and a
 code-authored one fail identically.
 
 ## The Ref model
@@ -65,6 +65,6 @@ type Ref struct {
 
 `Name` keys the registry. `Params` carry serializable configuration. `Meta` is a
 reserved, round-tripped extension namespace the kernel never inspects. Reach for
-the JSON IR whenever you need **persistence**, **interchange**, or **tooling** —
+the JSON IR whenever you need **persistence**, **interchange**, or **tooling**:
 anywhere the definition must outlive or travel beyond the process that forged it.
 See [the IR and the split](/crucible/concepts/ir-and-the-split/) for the model.

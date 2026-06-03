@@ -8,7 +8,7 @@ sidebar:
 The context type `C` flows through a Crucible machine **by value**. Guards and
 actions receive a copy of the context; they cannot mutate the instance. The only
 place the context changes is an **assign reducer**, and a reducer does not mutate
-in place — it returns the *next* context:
+in place. It returns the *next* context:
 
 ```go
 type AssignFn[C any] func(in AssignCtx[C]) C
@@ -29,7 +29,7 @@ shared mutable state is ever touched.
 
 ## Why value semantics
 
-Treating context as an immutable value — replaced, never edited — is what gives
+Treating context as an immutable value, replaced and never edited, is what gives
 `Fire` its guarantees:
 
 - **Snapshots.** The instance's state is fully captured by its current
@@ -43,7 +43,7 @@ Treating context as an immutable value — replaced, never edited — is what gi
 
 ## The pointer escape hatch
 
-A pointer `C` (for example `*Order`) compiles and runs — but it forfeits all of
+A pointer `C` (for example `*Order`) compiles and runs, but it forfeits all of
 the above. With a pointer, a reducer can mutate shared state out from under
 snapshots and replay, and the determinism guarantees no longer hold. Reach for a
 pointer only as a deliberate escape hatch (e.g. an entity too large to copy on a

@@ -20,9 +20,9 @@ kernel, which stays pure and stdlib-only.
   drives an instance statelessly (load, replay, fire, re-record per call);
   `Handle.Fire` drives a held instance directly for hot paths. Every step is
   write-ahead appended before it is acknowledged.
-- **Recovery.** `Recover` reconstructs an instance purely from the `Store` —
-  loading the latest checkpoint and replaying the recorded tail through the pure
-  transition function — and returns a `Handle` that continues recording.
+- **Recovery.** `Recover` reconstructs an instance purely from the `Store`
+  (loading the latest checkpoint and replaying the recorded tail through the pure
+  transition function) and returns a `Handle` that continues recording.
 - **Three nondeterministic seams.** A recording clock (`WithRunnerClock`)
   journals every `Now()` reading so timers fire at the same recorded instants on
   recovery, wall-clock-independent, with armed deadlines surviving checkpoint

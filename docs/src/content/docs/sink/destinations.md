@@ -5,14 +5,14 @@ sidebar:
   order: 4
 ---
 
-<!-- IMAGE-SLOT: sink-destination-molds — a rack of distinct casting molds (each etched with a destination glyph: a database, a cloud, a gauge, a stream), interchangeable on the same manifold runner; sky-squid swapping one in — 16:9 -->
+<!-- IMAGE-SLOT: sink-destination-molds: a rack of distinct casting molds (each etched with a destination glyph: a database, a cloud, a gauge, a stream), interchangeable on the same manifold runner; sky-squid swapping one in; 16:9 -->
 ![Interchangeable destination molds on one manifold](../../../assets/sink-destination-molds.png)
 
 Every destination is its **own optional Go module**. The sink core imports no
 vendor SDK; you add `crucible/sink/dynamo` only if you sink to DynamoDB, and its
 AWS dependency never touches a service that does not. Each module exposes a
-**narrow client interface** — only the methods it actually calls — so it is
-trivially faked in tests with no live cloud and no mocking framework.
+**narrow client interface** (only the methods it actually calls), so it is
+easily faked in tests with no live cloud and no mocking framework.
 
 ## The Emitter pattern
 
@@ -27,7 +27,7 @@ type Op[C any] interface {
 
 You register a transformer per payload type; an unregistered type returns
 `ErrUnregistered`, which the Manifold treats as a silent skip. There is **no
-package-global registry** — every `Registry` is constructed and injected, so two
+package-global registry**: every `Registry` is constructed and injected, so two
 emitters never share state.
 
 ```go
@@ -43,13 +43,13 @@ A lookup miss is a skip; an `Apply` failure is wrapped as `*sink.Error` with
 
 ## Worked examples
 
-- **`sql`** — stdlib `database/sql` through a narrow `Tx` interface
+- **`sql`**: stdlib `database/sql` through a narrow `Tx` interface
   (`ExecContext`), satisfied by `*sql.DB`, `*sql.Tx`, and `*sql.Conn`. **Zero
   driver dependency**: the model destination, and the one to read first.
-- **`dynamo`** — Amazon DynamoDB over a narrow client interface covering the
+- **`dynamo`**: Amazon DynamoDB over a narrow client interface covering the
   full write surface (`PutItem`, `UpdateItem`, `DeleteItem`, `TransactWriteItems`,
   `BatchWriteItem`). The richest `Op[Client]` example.
-- **`statsd`** — a stateful **aggregator** that folds counts and gauges by
+- **`statsd`**: a stateful **aggregator** that folds counts and gauges by
   `(name, tags)` and flushes to a DogStatsD client on an interval (injected
   clock). The stateful-outlet example, implementing `Flusher` and `Shutdowner`.
 
@@ -58,7 +58,7 @@ Their full APIs are in the [reference](/crucible/reference/) (`sink`,
 
 ## The full catalog
 
-Every destination follows the same shape — narrow interface, `Op` constructors,
+Every destination follows the same shape: narrow interface, `Op` constructors,
 hand-rolled fakes, an `Example`, and a `sinktest.OutletConformance` check:
 
 | Module | Destination |
@@ -82,13 +82,13 @@ hand-rolled fakes, an `Example`, and a `sinktest.OutletConformance` check:
 | `sink/kafka` | Apache Kafka |
 | `sink/gcppubsub` | Google Cloud Pub/Sub |
 
-The `http`, `slog`, and `file` destinations are **stdlib-only** — no third-party
-dependency at all.
+The `http`, `slog`, and `file` destinations are **stdlib-only**, with no
+third-party dependency at all.
 
 ## Verifying your own outlet
 
 Writing a destination the suite does not ship? The `sinktest` package validates
-any `Outlet` against the contract — skip-on-unregistered, error propagation, safe
+any `Outlet` against the contract: skip-on-unregistered, error propagation, safe
 concurrent use, idempotent flush and shutdown:
 
 ```go

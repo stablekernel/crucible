@@ -21,19 +21,19 @@ Crucible is a multi-module Go toolkit for building event-driven services. Its
 design philosophy is **thin seams, no-op defaults, no forced dependencies**:
 every cross-cutting concern (logging, tracing, metrics, IDs, time) is a small,
 consumer-providable interface with a do-nothing default. You bring *your*
-logger, *your* tracer, *your* clock — Crucible never makes you adopt its
+logger, *your* tracer, *your* clock. Crucible never makes you adopt its
 choices, and never leaks a third-party type into a public signature.
 
 The `state` engine is the extreme end of this: **stdlib-only**, with no injected
 IO at all. The IO modules carry the heavier seams via injection, but follow the
-same rule — defaults are no-ops, nothing third-party is forced on the consumer.
+same rule. Defaults are no-ops, nothing third-party is forced on the consumer.
 
 ## Documentation
 
 Guides, concepts, the food-delivery example, and the generated API reference live
 in the documentation site:
 
-### 👉 **[stablekernel.github.io/crucible](https://stablekernel.github.io/crucible/)**
+### **[stablekernel.github.io/crucible](https://stablekernel.github.io/crucible/)**
 
 ## Modules
 
@@ -51,40 +51,40 @@ stability label.
 | `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
 | `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
 | `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
-| `broker`              | Message broker seam — publish/subscribe transport with injected adapters.        | planned      |
+| `broker`              | Message broker seam: publish/subscribe transport with injected adapters.         | planned      |
 | `store`               | Durable state/event store seam with graceful lifecycle.                          | planned      |
 | `sink`                | Egress seam: fan emitted effects out to many destinations, fire-and-forget.      | experimental |
 
 The engine emits effects as pure data; the IO modules are the thin seams that
-carry those effects to real transports, stores, and sinks — each
+carry those effects to real transports, stores, and sinks. Each is
 "bring your own adapter," none forced on the consumer.
 
 ## Status
 
 Early and evolving. The `state` module is now a complete, embeddable statechart
-engine — hierarchical, parallel, and final states; history; guard combinators;
+engine, covering hierarchical, parallel, and final states; history; guard combinators;
 delayed transitions; invoked services; an actor model with message passing;
-snapshots; inspection; and JSON (de)serialization — backed by its `analysis`,
+snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis`,
 `evolution`, and `conformance` companion packages. Treat its API as experimental
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `sink` egress seam and its destination
 adapters are now available and documented; the `broker` and `store` modules are
 planned.
 
-## Roadmap — event-driven seams
+## Roadmap: event-driven seams
 
 The kernel emits effects as pure data; a small family of bring-your-own-adapter
 IO seams moves events to and from the outside world, each defaulting to a no-op
 and forcing nothing third-party on the consumer:
 
-- **`broker`** _(planned)_ — pub/sub transport: publish emitted events and
+- [ ] **`broker`** _(planned)_: pub/sub transport. Publish emitted events and
   subscribe machines to external streams.
-- **`sink`** — egress fan-out: dispatch emitted effects to many outlets (SQL,
-  Dynamo, StatsD, …), fire-and-forget.
+- [x] **`sink`**: egress fan-out. Dispatch emitted effects to many outlets (SQL,
+  Dynamo, StatsD, and more), fire-and-forget.
   [Docs](https://stablekernel.github.io/crucible/sink/overview/).
-- **`source`** _(exploring)_ — ingress: subscribe external streams and drive
+- [ ] **`source`** _(exploring)_: ingress. Subscribe external streams and drive
   machines; the symmetric counterpart to `sink`.
-- **`bellows`** _(exploring)_ — resilience seam: circuit-breaking and
+- [ ] **`bellows`** _(exploring)_: resilience seam. Circuit-breaking and
   backpressure around the IO edges.
 
 Durable state and event persistence is tracked separately with the `durable`
@@ -95,8 +95,8 @@ runtime, not here.
 Design rationale, concepts, and guides live on the
 [documentation site](https://stablekernel.github.io/crucible/). Start with:
 
-- [Suite overview & philosophy](https://stablekernel.github.io/crucible/about/overview/)
-  — the suite-wide baseline every module is built to.
+- [Suite overview & philosophy](https://stablekernel.github.io/crucible/about/overview/):
+  the suite-wide baseline every module is built to.
 - [State machine introduction](https://stablekernel.github.io/crucible/start/introduction/)
 - [Concepts: machine & instance](https://stablekernel.github.io/crucible/concepts/machine-and-instance/)
 

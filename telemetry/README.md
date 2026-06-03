@@ -7,8 +7,8 @@ Import path: `github.com/stablekernel/crucible/telemetry`
 
 ## What it is
 
-`telemetry` is a small, stable set of interfaces — `Tracer`/`Span`,
-`Meter`/`Counter`/`Histogram`/`Gauge`, and the `Attr` attribute type — that the
+`telemetry` is a small, stable set of interfaces (`Tracer`/`Span`,
+`Meter`/`Counter`/`Histogram`/`Gauge`, and the `Attr` attribute type) that the
 suite's IO modules (`sink`, `broker`, `store`) depend on for observability.
 
 It imports **only the Go standard library** and forces **no vendor SDK** on any
@@ -36,7 +36,7 @@ Meter.Counter(name, opts...)   -> Counter.Add(ctx, n int64, attrs...)
 Meter.Histogram(name, opts...) -> Histogram.Record(ctx, v float64, attrs...)
 Meter.Gauge(name, opts...)     -> Gauge.Record(ctx, v float64, attrs...)
 
-// Attributes — Attr is an alias for the stdlib's slog.Attr
+// Attributes: Attr is an alias for the stdlib's slog.Attr
 type Attr = slog.Attr
 telemetry.String(k, v) / Int64 / Int / Uint64 / Float64 / Bool / Duration / Time
 telemetry.Any(k, v)                     // explicit boxing escape hatch
@@ -45,23 +45,23 @@ telemetry.Any(k, v)                     // explicit boxing escape hatch
 WithUnit(unit) / WithDescription(desc)  // InstrumentOption
 ```
 
-- **Counters** are monotonic `int64` deltas — every counted thing (records sunk,
+- **Counters** are monotonic `int64` deltas. Every counted thing (records sunk,
   failures, drops) is whole-numbered, which keeps adapter mappings exact.
 - **Histograms** and **gauges** carry `float64` samples so sub-unit measurements
   (fractional milliseconds) are not truncated.
-- **`Attr` is `slog.Attr`** — its value is a `slog.Value`, the stdlib's
+- **`Attr` is `slog.Attr`**: its value is a `slog.Value`, the stdlib's
   allocation-optimized tagged union. Build attributes with the typed constructors
-  (`telemetry.String`, `Int64`, `Float64`, `Bool`, …). The scalar constructors
+  (`telemetry.String`, `Int64`, `Float64`, `Bool`, ...). The scalar constructors
   are **zero-allocation** (the value is stored inline, never boxed) and
   type-safe: adapters read `Value.Kind` plus the typed accessors. `telemetry.Any`
-  is the documented escape hatch for an arbitrary value — it boxes into an
+  is the documented escape hatch for an arbitrary value; it boxes into an
   interface and so **allocates**, so reach for it only when no typed constructor
   fits. All of this stays within the standard library.
 
 ## Context propagation is the seam
 
 `Tracer.Start` returns a context carrying the new span. Propagate that context
-into nested work and a downstream span — in this module or another — parents
+into nested work and a downstream span (in this module or another) parents
 under the caller's span automatically. There is no shared global tracer and no
 package-level state; context is the only coupling.
 
@@ -108,7 +108,7 @@ optional sub-modules so the core never imports a vendor SDK.
 
 | Adapter                | Status   | Deps |
 | ---------------------- | -------- | ---- |
-| [`telemetry/slog`](slog/README.md) | shipped  | stdlib `log/slog` only — emits spans/metrics as structured logs |
+| [`telemetry/slog`](slog/README.md) | shipped  | stdlib `log/slog` only; emits spans/metrics as structured logs |
 | [`telemetry/otel`](otel/README.md) | shipped  | OpenTelemetry SDK (in its own `go.mod`) |
 | [`telemetry/datadog`](datadog/README.md) | shipped  | `dd-trace-go` / `datadog-go` (in their own `go.mod`) |
 
@@ -127,4 +127,4 @@ Stability label: **experimental** (pre-v1).
 
 ## License
 
-Apache 2.0 — see [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
+Apache 2.0. See [LICENSE](../LICENSE) and [NOTICE](../NOTICE).

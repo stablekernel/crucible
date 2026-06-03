@@ -11,7 +11,7 @@ sidebar:
 ## Machine: the frozen definition
 
 A `*Machine[S, E, C]` is the immutable result of `Quench`. It holds the states,
-transitions, and name-bound behavior — but no per-entity data and no mutable
+transitions, and name-bound behavior, but no per-entity data and no mutable
 state. Because it is immutable, a single `*Machine` is safe to share across
 goroutines and reuse for the lifetime of your process. You forge and quench it
 once:
@@ -20,7 +20,7 @@ once:
 m := state.Forge[Gate, Signal, Turnstile]("turnstile").
     Initial(Locked).
     Transition(Locked).On(Coin).GoTo(Unlocked).
-    Quench() // *Machine — immutable, share freely
+    Quench() // *Machine, immutable, share freely
 ```
 
 ## Instance: the running entity
@@ -32,7 +32,7 @@ it with `Cast`, seeding it with your context value:
 inst := m.Cast(Turnstile{Coins: 0})
 ```
 
-`Cast` is cheap — create as many instances as you have entities. Each carries
+`Cast` is cheap: create as many instances as you have entities. Each carries
 its own current state and context; none of them mutate the shared `*Machine`.
 
 ## The cast/fire loop

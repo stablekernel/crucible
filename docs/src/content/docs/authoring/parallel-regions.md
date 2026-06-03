@@ -5,12 +5,12 @@ sidebar:
   order: 2
 ---
 
-<!-- IMAGE-SLOT: orthogonal-lanes — sky-squid with two tentacles steering two parallel glowing lanes split by a dashed divider, kitchen lane and timer lane — 16:9 -->
+<!-- IMAGE-SLOT: orthogonal-lanes (sky-squid with two tentacles steering two parallel glowing lanes split by a dashed divider, kitchen lane and timer lane) 16:9 -->
 ![Parallel regions](../../../assets/orthogonal-lanes.png)
 
 Some concerns are genuinely independent: a kitchen prepping food while an SLA clock ticks. Modelling them as one flat sequence forces a false ordering. A **parallel super state** declares two or more orthogonal **regions** that are all active at once. Each region tracks its own leaf, and the machine's active configuration is the *union* of every region's current leaf.
 
-Open each region with `Region`, give it an `Initial` child, and close it with `EndRegion`. In the food-delivery example, `Active` runs a **Fulfillment** region (kitchen → courier) alongside a **Watchdog** region (an SLA timer):
+Open each region with `Region`, give it an `Initial` child, and close it with `EndRegion`. In the food-delivery example, `Active` runs a **Fulfillment** region (kitchen then courier) alongside a **Watchdog** region (an SLA timer):
 
 ```go
 SuperState(Active).
@@ -49,4 +49,4 @@ stateDiagram-v2
     Active --> Settling : DroppedOff
 ```
 
-The Watchdog is observational — it records a breach without blocking fulfillment — proving regions can advance at their own pace.
+The Watchdog is observational: it records a breach without blocking fulfillment, proving regions can advance at their own pace.

@@ -5,7 +5,7 @@ All notable changes to `crucible/state/expr` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 This is the opt-in rich-expression tier; the kernel (the `state` module) stays
-dependency-free, and `expr` depends on `state` — never the reverse.
+dependency-free, and `expr` depends on `state`, never the reverse.
 
 ## [0.1.0]
 
@@ -26,12 +26,12 @@ evaluates synchronously inside the pure `Fire` step.
 - Determinism-stripped environment. The CEL environment is built from the
   standard library with no extension libraries and no host-declared functions, and
   the standard library carries no ambient or nondeterministic builtin (no `now`,
-  no `random`), so a compiled guard is a pure function of its context — safe to
+  no `random`), so a compiled guard is a pure function of its context, safe to
   evaluate inside `Fire` and to replay.
 - Authoring-time type checking. A guard is parsed and *checked* against the
   `ContextSchema` before it is usable, so a type error (unknown field, mismatched
   comparison) surfaces at compile time rather than at `Fire` time.
-- Core → CEL equivalence. `Lower` translates a Core `state.GuardNode` tree into an
+- Core-to-CEL equivalence. `Lower` translates a Core `state.GuardNode` tree into an
   equivalent CEL program, and `EvalLowered` evaluates it; a conformance test
   asserts the Core in-kernel evaluator and the lowered CEL program agree, so the
   two tiers cannot drift on the shared fragment (boolean / compare / membership /

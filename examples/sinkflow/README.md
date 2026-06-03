@@ -1,4 +1,4 @@
-# sinkflow — the flagship intermingling example
+# sinkflow: the flagship intermingling example
 
 A running [`crucible/state`](../../state) machine whose every transition fans out
 through a [`crucible/sink`](../../sink) `Manifold` into several destinations, all
@@ -16,13 +16,13 @@ order machine ──(bridge.Middleware)──▶ Manifold ──┬─▶ analyt
 
 What the test asserts (`sinkflow_test.go`), all hermetic and deterministic:
 
-- **Delivery** — analytics and audit each receive all three transitions; the
+- **Delivery**: analytics and audit each receive all three transitions; the
   warehouse, which rejects the dispatch transition, receives the other two. One
   outlet's failure never stops the fan-out.
-- **Span nesting** — with one tracer shared by the manifold and the bridge, each
+- **Span nesting**: with one tracer shared by the manifold and the bridge, each
   `sink.Sink` span nests under its `state.transition` span (the context the
   middleware started flows into the emit).
-- **Failure visibility** — the induced warehouse failure is observed on both the
+- **Failure visibility**: the induced warehouse failure is observed on both the
   provided `slog` logger (one ERROR record) and the `sink.failed` counter.
 
 The real-emulator integration variant (LocalStack, containers) runs behind the

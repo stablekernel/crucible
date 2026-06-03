@@ -15,7 +15,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `telemetry.Meter` on DogStatsD, wired into a consumer via
   `telemetry.WithTracer`/`telemetry.WithMeter`.
 - `Tracer.Start` starts a span from the context for parentage; attributes become
-  span tags; `Span.RecordError` and `Span.SetStatus(Error, …)` mark the span
+  span tags; `Span.RecordError` and `Span.SetStatus(Error, ...)` mark the span
   errored and attach the error on `Finish`. The span starter is injectable
   (`WithSpanStarter`) for testing with `mocktracer`.
 - Metric instruments emit `statsd.Count`/`Histogram`/`Gauge`, converting

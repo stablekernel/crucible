@@ -2,7 +2,7 @@
 
 A [`crucible/sink`](../) destination that persists payloads through the standard
 library's `database/sql`. Runtime dependencies: the standard library and
-`crucible/sink` only — no driver, no ORM.
+`crucible/sink` only, no driver, no ORM.
 
 ```go
 reg := sql.NewRegistry()
