@@ -5,6 +5,9 @@ sidebar:
   order: 4
 ---
 
+<!-- IMAGE-SLOT: effect-conveyor — sky-squid placing sealed effect parcels onto a conveyor belt labelled "host dispatches", kernel booth stays still — 16:9 -->
+![Actions and effects](../../../assets/effect-conveyor.png)
+
 An **action** describes something the outside world should do: send an email, charge a card, emit a metric. Attach one with `Do`, naming an `ActionFn` registered on the machine. Multiple `Do` calls run **in declared order**:
 
 ```go
@@ -37,7 +40,3 @@ stateDiagram-v2
 ```
 
 Contrast this with an **assign**. An assign rewrites the machine's own context (the next state of your data). An action emits a request for the world to change. A transition often does both — fold the new totals into context with `Assign`, and ask the host to notify the customer with `Do` — but they never blur: assigns mutate context, effects describe IO, and only the host acts on the latter.
-
-<!-- IMAGE-SLOT: effect-conveyor — sky-squid placing sealed effect parcels onto a conveyor belt labelled "host dispatches", kernel booth stays still — 16:9 -->
-
-![Actions and effects](../../../assets/effect-conveyor.png)

@@ -5,6 +5,9 @@ sidebar:
   order: 7
 ---
 
+<!-- IMAGE-SLOT: sink-bridge-handoff — a state-machine gear-train handing a glowing transition token across a clean seam to the sink manifold, which fans it to destinations; two sky-squids (state + sink) shaking tongs over the seam; ember/copper on steel — 16:9 -->
+![The state→sink bridge handing a transition across the seam](../../../assets/sink-bridge-handoff.png)
+
 sink and [`crucible/state`](/crucible/start/introduction/) are designed to compose
 **without either core importing the other**. The [`state`](/crucible/concepts/effects-and-purity/)
 kernel emits effects as pure data and performs no IO; sink is a natural place to
@@ -69,6 +72,3 @@ changing. Compose the suite when it helps; never pay for what you do not use.
 See also: [Effects and purity](/crucible/concepts/effects-and-purity/) and
 [Integrating Crucible](/crucible/integrating/overview/) on the state side, and
 the `sink/bridge` [reference](/crucible/reference/sink-bridge/).
-
-<!-- IMAGE-SLOT: sink-bridge-handoff — a state-machine gear-train handing a glowing transition token across a clean seam to the sink manifold, which fans it to destinations; two sky-squids (state + sink) shaking tongs over the seam; ember/copper on steel — 16:9 -->
-![The state→sink bridge handing a transition across the seam](../../../assets/sink-bridge-handoff.png)

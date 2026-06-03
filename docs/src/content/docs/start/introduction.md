@@ -5,14 +5,14 @@ sidebar:
   order: 1
 ---
 
+<!-- IMAGE-SLOT: state-kernel-hero — a glowing crucible casting a luminous statechart (nodes and directed arcs) as molten metal pours into a mold, sky-squid mascot peering over the rim; conveys "forge a state machine from abstract definition into a running instance" — 16:9 -->
+![A molten crucible casting a statechart into shape.](../../../assets/state-kernel-hero.png)
+
 `crucible/state` is a statechart kernel for Go: an abstract, domain-agnostic
 engine for modeling anything that moves through states in response to events —
 an order, a payment, a device, a workflow. It is stdlib-only, generic over your
 own state, event, and context types, and built so that advancing a machine is a
 **pure function**.
-
-<!-- IMAGE-SLOT: state-kernel-hero — a glowing crucible casting a luminous statechart (nodes and directed arcs) as molten metal pours into a mold, sky-squid mascot peering over the rim; conveys "forge a state machine from abstract definition into a running instance" — 16:9 -->
-![A molten crucible casting a statechart into shape.](../../../assets/state-kernel-hero.png)
 
 ## What makes it different
 

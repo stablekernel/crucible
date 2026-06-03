@@ -5,6 +5,9 @@ sidebar:
   order: 11
 ---
 
+<!-- IMAGE-SLOT: assay-gate — a foundry inspector assaying an incoming ingot against a glowing requirement-template at the gate, rejecting a flawed casting — 16:9 -->
+![Assay at the trust boundary](../../../assets/assay-gate.png)
+
 When an entity arrives from outside — loaded from a store, deserialized off the wire, rebuilt by a foreign system — you cannot trust that it actually *belongs* in the state it claims. **`Assay`** is the trust-boundary check: it runs a state's declarative requirements (its guards and invariants) against an entity *without firing a transition*, answering "is this entity legally in this state?"
 
 ```go
@@ -30,9 +33,6 @@ if errors.As(err, &assayErr) {
 ```
 
 The error type is uniform across both modes; only how many failures it carries differs.
-
-<!-- IMAGE-SLOT: assay-gate — a foundry inspector assaying an incoming ingot against a glowing requirement-template at the gate, rejecting a flawed casting — 16:9 -->
-![Assay at the trust boundary](../../../assets/assay-gate.png)
 
 ```mermaid
 stateDiagram-v2

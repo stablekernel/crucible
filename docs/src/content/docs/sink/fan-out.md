@@ -5,6 +5,9 @@ sidebar:
   order: 3
 ---
 
+<!-- IMAGE-SLOT: sink-reservoir-pour — a foundry reservoir/ladle filling to a fill-line then tipping a measured batch into a mold, a second ladle on an interval timer; sky-squid tending; ember/copper on steel — 16:9 -->
+![Reservoir buffering and releasing in batches](../../../assets/sink-reservoir-pour.png)
+
 `Manifold.Sink` is the **only** emit path, and it returns nothing:
 
 ```go
@@ -85,6 +88,3 @@ defer p.Stop()
 
 `Start` is idempotent and fluent; `Stop` cancels and waits. Like the Reservoir,
 the Poller takes its clock as an option for deterministic tests.
-
-<!-- IMAGE-SLOT: sink-reservoir-pour — a foundry reservoir/ladle filling to a fill-line then tipping a measured batch into a mold, a second ladle on an interval timer; sky-squid tending; ember/copper on steel — 16:9 -->
-![Reservoir buffering and releasing in batches](../../../assets/sink-reservoir-pour.png)

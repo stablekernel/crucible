@@ -5,6 +5,9 @@ sidebar:
   order: 5
 ---
 
+<!-- IMAGE-SLOT: sink-telemetry-thread — a single glowing thread (one trace) running from a state-transition spark, through the manifold's fan-out, down into each destination, all lit the same ember hue; sky-squid following the thread — 16:9 -->
+![One trace threading transition → emit → writes](../../../assets/sink-telemetry-thread.png)
+
 sink **consumes** [`crucible/telemetry`](/crucible/reference/), the suite's
 vendor-neutral tracing and metrics interface. It does not define its own
 observability abstraction and it pulls in no telemetry vendor. You pass one
@@ -55,6 +58,3 @@ flowchart TD
 Because both modules speak the same `crucible/telemetry` interface, this works
 with whatever backend you wire behind it — the telemetry module ships `slog`,
 OpenTelemetry, and Datadog adapters — and sink never knows which one it is.
-
-<!-- IMAGE-SLOT: sink-telemetry-thread — a single glowing thread (one trace) running from a state-transition spark, through the manifold's fan-out, down into each destination, all lit the same ember hue; sky-squid following the thread — 16:9 -->
-![One trace threading transition → emit → writes](../../../assets/sink-telemetry-thread.png)

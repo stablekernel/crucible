@@ -5,6 +5,9 @@ sidebar:
   order: 2
 ---
 
+<!-- IMAGE-SLOT: temper-pass — a foundry worker running a glowing statechart casting under a diagnostic scanner that lights orphaned nodes amber and severed edges red, before the quench tank — 16:9 -->
+![The Temper diagnostics pass](../../../assets/temper-pass.png)
+
 `state/analysis` reads the machine's transition graph and reports structural defects without firing anything. It is the cheapest check in the toolbox: pure graph reasoning over the IR.
 
 `analysis.Analyze` returns a `Report` of `Finding`s. Each finding carries a `Kind`, a `Severity`, and the state (or transition) it concerns.
@@ -38,6 +41,3 @@ machine := builder.Quench() // panics on errors Temper merely reported
 ```
 
 `Temper` hands you the findings as data; `Quench` is the always-call finalizer that turns the same defects into a loud panic. Lint early, freeze with confidence.
-
-<!-- IMAGE-SLOT: temper-pass — a foundry worker running a glowing statechart casting under a diagnostic scanner that lights orphaned nodes amber and severed edges red, before the quench tank — 16:9 -->
-![The Temper diagnostics pass](../../../assets/temper-pass.png)

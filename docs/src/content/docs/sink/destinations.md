@@ -5,6 +5,9 @@ sidebar:
   order: 4
 ---
 
+<!-- IMAGE-SLOT: sink-destination-molds — a rack of distinct casting molds (each etched with a destination glyph: a database, a cloud, a gauge, a stream), interchangeable on the same manifold runner; sky-squid swapping one in — 16:9 -->
+![Interchangeable destination molds on one manifold](../../../assets/sink-destination-molds.png)
+
 Every destination is its **own optional Go module**. The sink core imports no
 vendor SDK; you add `crucible/sink/dynamo` only if you sink to DynamoDB, and its
 AWS dependency never touches a service that does not. Each module exposes a
@@ -100,6 +103,3 @@ Need a destination not listed, or a one-off? Skip the module entirely: a
 `sink.OutletFunc` is an outlet, and `sink.NewEmitter` builds one from any client
 type and registry you already have. The catalog is a convenience, never a
 gate.
-
-<!-- IMAGE-SLOT: sink-destination-molds — a rack of distinct casting molds (each etched with a destination glyph: a database, a cloud, a gauge, a stream), interchangeable on the same manifold runner; sky-squid swapping one in — 16:9 -->
-![Interchangeable destination molds on one manifold](../../../assets/sink-destination-molds.png)

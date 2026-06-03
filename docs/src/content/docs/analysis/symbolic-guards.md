@@ -5,6 +5,9 @@ sidebar:
   order: 4
 ---
 
+<!-- IMAGE-SLOT: disjoint-guards — two molten transition arcs leaving one node, a sky-squid holding up a glowing proof token that the two guard-conditions can never overlap; a third grayed arc marked "unknown" — 3:2 -->
+![Provably-disjoint guards](../../../assets/disjoint-guards.png)
+
 Plain [static analysis](/crucible/analysis/static-analysis/) treats every guard as opaque, so it won't report an overlap between two *guarded* transitions on the same event. `state/verify/symbolic` closes that gap by reasoning over the Core guard tree as data — comparison and boolean structure over context fields — instead of running it.
 
 Four questions over a guard node and the machine's `ContextSchema`:
@@ -32,6 +35,3 @@ for _, o := range overlaps {
 ```
 
 The analysis is **conservative**. It reasons precisely over the Core guard forms — `Eq`, `Ne`, `Lt`/`Le`/`Gt`/`Ge`, `In`, `And`/`Or`/`Not` over typed fields. Anything it can't see through — an opaque host `Guard("ext")`, a Rich predicate, a CEL expression, a `StateIn` check — it treats as "unknown" and assumes satisfiable. So a clean `Overlaps` report over Core guards is a real guarantee of determinism; a flagged pair over opaque guards is a "can't prove it, look closer," never a false alarm of safety.
-
-<!-- IMAGE-SLOT: disjoint-guards — two molten transition arcs leaving one node, a sky-squid holding up a glowing proof token that the two guard-conditions can never overlap; a third grayed arc marked "unknown" — 3:2 -->
-![Provably-disjoint guards](../../../assets/disjoint-guards.png)

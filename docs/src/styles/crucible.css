@@ -71,3 +71,15 @@
 .sidebar a[aria-current='page'] {
   border-inline-start-color: var(--crucible-ember);
 }
+
+/* ---- Leading page illustration: centered, sized-down page header --------- */
+/* Each guide leads with one transparent illustration as its first content
+   block (a lone image in the first paragraph). Constrain and center it so it
+   reads as a header rather than a full-width banner. */
+.sl-markdown-content > p:first-of-type > img:only-child {
+  display: block;
+  width: 100%;
+  max-width: 580px;
+  height: auto;
+  margin: 0.25rem auto 2rem;
+}

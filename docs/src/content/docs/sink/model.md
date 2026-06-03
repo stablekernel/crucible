@@ -5,6 +5,9 @@ sidebar:
   order: 2
 ---
 
+<!-- IMAGE-SLOT: sink-manifold-cutaway — a cutaway of a foundry manifold casting: one molten inlet channel branching into several outlet runners, each runner stamped with a destination glyph; sky-squid inspecting — 16:9 -->
+![The Manifold casting: one inlet, many outlet runners](../../../assets/sink-manifold-cutaway.png)
+
 Two types carry the whole model.
 
 ## Outlet — a single destination
@@ -87,6 +90,3 @@ parent.Attach(sink.OutletFunc(func(ctx context.Context, p any) error {
 Most destinations are not hand-written outlets, though — they are
 [`Emitter`s built from a typed client and a registry](/crucible/sink/destinations/).
 The next page covers what happens to a payload once it enters the Manifold.
-
-<!-- IMAGE-SLOT: sink-manifold-cutaway — a cutaway of a foundry manifold casting: one molten inlet channel branching into several outlet runners, each runner stamped with a destination glyph; sky-squid inspecting — 16:9 -->
-![The Manifold casting: one inlet, many outlet runners](../../../assets/sink-manifold-cutaway.png)

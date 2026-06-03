@@ -5,13 +5,13 @@ sidebar:
   order: 2
 ---
 
+<!-- IMAGE-SLOT: two-front-ends-one-ir — a central glowing IR ingot (a JSON-etched metal bar) fed by two channels: on the left a code editor pouring molten Go, on the right a visual node-graph editor pouring molten diagram shapes; both crystallize into the same ingot, which then casts a running instance; foundry palette, sky-squid inspecting the ingot — 16:9 -->
+![Two authoring front-ends emit one shared IR.](../../../assets/two-front-ends-one-ir.png)
+
 The canonical form of a Crucible machine is not Go code — it is an **IR**: a pure
 data structure describing states and transitions. The Forge DSL is one front-end
 that *emits* this IR. A future visual editor would be another. Both produce the
 same artifact.
-
-<!-- IMAGE-SLOT: two-front-ends-one-ir — a central glowing IR ingot (a JSON-etched metal bar) fed by two channels: on the left a code editor pouring molten Go, on the right a visual node-graph editor pouring molten diagram shapes; both crystallize into the same ingot, which then casts a running instance; foundry palette, sky-squid inspecting the ingot — 16:9 -->
-![Two authoring front-ends emit one shared IR.](../../../assets/two-front-ends-one-ir.png)
 
 ## The config/implementation split
 

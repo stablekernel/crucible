@@ -7,6 +7,9 @@ sidebar:
 
 import Order from '../_generated/diagrams/_fooddelivery-order.md';
 
+{/* IMAGE-SLOT: order-saga — sky-squid conducting a food-delivery order through a glowing statechart: payment hold, parallel kitchen and courier lanes under a draining SLA timer, branching to delivered or a refund compensation arc — 16:9 */}
+![The food-delivery order saga.](../../../assets/order-saga.png)
+
 Crucible's flagship example is a **food-delivery order saga** — `examples/fooddelivery`,
 a generic ordering lifecycle invented from scratch, coupled to no real product.
 It is a single statechart that exercises the whole engine the way a real service
@@ -66,10 +69,6 @@ the CEL guard binds exactly as a host loading a serialized definition would —
 the in-repo proof of the [serialization split](/crucible/serialization/overview/).
 It can also [snapshot and restore](/crucible/authoring/snapshots-and-inspection/)
 across a process restart mid-order.
-
-{/* IMAGE-SLOT: order-saga — sky-squid conducting a food-delivery order through a glowing statechart: payment hold, parallel kitchen and courier lanes under a draining SLA timer, branching to delivered or a refund compensation arc — 16:9 */}
-
-![The food-delivery order saga.](../../../assets/order-saga.png)
 
 ## The same machine, under the full runtime
 

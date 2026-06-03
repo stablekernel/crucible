@@ -5,6 +5,9 @@ sidebar:
   order: 3
 ---
 
+<!-- IMAGE-SLOT: gatekeeper — sky-squid as a luminous gatekeeper checking a glowing condition card before opening a transition arch — 3:2 -->
+![Guards](../../../assets/gatekeeper.png)
+
 A guard is a condition that must hold for a transition to fire. Crucible offers two complementary styles, and both must pass when present.
 
 **Named guards** reference a function registered by name; the params curry one generic guard into many specific ones. Chain multiple `When` calls and they are **AND**-ed together:
@@ -43,7 +46,3 @@ stateDiagram-v2
 ```
 
 Guards are pure and side-effect free: they read context, they never mutate it. Keep the decision in the guard and the consequence in an assign or effect.
-
-<!-- IMAGE-SLOT: gatekeeper — sky-squid as a luminous gatekeeper checking a glowing condition card before opening a transition arch — 3:2 -->
-
-![Guards](../../../assets/gatekeeper.png)

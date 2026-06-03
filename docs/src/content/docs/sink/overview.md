@@ -5,6 +5,9 @@ sidebar:
   order: 1
 ---
 
+<!-- IMAGE-SLOT: sink-overview-fanout — a sky-squid smith at a crucible pouring one molten stream that splits into several channels feeding labelled molds (sql, dynamo, statsd, webhook); ember/copper on steel — 16:9 -->
+![One inlet fanning out to many destinations](../../../assets/sink-overview-fanout.png)
+
 `crucible/sink` is the suite's **egress seam**: a fire-and-forget fan-out emitter.
 A service calls one method —
 
@@ -58,9 +61,6 @@ stand completely alone when you do not.
 sink is the first of a small family of bring-your-own-adapter **IO seams**
 (`broker`, `source`, and friends are on the roadmap), each defaulting to a no-op
 and forcing nothing third-party on the consumer.
-
-<!-- IMAGE-SLOT: sink-overview-fanout — a sky-squid smith at a crucible pouring one molten stream that splits into several channels feeding labelled molds (sql, dynamo, statsd, webhook); ember/copper on steel — 16:9 -->
-![One inlet fanning out to many destinations](../../../assets/sink-overview-fanout.png)
 
 ## Next
 

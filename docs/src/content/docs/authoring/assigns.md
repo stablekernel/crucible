@@ -5,6 +5,9 @@ sidebar:
   order: 5
 ---
 
+<!-- IMAGE-SLOT: reducer-fold — sky-squid folding a ribbon of context through ordered stations, each stamping the next value — 3:2 -->
+![Assigns](../../../assets/reducer-fold.png)
+
 The context is your machine's data — the order total, the held amount, the breach flag. The **only** place it changes is an **assign**: a pure reducer that takes the current context and returns the *next* one. Crucible uses value semantics, so a reducer receives a copy and yields a new value rather than mutating in place.
 
 ```go
@@ -44,7 +47,3 @@ stateDiagram-v2
 ```
 
 Keep assigns and actions distinct. An **assign** changes the machine's own context. An **action** (`Do`) emits an effect for the host to perform IO. A reducer must stay total and side-effect free — no IO, no errors, no clock reads — because the engine may replay it during recovery or analysis. If you need the outside world to react, return an effect from a `Do`; if you need the data to advance, fold it in an `Assign`.
-
-<!-- IMAGE-SLOT: reducer-fold — sky-squid folding a ribbon of context through ordered stations, each stamping the next value — 3:2 -->
-
-![Assigns](../../../assets/reducer-fold.png)

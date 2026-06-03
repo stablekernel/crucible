@@ -5,6 +5,9 @@ sidebar:
   order: 9
 ---
 
+<!-- IMAGE-SLOT: delayed-timer — a foundry hourglass wired to a molten-edge switch, sand draining toward an SLA-breach spark — 16:9 -->
+![Delayed timer](../../../assets/delayed-timer.png)
+
 A **delayed transition** fires after a state has been active for a fixed duration — an SLA clock, a retry backoff, a session timeout. You declare it with `After(d)`: on entering the source state the kernel emits a `ScheduleAfter` effect; if the state exits before the delay elapses, the kernel emits a cancel effect (auto-cancel-on-exit).
 
 The kernel never sleeps. The **host owns the timer**, driven by a `Scheduler` over an injected clock seam — so time is fully deterministic in tests and real in production.
@@ -32,9 +35,6 @@ for _, fr := range sch.Tick(ctx) {
 ```
 
 In production you swap the `FakeClock` for the system clock — the same `After` declaration, the same `Scheduler.Tick`, no `time.Sleep` anywhere in the kernel.
-
-<!-- IMAGE-SLOT: delayed-timer — a foundry hourglass wired to a molten-edge switch, sand draining toward an SLA-breach spark — 16:9 -->
-![Delayed timer](../../../assets/delayed-timer.png)
 
 ```mermaid
 stateDiagram-v2

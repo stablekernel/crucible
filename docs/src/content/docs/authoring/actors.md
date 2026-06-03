@@ -5,6 +5,9 @@ sidebar:
   order: 7
 ---
 
+<!-- IMAGE-SLOT: actors-supervision-tree — a foundry overseer routing molten message-sparks between glowing child crucibles, parent above, kitchen and courier below — 16:9 -->
+![Actor supervision](../../../assets/actors-supervision-tree.png)
+
 When a state needs to delegate work to a self-contained, concurrently-living unit, forge an **actor**: a child state machine the parent supervises through messages. Each actor has its own `(S, E, C)` types, runs independently, and reports back to the parent on completion.
 
 An `ActorSystem` is the registry and supervisor. You bind a *behavior* — a factory that casts a fresh child instance — under a name, then a state invokes that name to spawn one.
@@ -40,9 +43,6 @@ sys.Deliver(ctx, ref, kitchenCook)
 ```
 
 When the child reaches its final state, the system fires the parent's completion signal (`PlatedUp`), threading the actor's output into the parent's reducer.
-
-<!-- IMAGE-SLOT: actors-supervision-tree — a foundry overseer routing molten message-sparks between glowing child crucibles, parent above, kitchen and courier below — 16:9 -->
-![Actor supervision](../../../assets/actors-supervision-tree.png)
 
 ```mermaid
 stateDiagram-v2
