@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/durable
 
-go 1.25.0
+go 1.25.11
 
 replace github.com/stablekernel/crucible/state => ../state
 
