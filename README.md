@@ -105,6 +105,19 @@ and forcing nothing third-party on the consumer:
 Durable state and event persistence is tracked separately with the `durable`
 runtime, not here.
 
+## Roadmap: authoring & visualization
+
+The serializable IR is a first-class artifact, not just an internal format: anything
+that reads or writes it can build on the engine without reaching into the kernel. A
+small set of tools works the IR directly.
+
+- [ ] **Visual editor** _(planned)_: a browser workbench over the IR. Author, simulate,
+  and inspect machines, with reachability and version-diff overlays from the existing
+  `analysis` and `evolution` packages.
+- [ ] **IR CLI** _(exploring)_: headless IR tooling for CI. Lint reachability and
+  nondeterminism, render diagrams, and classify version diffs straight from a machine's
+  IR.
+
 ## Design & docs
 
 Design rationale, concepts, and guides live on the
