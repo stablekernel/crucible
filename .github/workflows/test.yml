@@ -2,7 +2,7 @@ name: tests
 
 # Reusable race-test matrix. Runs `go test -race ./...` for every module in the
 # suite across the Go × OS matrix. Called by ci.yml so the matrix legs render as
-# a single collapsible tree in the checks UI (e.g. "tests / test (1.25.x,
+# a single collapsible tree in the checks UI (e.g. "tests / test (1.25.11,
 # ubuntu-latest)") instead of cluttering the top-level checks list.
 on:
   workflow_call:
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.25.x", "1.26.x"]
+        go: ["1.25.11", "1.26.4"]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
