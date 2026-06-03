@@ -25,5 +25,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `Transactional` (Kafka EOS). `BlockRebalanceOnPoll` provides a safe
   processing window. The underlying `*kgo.Client` and `*kgo.Record` are
   reachable only through `As`.
+- Exactly-once consume-process-produce. `WithTransactional(id)` builds a
+  `GroupTransactSession` with read-committed fetch isolation and no auto-commit,
+  and the subscription's `source.Transactional.Begin(ctx, m, fn)` runs `fn`
+  inside a producer transaction: records produced through the handed `source.Tx`
+  are flushed and `m`'s consumed offset is committed in one atomic unit, or the
+  transaction aborts (on a work error or a rebalance fence) and the input is
+  redelivered. Produced records are neutral `source.ProducedRecord` values; no
+  franz-go type crosses the seam.
 
 [Unreleased]: https://github.com/stablekernel/crucible/tree/main/source/kafka

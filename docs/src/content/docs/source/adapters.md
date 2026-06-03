@@ -24,8 +24,9 @@ sub.Receive(ctx, handler)
 ```
 
 It does cooperative rebalance with drain-on-revoke, mark-commit-after-process,
-pause/resume backpressure, and seek/replay, and it is EOS-ready for transactional
-consume-to-produce. The shard is the partition; the
+pause/resume backpressure, and seek/replay, and it supports transactional
+consume-process-produce (see [Exactly-once (Kafka EOS)](#exactly-once-kafka-eos)
+below). The shard is the partition; the
 [high-water-mark commit subtlety](/crucible/source/concurrency/#the-kafka-high-water-mark-subtlety)
 is handled in the engine.
 
@@ -67,6 +68,63 @@ keeps it accurate.
 The divergences are documented, never papered over. A `Nak(delay)` is a real
 delayed redelivery on JetStream but is best-effort on Kafka (pause plus reseek),
 and that is called out where it matters.
+
+## Exactly-once (Kafka EOS)
+
+Most ingress libraries stop at offset EOS: the broker commits offsets in a
+transaction so a record is consumed once. `source` goes one step further on
+Kafka and ties the records a transition emits to that same commit, so a
+consume-process-produce cycle is atomic: the produced records and the consumed
+offset are committed together, or neither is.
+
+This is the `Transactional` capability, satisfied by the Kafka adapter only.
+JetStream and the in-memory adapter do not implement it, so the capability is
+absent rather than faked; on those backends use the at-least-once path. Build a
+transactional inlet with a stable, unique transactional id:
+
+```go
+in, _ := kafka.New(
+    kafka.WithSeedBrokers("localhost:9092"),
+    kafka.WithTransactional("orders-eos-v1"), // the producer fencing token
+)
+sub, _ := in.Subscribe(ctx, source.SubscribeConfig{Topics: []string{"orders"}, Group: "orders-svc"})
+
+if tx, ok := sub.(source.Transactional); ok {
+    // Begin fences the produce side and the offset of m in one transaction.
+    err := tx.Begin(ctx, m, func(ctx context.Context, t source.Tx) error {
+        return t.Produce(ctx, source.ProducedRecord{Topic: "orders.out", Value: out})
+    })
+    // err == nil means the produced records AND m's offset committed atomically.
+}
+```
+
+`Begin` runs your work function inside a Kafka producer transaction. If it
+returns nil, the records you produced through the `Tx` are flushed and the
+consumed offset is committed as one unit. If it returns an error, or a rebalance
+fences the producer, the transaction aborts: the produced records are discarded,
+the offset is not committed, and the input is redelivered. `Begin` is the full
+settle path for that message, so the engine takes no further settle action.
+
+Under the hood the adapter builds a franz-go `GroupTransactSession` with
+read-committed fetch isolation (so it never reads another producer's uncommitted
+records) and no auto-commit (the transaction commits offsets). No franz-go type
+appears in the seam: you produce neutral `source.ProducedRecord` values, and the
+adapter maps them to the wire.
+
+### Limits
+
+- **Kafka only.** EOS here is the Kafka transactional protocol. JetStream and
+  other backends fall back to the at-least-once path; they do not pretend to
+  offer it.
+- **One transactional id per logical consumer.** The id is a producer fencing
+  token. Two live consumers sharing one id fence each other; keep it stable
+  across restarts and unique per consumer.
+- **Idempotent downstream still matters across the persist gap.** When the bridge
+  persists machine state inside the transaction, a broker abort after a
+  successful save can leave the instance advanced but the offset uncommitted. The
+  redelivery is then deduplicated by the machine's state version (see
+  [driving a statechart with EOS](/crucible/source/with-state/#exactly-once-consume-process-produce-kafka-eos)),
+  so it acks as a no-op rather than double-applying.
 
 ## Roadmap and bring your own
 

@@ -65,9 +65,48 @@ here it is a typed outcome.
 ## Consume, transition, emit
 
 A transition's emitted effects can be handed to a
-[`sink`](/crucible/sink/overview/) Manifold in the same step, optionally
-transactional on Kafka EOS. The statechart is the processor; the consume loop and
-the fan-out are the two ends of it.
+[`sink`](/crucible/sink/overview/) Manifold in the same step. The statechart is
+the processor; the consume loop and the fan-out are the two ends of it. The
+default bridge (`Drive`) hands effects to a `Sink` and acks after a durable save,
+which is at-least-once: an effect can be emitted twice if the process dies after
+emit but before the offset commits.
+
+## Exactly-once consume-process-produce (Kafka EOS)
+
+On a `Transactional` subscription (Kafka built with `kafka.WithTransactional`),
+`DriveTx` closes that gap. It fires the transition, produces the emitted effects,
+persists the new state, and commits the consumed offset all inside one Kafka
+transaction, so the emitted records and the ack of the message that produced them
+are exactly-once. Effects are produced through a `TxSink`, the transactional
+mirror of `Sink`, which turns each effect into records on the open transaction:
+
+```go
+txSink := statemachine.TxSinkFunc(func(ctx context.Context, tx source.Tx, eff any) error {
+    if oe, ok := eff.(OpenedEffect); ok {
+        return tx.Produce(ctx, source.ProducedRecord{Topic: "turnstile.out", Value: encode(oe)})
+    }
+    return fmt.Errorf("unmapped effect %T", eff) // fail loudly, never drop an output
+})
+
+h := statemachine.DriveTx(machine, store, router, transactionalSub, txSink)
+// On success h returns source.Manual: the transaction already committed the offset.
+```
+
+On a successful transition `DriveTx` returns `source.Manual`, because the
+transaction committed the offset itself and the engine must not settle again. A
+route failure is still `Term`, a guard rejection still `Reject`, and a redelivered
+event already folded into the version is still a `Skip` (a plain offset advance,
+not a transaction). An emit failure, a persist failure, or a broker abort (a
+rebalance fences the producer) is a `Nak`: nothing committed, and the input is
+redelivered.
+
+One subtlety is honest rather than hidden: the durable save runs inside the
+transaction, so a broker abort after a successful save can leave the instance
+advanced but the offset uncommitted. The redelivery is then deduplicated by the
+machine's state version (the same exactly-once-into-the-machine mechanism above),
+so it acks as a no-op rather than double-applying. EOS is Kafka only; on
+JetStream and other backends the `Transactional` capability is absent and `Drive`
+gives the at-least-once path.
 
 ## Analyzable consumption
 

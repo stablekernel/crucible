@@ -30,6 +30,9 @@ var (
 	// errTransactionAborted reports that End returned without committing despite
 	// the work function succeeding (a broker-side abort).
 	errTransactionAborted = errors.New("source/kafka: transaction aborted by broker")
+	// errEmptyTopic reports that a ProducedRecord with no Topic was produced into
+	// a transaction; the destination is required.
+	errEmptyTopic = errors.New("source/kafka: produced record has no topic")
 )
 
 // requester is the franz-go surface the seek/lag capabilities need beyond the
@@ -251,19 +254,111 @@ func (s *subscription) Lag(ctx context.Context) (int64, error) {
 
 // --- Transactional ----------------------------------------------------------
 
-// Begin runs fn inside a Kafka producer transaction so consumed records settled
-// during it are committed (or aborted) atomically with the produces fn performs
-// — exactly-once consume-process-produce. It is available only when the inlet
-// was built with [WithTransactional]; otherwise it reports the capability is
-// absent rather than silently running fn without a transaction.
-func (s *subscription) Begin(ctx context.Context, fn func(ctx context.Context) error) error {
+// transactor is the narrow franz-go transaction surface the EOS path drives: a
+// *kgo.GroupTransactSession satisfies it. Narrowing to it keeps the begin →
+// produce → end choreography unit-testable with a fake session and no broker.
+// ProduceSync produces records into the open transaction; End commits or aborts,
+// committing the consumed offsets atomically with the produced records when it
+// commits.
+type transactor interface {
+	Begin() error
+	ProduceSync(ctx context.Context, rs ...*kgo.Record) kgo.ProduceResults
+	End(ctx context.Context, commit kgo.TransactionEndTry) (committed bool, err error)
+}
+
+// Compile-time proof the real session satisfies the narrow seam.
+var _ transactor = (*kgo.GroupTransactSession)(nil)
+
+// txHandle is the [source.Tx] the EOS path hands to a transactional work
+// function: it produces records into the open transaction through the
+// [transactor]. It buffers nothing of its own — franz-go holds the in-flight
+// records until End commits or aborts them — so Produce is a direct, synchronous
+// produce into the transaction whose error the work function propagates to
+// trigger an abort. A txHandle is valid only for the Begin call that created it.
+type txHandle struct {
+	sess transactor
+}
+
+// Produce emits records into the open transaction. The neutral
+// [source.ProducedRecord]s are mapped onto franz-go records and produced
+// synchronously; a produce error is returned so the work function can abort the
+// transaction by returning it. Produced records are not visible to a
+// read-committed consumer until the transaction commits.
+func (t txHandle) Produce(ctx context.Context, records ...source.ProducedRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	recs := make([]*kgo.Record, 0, len(records))
+	for _, pr := range records {
+		if pr.Topic == "" {
+			return fmt.Errorf("source/kafka: produce in transaction: %w", errEmptyTopic)
+		}
+		recs = append(recs, &kgo.Record{
+			Topic:   pr.Topic,
+			Key:     pr.Key,
+			Value:   pr.Value,
+			Headers: toRecordHeaders(pr.Headers),
+		})
+	}
+	if err := t.sess.ProduceSync(ctx, recs...).FirstErr(); err != nil {
+		return fmt.Errorf("source/kafka: produce in transaction: %w", err)
+	}
+	return nil
+}
+
+// toRecordHeaders maps neutral [source.Headers] onto franz-go record headers.
+func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
+	if len(hs) == 0 {
+		return nil
+	}
+	out := make([]kgo.RecordHeader, len(hs))
+	for i, h := range hs {
+		out[i] = kgo.RecordHeader{Key: h.Key, Value: []byte(h.Value)}
+	}
+	return out
+}
+
+// Begin runs fn inside a Kafka producer transaction so the records fn produces
+// through the handed [source.Tx] are committed (or aborted) atomically with the
+// consumed offset of m — exactly-once consume-process-produce. The choreography
+// is: begin the transaction, run fn (which produces emitted records through the
+// txHandle), mark m's offset for commit on success, then End with TryCommit if fn
+// succeeded or TryAbort if it failed. On commit, franz-go flushes the produced
+// records and commits the group's marked offsets (including m's) in one unit; on
+// abort it discards the produced records and does not commit m's offset, so m is
+// redelivered.
+//
+// m's offset is marked only after fn succeeds and only inside the transaction, so
+// a failed transform never advances the consumed position: the commit-after-
+// process invariant holds, now atomically with the produce side. Begin is the
+// full settle path for m; the caller must not also call [Subscription.Settle] for
+// m.
+//
+// It is available only when the inlet was built with [WithTransactional];
+// otherwise it reports the capability is absent rather than silently running fn
+// without a transaction. A rebalance during the transaction fences the producer,
+// so End reports the transaction did not commit and the work is retried after
+// reassignment.
+func (s *subscription) Begin(ctx context.Context, m source.Message, fn func(ctx context.Context, tx source.Tx) error) error {
 	if s.transactSess == nil {
 		return fmt.Errorf("source/kafka: transactional: %w", errNotTransactional)
 	}
+	rec, ok := recordOf(m)
+	if !ok {
+		return fmt.Errorf("source/kafka: transactional begin: %w", errNotKafkaMessage)
+	}
+	defer s.settled()
+
 	if err := s.transactSess.Begin(); err != nil {
 		return fmt.Errorf("source/kafka: begin transaction: %w", err)
 	}
-	fnErr := fn(ctx)
+	fnErr := fn(ctx, txHandle{sess: s.transactSess})
+	if fnErr == nil {
+		// Mark the consumed record only on success and inside the open
+		// transaction, so End commits the produced records and this offset as one
+		// unit. A failed transform leaves the offset unmarked, so m is redelivered.
+		s.client.MarkCommitRecords(rec)
+	}
 	commit := kgo.TryCommit
 	if fnErr != nil {
 		commit = kgo.TryAbort

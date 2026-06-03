@@ -38,8 +38,12 @@ var _ poller = (*kgo.Client)(nil)
 // re-polling only once a buffer is exhausted, which is where
 // BlockRebalanceOnPoll's safe window opens and closes.
 type subscription struct {
-	client       poller
-	transactSess *kgo.GroupTransactSession
+	client poller
+	// transactSess is the EOS transaction session, present only when the inlet
+	// was built with WithTransactional. It is narrowed to the transactor seam so
+	// the begin/produce/end choreography is testable with a fake; nil means the
+	// subscription is not transactional and Begin reports the capability absent.
+	transactSess transactor
 	group        string
 	dlqTopic     string
 	maxPoll      int
