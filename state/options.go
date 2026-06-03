@@ -136,11 +136,14 @@ func WithSendToSystemID(id string) SendOption {
 type CastOption[S comparable] func(*castConfig[S])
 
 type castConfig[S comparable] struct {
-	initial    S
-	hasInitial bool
-	clock      Clock
-	inspector  Inspector
-	logger     *slog.Logger
+	initial       S
+	hasInitial    bool
+	clock         Clock
+	inspector     Inspector
+	logger        *slog.Logger
+	traceFull     bool // set by WithFullTrace
+	histLimit     int  // set by WithHistory (positive value enables ring buffer)
+	histUnbounded bool // set by WithUnboundedHistory
 }
 
 // WithClock injects the time seam an instance's delayed-transition driver uses.
@@ -190,6 +193,36 @@ func WithInitialState[S comparable](s S) CastOption[S] {
 		c.initial = s
 		c.hasInitial = true
 	}
+}
+
+// WithFullTrace opts the instance into full trace mode, populating all rich
+// diagnostic fields on every FireResult.Trace: GuardsEvaluated, EffectsEmitted,
+// ExitedStates, EnteredStates, AssignsApplied, Microsteps, EventPayload, and
+// SelectedTransition. Without this option (or WithInspector / WithHistory /
+// WithUnboundedHistory), those fields are empty to minimize allocations on
+// instances whose traces are not observed. Logger-only instances stay lite.
+func WithFullTrace[S comparable]() CastOption[S] {
+	return func(c *castConfig[S]) { c.traceFull = true }
+}
+
+// WithHistory enables a bounded ring-buffer trace history of capacity limit.
+// The last limit settled traces are retained; older entries are overwritten in
+// declaration order. limit <= 0 is a no-op (no retention). Implies full trace.
+// Use History() to retrieve the stored traces in chronological order.
+func WithHistory[S comparable](limit int) CastOption[S] {
+	return func(c *castConfig[S]) {
+		if limit > 0 {
+			c.histLimit = limit
+		}
+	}
+}
+
+// WithUnboundedHistory enables append-only trace history: every settled trace is
+// retained. This is the previous default behavior, now opt-in. Suitable for
+// short-lived or test instances; long-lived production instances should prefer
+// WithHistory to bound memory growth. Implies full trace.
+func WithUnboundedHistory[S comparable]() CastOption[S] {
+	return func(c *castConfig[S]) { c.histUnbounded = true }
 }
 
 // FireOption configures Fire / FireSeq / FireEach.

@@ -116,13 +116,14 @@ func TestRoundTrip_ByteIdentity(t *testing.T) {
 	}
 }
 
-// TestHistory_RecordsEveryFire asserts an instance accumulates a trace per Fire.
+// TestHistory_RecordsEveryFire asserts an instance accumulates a trace per Fire
+// when unbounded history retention is enabled.
 func TestHistory_RecordsEveryFire(t *testing.T) {
 	m, rec := safeBuild(t)
 	if rec != nil {
 		t.Skipf("build not implemented yet: %v", rec)
 	}
-	inst := m.Cast(&Document{Status: Draft})
+	inst := m.Cast(&Document{Status: Draft}, state.WithUnboundedHistory[DocState]())
 	inst.Fire(context.Background(), Submit)
 	inst.Fire(context.Background(), Archive) // Submitted->Archive is a valid transition
 	if got := len(inst.History()); got != 2 {

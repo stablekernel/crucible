@@ -54,7 +54,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 	var effects []Effect
 	var regionErrs []error
 	anyHandled := false
-	tr.MatchedAt = fmtState(parallel)
+	tr.MatchedAt = m.label(parallel)
 
 	// The triggering event's payload (WithEventData) is broadcast to every region:
 	// resolve it once, before the region loop, so the region that actually handles
@@ -73,7 +73,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 		if handled {
 			anyHandled = true
 			effects = append(effects, eff...)
-			tr.Microsteps = append(tr.Microsteps, fmt.Sprintf("region:%s", r.Name))
+			tr.note(fmt.Sprintf("region:%s", r.Name))
 			if err != nil {
 				regionErrs = append(regionErrs, err)
 			}
@@ -145,7 +145,7 @@ func (i *Instance[S, E, C]) fireRegion(
 			matched = true
 			pass := true
 			for _, g := range t.Guards {
-				tr.GuardsEvaluated = append(tr.GuardsEvaluated, g.Name)
+				tr.recordGuard(g.Name)
 				okg, gErr := m.evalGuard(g, entity)
 				if gErr != nil {
 					return true, nil, gErr
@@ -193,7 +193,7 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	// read the entity snapshot passed in, consistent with the main commit cascade.
 	var effects []Effect
 	for _, s := range exits {
-		tr.ExitedStates = append(tr.ExitedStates, fmtState(s))
+		tr.recordExit(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
 			eff, _, _ := i.runActions(n.state.OnExit, entity, tr)
 			effects = append(effects, eff...)
@@ -226,7 +226,7 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	i.entity = next
 
 	for _, s := range entries {
-		tr.EnteredStates = append(tr.EnteredStates, fmtState(s))
+		tr.recordEntry(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
 			eff, _, _ := i.runActions(n.state.OnEntry, entity, tr)
 			effects = append(effects, eff...)
@@ -278,7 +278,7 @@ func (i *Instance[S, E, C]) settleParallelDone(parallel S, entity C, tr *Trace) 
 	if !ok {
 		return nil, "", nil
 	}
-	tr.Microsteps = append(tr.Microsteps, "done."+fmtState(parallel))
+	tr.note("done." + m.label(parallel))
 	eff, aname, aerr := i.runActions(pn.state.OnDone, entity, tr)
 	if aerr != nil {
 		return eff, aname, aerr
@@ -310,15 +310,15 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 			continue
 		}
 		if forbids(n.state, event) {
-			tr.MatchedAt = fmtState(anc)
+			tr.MatchedAt = m.label(anc)
 			tr.Outcome = OutcomeSuccess
-			tr.Microsteps = append(tr.Microsteps, "forbidden."+fmt.Sprint(event)+"@"+fmtState(anc))
+			tr.note("forbidden." + fmt.Sprint(event) + "@" + m.label(anc))
 			return FireResult[S]{NewState: from, Trace: tr}
 		}
 		for _, t := range matchingTransitions(n.state, event) {
 			pass := true
 			for _, g := range t.Guards {
-				tr.GuardsEvaluated = append(tr.GuardsEvaluated, g.Name)
+				tr.recordGuard(g.Name)
 				okg, gErr := m.evalGuard(g, entity)
 				if gErr != nil {
 					tr.Outcome = OutcomeGuardPanic
@@ -340,7 +340,7 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 				}
 			}
 			if pass {
-				tr.MatchedAt = fmtState(anc)
+				tr.MatchedAt = m.label(anc)
 				return i.commit(ctx, t, start, anc, entity, eventData, tr)
 			}
 		}

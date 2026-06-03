@@ -1,5 +1,7 @@
 package state
 
+import "fmt"
+
 // This file holds the hierarchical and orthogonal (parallel) machinery layered
 // over the flat kernel. A flat machine exercises none of it: every flat state
 // indexes as a depthless leaf with no parent and no regions, so resolution and
@@ -18,15 +20,85 @@ type node[S comparable, E comparable, C any] struct {
 	// is a parallel state. Empty for compound-state children and top-level nodes.
 	region string
 	depth  int
+
+	// ancestorChain is the precomputed innermost-first ancestor list for this
+	// node: [name, parent, grandparent, ...]. It is set in a second pass of
+	// indexHierarchy after all nodes are wired. ancestors() returns it directly
+	// (shared, read-only — callers only range over it). An unknown state falls
+	// back to the walk-based path.
+	ancestorChain []S
+
+	// leaves is the precomputed descendToLeaves result for this node. It is set
+	// in a second pass of indexHierarchy. descendToLeaves() returns a copy to
+	// prevent the caller's mutable config slice from aliasing the cache.
+	leaves []S
 }
 
 // indexHierarchy walks the (nested) state graph and records a node per state,
-// wiring parent and region membership. It runs once at Quench. The top-level
-// states drive the walk; Children and Regions recurse.
+// wiring parent and region membership. It runs once at Quench. After the tree
+// is wired it makes a second pass to precompute ancestorChain and leaves for
+// every node, and populates the machine's label cache.
 func (m *Machine[S, E, C]) indexHierarchy() {
 	m.nodes = map[S]*node[S, E, C]{}
 	for i := range m.states {
 		m.walkNode(&m.states[i], *new(S), false, "", 0)
+	}
+
+	// Second pass: precompute ancestor chains, leaves, and the label cache now
+	// that every node is wired (parent pointers are stable).
+	m.labels = make(map[S]string, len(m.nodes))
+	for name, n := range m.nodes {
+		n.ancestorChain = m.walkAncestors(name)
+		n.leaves = m.walkLeaves(name)
+		m.labels[name] = fmt.Sprint(name)
+	}
+}
+
+// walkAncestors builds the innermost-first ancestor chain for name by following
+// parent pointers. It is called once per node at Quench; the result is cached on
+// the node and returned by ancestors() on the hot path.
+func (m *Machine[S, E, C]) walkAncestors(name S) []S {
+	var chain []S
+	cur := name
+	for {
+		n, ok := m.nodes[cur]
+		if !ok {
+			break
+		}
+		chain = append(chain, cur)
+		if !n.hasParent {
+			break
+		}
+		cur = n.parent
+	}
+	return chain
+}
+
+// walkLeaves computes the descendToLeaves result for name without consulting
+// the cached leaves field (used during the second pass before caches are set).
+func (m *Machine[S, E, C]) walkLeaves(name S) []S {
+	n, ok := m.nodes[name]
+	if !ok {
+		return nil
+	}
+	s := n.state
+	switch {
+	case isParallel(s):
+		var leaves []S
+		for ri := range s.Regions {
+			r := &s.Regions[ri]
+			if r.InitialChild != nil {
+				leaves = append(leaves, m.walkLeaves(*r.InitialChild)...)
+			}
+		}
+		return leaves
+	case isCompound(s):
+		if s.InitialChild == nil {
+			return []S{name}
+		}
+		return m.walkLeaves(*s.InitialChild)
+	default:
+		return []S{name}
 	}
 }
 
@@ -71,65 +143,49 @@ func isParallel[S comparable, E comparable, C any](s *State[S, E, C]) bool {
 }
 
 // descendToLeaves returns the active leaves reached by entering name and
-// cascading into its initial children. For a leaf it returns [name]; for a
-// compound state it follows InitialChild transitively; for a parallel state it
-// concatenates each region's descent, in region-declaration order.
+// cascading into its initial children. For a leaf it returns a copy of
+// [name]; for a compound state it follows InitialChild transitively; for a
+// parallel state it concatenates each region's descent, in region-declaration
+// order. The returned slice is always a fresh copy so the caller's mutable
+// config field cannot alias the precomputed cache.
 func (m *Machine[S, E, C]) descendToLeaves(name S) []S {
-	n, ok := m.resolveNode(name)
+	n, ok := m.nodes[name]
 	if !ok {
 		return nil
 	}
-	s := n.state
-	switch {
-	case isParallel(s):
-		var leaves []S
-		for ri := range s.Regions {
-			r := &s.Regions[ri]
-			if r.InitialChild != nil {
-				leaves = append(leaves, m.descendToLeaves(*r.InitialChild)...)
-			}
-		}
-		return leaves
-	case isCompound(s):
-		if s.InitialChild == nil {
-			return []S{name}
-		}
-		return m.descendToLeaves(*s.InitialChild)
-	default:
-		return []S{name}
+	if len(n.leaves) > 0 {
+		// Return a copy: the caller assigns the result into i.config, which is
+		// mutable. Aliasing the cache would corrupt the precomputed slice.
+		return append([]S(nil), n.leaves...)
 	}
+	// A leaf node's cached leaves is [name]; still return a copy.
+	return append([]S(nil), n.leaves...)
 }
 
 // ancestors returns name and its ancestors, innermost-first (name, parent, ...).
+// The returned slice is shared (read-only cache); callers must not modify it.
+// Falls back to a live walk for states not in the node index (dynamic or
+// unknown names — should not occur in a Quenched machine, but defensive).
 func (m *Machine[S, E, C]) ancestors(name S) []S {
-	var chain []S
-	cur := name
-	for {
-		n, ok := m.resolveNode(cur)
-		if !ok {
-			break
-		}
-		chain = append(chain, cur)
-		if !n.hasParent {
-			break
-		}
-		cur = n.parent
+	if n, ok := m.nodes[name]; ok {
+		return n.ancestorChain
 	}
-	return chain
+	// Fallback: walk on demand (unknown state; defensive path).
+	return m.walkAncestors(name)
 }
 
-// lca returns the least common ancestor of two states, walking both ancestor
-// chains. ok is false when the states share no ancestor (distinct top-level
-// spines), in which case the cascade exits/enters to the root.
+// lca returns the least common ancestor of two states, walking both precomputed
+// ancestor chains with a nested linear scan. ok is false when the states share
+// no ancestor (distinct top-level spines), in which case the cascade exits/enters
+// to the root. The scan is allocation-free; hierarchies are shallow in practice.
 func (m *Machine[S, E, C]) lca(a, b S) (lca S, ok bool) {
 	aChain := m.ancestors(a)
-	inA := map[S]bool{}
-	for _, s := range aChain {
-		inA[s] = true
-	}
-	for _, s := range m.ancestors(b) {
-		if inA[s] {
-			return s, true
+	bChain := m.ancestors(b)
+	for _, as := range aChain {
+		for _, bs := range bChain {
+			if as == bs {
+				return as, true
+			}
 		}
 	}
 	return lca, false

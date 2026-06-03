@@ -366,7 +366,8 @@ func newConnHarness() *connHarness {
 
 	clk := state.NewFakeClock(time.Unix(0, 0))
 	inst := m.Cast(Link{Admitted: true, Healthy: true},
-		state.WithInitialState(Disconnected), state.WithClock[Conn](clk))
+		state.WithInitialState(Disconnected), state.WithClock[Conn](clk),
+		state.WithFullTrace[Conn]())
 	run := state.NewServiceRunner(inst, nil)
 	sys := state.NewActorSystem(inst).Register("worker", workerBehavior())
 	sch := state.NewScheduler(inst)

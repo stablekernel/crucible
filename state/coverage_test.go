@@ -229,7 +229,7 @@ func TestParallel_AncestorHandlesEvent(t *testing.T) {
 func TestCancel_FromHierarchicalSubstate(t *testing.T) {
 	m := buildJobMachine()
 	job := &Job{Status: Queued}
-	inst := m.Cast(job)
+	inst := m.Cast(job, state.WithFullTrace[JobStatus]())
 	inst.Fire(context.Background(), Enqueue) // -> Starting (inside Running)
 	res := inst.Fire(context.Background(), Cancel)
 	if res.Err != nil {

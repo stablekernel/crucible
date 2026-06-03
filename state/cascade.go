@@ -147,7 +147,7 @@ func (i *Instance[S, E, C]) settleDone(to S, entity C, tr *Trace) (effects []Eff
 		if !ok {
 			return effects, "", nil
 		}
-		tr.Microsteps = append(tr.Microsteps, "done."+fmtState(cur))
+		tr.note("done." + i.machine.label(cur))
 		if !i.stateComplete(parent) {
 			return effects, "", nil
 		}

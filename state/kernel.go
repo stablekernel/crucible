@@ -355,6 +355,13 @@ func (o Outcome) String() string {
 // added, never renamed or repurposed, and the per-step slices are always in
 // emission order (the order frozen by the determinism contract; see the package
 // overview). A field that does not apply to a given Fire is left zero/empty.
+//
+// Rich diagnostic fields (GuardsEvaluated, EffectsEmitted, ExitedStates,
+// EnteredStates, AssignsApplied, Microsteps, EventPayload, SelectedTransition)
+// are populated only when the trace is in full mode — enabled by WithFullTrace,
+// WithInspector, WithHistory, or WithUnboundedHistory at Cast. Lite mode (the
+// default) carries Machine, Event, FromState, MatchedAt, and Outcome, which is
+// sufficient for structured logging and no-overhead default operation.
 type Trace struct {
 	// Machine names the machine the traced instance was cast from.
 	Machine string `json:"machine,omitempty"`
@@ -369,25 +376,32 @@ type Trace struct {
 	// EventPayload carries the machine-readable value. It is omitted when the event
 	// has no JSON form (e.g. an internal "always"/raise microstep marker), so the
 	// field is additive and the trace stays deterministic across a JSON round-trip.
+	// Populated only in full mode.
 	EventPayload json.RawMessage `json:"eventPayload,omitempty"`
 	// FromState is the primary active leaf the event was fired in, before the step.
 	FromState string `json:"fromState,omitempty"`
 	// SelectedTransition is the transition that fired, for in-process tooling. It is
 	// not serialized (json:"-") because behavior is bound, not embedded in the IR;
 	// the serializable record of what happened is the other fields.
+	// Populated only in full mode.
 	SelectedTransition *Transition[any, any, any] `json:"-"`
 	// GuardsEvaluated names each guard the step evaluated, in evaluation order.
+	// Populated only in full mode.
 	GuardsEvaluated []string `json:"guardsEvaluated,omitempty"`
 	// PoliciesEvaluated names each policy the step evaluated, in evaluation order.
+	// Populated only in full mode.
 	PoliciesEvaluated []string `json:"policiesEvaluated,omitempty"`
 	// EffectsEmitted names each effect the step emitted, in emission order — the
 	// human-readable companion to FireResult.Effects (the effect data itself).
+	// Populated only in full mode.
 	EffectsEmitted []string `json:"effectsEmitted,omitempty"`
 	// AssignsApplied names each assign reducer the step folded, in fold order.
+	// Populated only in full mode.
 	AssignsApplied []string `json:"assignsApplied,omitempty"`
 	// Microsteps records the run-to-completion interleave — each raised internal
 	// event and eventless ("always") step, plus per-region markers — in the order it
 	// occurred within the macrostep.
+	// Populated only in full mode.
 	Microsteps []string `json:"microsteps,omitempty"`
 
 	// MatchedAt names the state whose transition actually fired. For a flat
@@ -396,12 +410,69 @@ type Trace struct {
 	MatchedAt string `json:"matchedAt,omitempty"`
 	// ExitedStates and EnteredStates record the transition's exit/entry cascade
 	// in execution order (exit innermost-first, entry outermost-first).
-	ExitedStates  []string `json:"exitedStates,omitempty"`
+	// Populated only in full mode.
+	ExitedStates []string `json:"exitedStates,omitempty"`
+	// EnteredStates records the entry cascade in execution order (outermost-first).
+	// Populated only in full mode.
 	EnteredStates []string `json:"enteredStates,omitempty"`
 
 	// Outcome classifies how the Fire settled — success or the specific failure
 	// class that stopped it. It is always set (OutcomeSuccess on a clean step).
 	Outcome Outcome `json:"outcome"`
+
+	// full is the mode gate: when true, the rich diagnostic fields above are
+	// populated; when false (lite mode, the default) they are skipped.
+	// Unexported so it is not serialized, not carried by projectTransition, and
+	// not exposed to consumers — the gate is an internal performance concern.
+	full bool
+}
+
+// note appends ms to Microsteps. It is a no-op in lite mode.
+func (t *Trace) note(ms string) {
+	if !t.full {
+		return
+	}
+	t.Microsteps = append(t.Microsteps, ms)
+}
+
+// recordGuard appends name to GuardsEvaluated. It is a no-op in lite mode.
+func (t *Trace) recordGuard(name string) {
+	if !t.full {
+		return
+	}
+	t.GuardsEvaluated = append(t.GuardsEvaluated, name)
+}
+
+// recordEffect appends s to EffectsEmitted. It is a no-op in lite mode.
+func (t *Trace) recordEffect(s string) {
+	if !t.full {
+		return
+	}
+	t.EffectsEmitted = append(t.EffectsEmitted, s)
+}
+
+// recordExit appends s to ExitedStates. It is a no-op in lite mode.
+func (t *Trace) recordExit(s string) {
+	if !t.full {
+		return
+	}
+	t.ExitedStates = append(t.ExitedStates, s)
+}
+
+// recordEntry appends s to EnteredStates. It is a no-op in lite mode.
+func (t *Trace) recordEntry(s string) {
+	if !t.full {
+		return
+	}
+	t.EnteredStates = append(t.EnteredStates, s)
+}
+
+// recordAssign appends name to AssignsApplied. It is a no-op in lite mode.
+func (t *Trace) recordAssign(name string) {
+	if !t.full {
+		return
+	}
+	t.AssignsApplied = append(t.AssignsApplied, name)
 }
 
 // FireResult is the result of a single Fire.
@@ -1404,6 +1475,22 @@ type Machine[S comparable, E comparable, C any] struct {
 	// surface the discoverable descriptor set of a built machine. It is never
 	// consulted by Fire.
 	reg *Registry[C]
+	// labels is the precomputed state-name string cache built at Quench time.
+	// label() looks up declared names here (avoiding fmt.Sprint's reflection boxing
+	// on every hot-path call) and falls back to fmt.Sprint for any dynamic or
+	// undeclared value. It is read-only after indexHierarchy returns.
+	labels map[S]string
+}
+
+// label returns the string rendering of state s, using a precomputed cache for
+// declared states and falling back to fmt.Sprint for undeclared or dynamic ones.
+// It is a hot-path replacement for the free fmtState function at sites that hold
+// a machine pointer.
+func (m *Machine[S, E, C]) label(s S) string {
+	if v, ok := m.labels[s]; ok {
+		return v
+	}
+	return fmt.Sprint(s)
 }
 
 // Palette returns the discoverable descriptor set of the machine's registry —
@@ -1469,7 +1556,24 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	if clock == nil {
 		clock = systemClock{}
 	}
-	inst := &Instance[S, E, C]{machine: m, entity: entity, current: current, clock: clock, inspector: cfg.inspector, logger: cfg.logger}
+	// Elevation to full trace: inspector attached, or any history retention mode,
+	// or an explicit WithFullTrace option. Logger-only stays lite: the logger only
+	// reads Machine, Event, FromState, MatchedAt, and Outcome, all of which are
+	// always present in lite mode.
+	historyRetained := cfg.histLimit > 0 || cfg.histUnbounded
+	traceFull := cfg.inspector != nil || historyRetained || cfg.traceFull
+
+	inst := &Instance[S, E, C]{
+		machine:       m,
+		entity:        entity,
+		current:       current,
+		clock:         clock,
+		inspector:     cfg.inspector,
+		logger:        cfg.logger,
+		traceFull:     traceFull,
+		histLimit:     cfg.histLimit,
+		histUnbounded: cfg.histUnbounded,
+	}
 	// If the starting state is itself compound or parallel, the active
 	// configuration is the set of leaves reached by descending into its initial
 	// children. The primary leaf becomes Current().
@@ -1491,8 +1595,23 @@ type Instance[S comparable, E comparable, C any] struct {
 	// config holds all currently-active leaves. For a flat or single-spine
 	// machine len(config)==1 and config[0]==current; for an active parallel
 	// state it holds one leaf per region, in declaration order.
-	config  []S
-	history []Trace
+	config []S
+
+	// traceFull is the per-instance gate for rich trace fields. It is set at Cast
+	// when any observing consumer is attached: inspector, history retention, or an
+	// explicit WithFullTrace option. Logger-only instances stay lite.
+	traceFull bool
+
+	// history is the ring buffer of settled traces. Its shape depends on the
+	// retention mode selected at Cast:
+	//   - histUnbounded true: append-only slice (current unbounded behavior).
+	//   - histLimit > 0: fixed-capacity ring; histHead is the write position mod limit.
+	//   - neither: no retention; history is always nil.
+	history       []Trace
+	histLimit     int
+	histUnbounded bool
+	histHead      int
+
 	// historyShallow and historyDeep record per-compound history for history
 	// pseudo-states: historyShallow maps a compound to its last active direct
 	// child, historyDeep maps a compound to its last active leaf configuration.
@@ -1559,9 +1678,36 @@ func (i *Instance[S, E, C]) Configuration() []S {
 	return append([]S(nil), i.config...)
 }
 
-// History returns the ordered traces recorded on this instance.
+// History returns a copy of the traces recorded on this instance, in
+// chronological order (oldest first). It returns nil when no history retention
+// mode was selected at Cast (the default).
+//
+// For a bounded ring buffer (WithHistory), the returned slice contains at most
+// limit entries; if fewer than limit fires have occurred it contains all of them.
+// For unbounded retention (WithUnboundedHistory) it contains every fired trace.
 func (i *Instance[S, E, C]) History() []Trace {
-	return append([]Trace(nil), i.history...)
+	n := len(i.history)
+	if n == 0 {
+		return nil
+	}
+	if i.histUnbounded || i.histLimit <= 0 {
+		// Append-only or no wrap: a simple copy is already in order.
+		return append([]Trace(nil), i.history...)
+	}
+	// Ring buffer: reconstruct chronological order from histHead. histHead is the
+	// next-write position, so the oldest entry is at histHead (mod n) when the
+	// ring is full, or at index 0 when fewer than limit entries have been written.
+	out := make([]Trace, n)
+	if n < i.histLimit {
+		// Buffer not yet full: entries are in order starting at index 0.
+		copy(out, i.history)
+		return out
+	}
+	// Buffer full: oldest entry is at histHead.
+	for k := 0; k < n; k++ {
+		out[k] = i.history[(i.histHead+k)%n]
+	}
+	return out
 }
 
 // fmtState renders a state value for diagnostics/trace.
