@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/telemetry/slog
 
-go 1.25
+go 1.25.11
 
 require github.com/stablekernel/crucible/telemetry v0.0.0
 

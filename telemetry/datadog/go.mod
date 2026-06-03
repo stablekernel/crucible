@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/telemetry/datadog
 
-go 1.25
+go 1.25.11
 
 require (
 	github.com/DataDog/datadog-go/v5 v5.8.3
@@ -80,7 +80,7 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
