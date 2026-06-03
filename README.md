@@ -8,6 +8,7 @@
   <a href="https://github.com/stablekernel/crucible/actions/workflows/docs-deploy.yml"><img src="https://github.com/stablekernel/crucible/actions/workflows/docs-deploy.yml/badge.svg" alt="Deploy docs"></a>
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"></a>
   <a href="./CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant 2.1"></a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/stablekernel/crucible"><img src="https://api.securityscorecards.dev/projects/github.com/stablekernel/crucible/badge" alt="OpenSSF Scorecard"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
 </p>
 
