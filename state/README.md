@@ -186,14 +186,13 @@ with `m.ToJSON()`, reloaded with `state.LoadFromJSON`, analyzed with
 Stability label: **experimental** (pre-1.0; the API may change). Each module is
 independently versioned per-module SemVer.
 
-## Design & discussions
+## Design & docs
 
-Design rationale lives on the GitHub
-[Discussions board](https://github.com/stablekernel/crucible/discussions) under
-the **State Machine** category — see the
-[Overview](https://github.com/stablekernel/crucible/discussions/1) and
-[Kernel Core](https://github.com/stablekernel/crucible/discussions/2)
-discussions.
+Design rationale, concepts, and guides live on the
+[documentation site](https://stablekernel.github.io/crucible/) — see the
+[state machine introduction](https://stablekernel.github.io/crucible/start/introduction/)
+and [machine & instance concepts](https://stablekernel.github.io/crucible/concepts/machine-and-instance/).
+For questions or proposals, open a GitHub issue.
 
 ## License
 

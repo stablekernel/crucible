@@ -6,9 +6,9 @@
 
 ## Why
 
-<!-- Motivation / context. Link any related discussion or issue. -->
+<!-- Motivation / context. Link any related issue. -->
 
-Relates to: <!-- #issue or discussion link -->
+Relates to: <!-- #issue -->
 
 ## Checklist
 

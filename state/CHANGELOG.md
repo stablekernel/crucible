@@ -5,7 +5,7 @@ All notable changes to `crucible/state` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 A machine definition is treated as a schema: see the
-[Evolution Guide](https://github.com/stablekernel/crucible/discussions/6) for what
+[Evolution Guide](https://stablekernel.github.io/crucible/analysis/evolution/) for what
 counts as an additive (minor) versus breaking (major) change. Use the
 `state/evolution` package to classify a machine change and decide the bump.
 
