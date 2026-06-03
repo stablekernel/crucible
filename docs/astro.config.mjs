@@ -60,9 +60,15 @@ export default defineConfig({
         },
         {
           label: 'Sink',
-          // The egress IO seam. As further IO seams (broker, source) are
-          // documented, each gets its own top-level section like this.
+          // The egress IO seam. As further IO seams (broker) are documented,
+          // each gets its own top-level section like this.
           items: [{ autogenerate: { directory: 'sink' } }],
+        },
+        {
+          label: 'Source',
+          // The ingress IO seam, the symmetric counterpart to Sink. Consume
+          // external streams and drive statecharts.
+          items: [{ autogenerate: { directory: 'source' } }],
         },
         {
           label: 'State machine',

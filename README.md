@@ -58,6 +58,15 @@ stability label.
 | `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
 | `broker`              | Message broker seam: publish/subscribe transport with injected adapters.         | planned      |
 | `sink`                | Egress seam: fan emitted effects out to many destinations, fire-and-forget.      | experimental |
+| `source`              | Ingress seam: consume streams and drive statecharts; ack on durable transition.  | experimental |
+| `source/kafka`        | Kafka/RedPanda Inlet over franz-go: group consumer, mark-commit-after-process.   | experimental |
+| `source/jetstream`    | NATS JetStream Inlet over nats.go: pull consumer, ack/nak/term, MaxAckPending.    | experimental |
+| `source/cloudevents`  | CloudEvents codec with structured and binary content modes.                      | experimental |
+| `source/statemachine` | Bridge: an inbound message drives a transition, ack tied to the durable commit.  | experimental |
+
+source also ships composable reliability middleware as its own opt-in modules
+(`source/retry`, `source/dlq`, `source/idempotency`, `source/schema`) and an
+in-memory `source/memsource` test source, each experimental.
 
 The engine emits effects as pure data; the IO modules are the thin seams that
 carry those effects to real transports and sinks. Each is
@@ -72,8 +81,9 @@ snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis
 `evolution`, and `conformance` companion packages. Treat its API as experimental
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `sink` egress seam and its destination
-adapters are now available and documented; the `broker` module is
-planned.
+adapters, and the `source` ingress seam with its Kafka and JetStream adapters,
+CloudEvents codec, reliability middleware, and state-machine bridge, are now
+available and documented; the `broker` module is planned.
 
 ## Roadmap: event-driven seams
 
@@ -86,8 +96,9 @@ and forcing nothing third-party on the consumer:
 - [x] **`sink`**: egress fan-out. Dispatch emitted effects to many outlets (SQL,
   Dynamo, StatsD, and more), fire-and-forget.
   [Docs](https://stablekernel.github.io/crucible/sink/overview/).
-- [ ] **`source`** _(exploring)_: ingress. Subscribe external streams and drive
-  machines; the symmetric counterpart to `sink`.
+- [x] **`source`**: ingress. Subscribe external streams and drive machines, with
+  the ack tied to a durable transition; the symmetric counterpart to `sink`.
+  [Docs](https://stablekernel.github.io/crucible/source/overview/).
 - [ ] **`bellows`** _(exploring)_: resilience seam. Circuit-breaking and
   backpressure around the IO edges.
 
