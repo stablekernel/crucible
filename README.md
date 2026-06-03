@@ -57,11 +57,10 @@ stability label.
 | `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
 | `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
 | `broker`              | Message broker seam: publish/subscribe transport with injected adapters.         | planned      |
-| `store`               | Durable state/event store seam with graceful lifecycle.                          | planned      |
 | `sink`                | Egress seam: fan emitted effects out to many destinations, fire-and-forget.      | experimental |
 
 The engine emits effects as pure data; the IO modules are the thin seams that
-carry those effects to real transports, stores, and sinks. Each is
+carry those effects to real transports and sinks. Each is
 "bring your own adapter," none forced on the consumer.
 
 ## Status
@@ -73,7 +72,7 @@ snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis
 `evolution`, and `conformance` companion packages. Treat its API as experimental
 until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
 `datadog` adapters are released. The `sink` egress seam and its destination
-adapters are now available and documented; the `broker` and `store` modules are
+adapters are now available and documented; the `broker` module is
 planned.
 
 ## Roadmap: event-driven seams
@@ -98,7 +97,9 @@ runtime, not here.
 ## Design & docs
 
 Design rationale, concepts, and guides live on the
-[documentation site](https://stablekernel.github.io/crucible/). Start with:
+[documentation site](https://stablekernel.github.io/crucible/).
+
+Start with:
 
 - [Suite overview & philosophy](https://stablekernel.github.io/crucible/about/overview/):
   the suite-wide baseline every module is built to.
