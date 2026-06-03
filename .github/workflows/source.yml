@@ -1,0 +1,124 @@
+name: source
+
+# Reusable source test suite. Groups every source-domain check under a single
+# collapsible "source / …" tree in the checks UI rather than sprawling across the
+# top-level check list:
+#   - unit:                race tests for the in-workspace source modules (Go × OS).
+#   - source-destinations: the SDK-backed source modules, built GOWORK=off via
+#                          their own replace directives, with lint/vuln/coverage
+#                          on Linux.
+#   - integration:         the `integration`-tagged end-to-end leg (GOWORK=off).
+# Called by ci.yml so the caller job name ("source") becomes the tree prefix.
+on:
+  workflow_call:
+
+env:
+  GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+permissions:
+  contents: read
+
+jobs:
+  # Race tests for the in-workspace source modules (source core + the
+  # stdlib-only statemachine adapter), across the Go × OS matrix. These live in
+  # the workspace, so they build without GOWORK=off — same as the state-machine
+  # unit matrix.
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.25.11", "1.26.4"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      MODULES: "source source/statemachine"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: "**/go.sum"
+      - name: test -race
+        shell: bash
+        run: |
+          for module in $MODULES; do
+            echo "::group::test -race ($module)"
+            go test -C "$module" -race ./...
+            echo "::endgroup::"
+          done
+
+  # The SDK-backed source modules are standalone modules kept out of the
+  # workspace (see go.work / the magefile), so they build with GOWORK=off via
+  # their own replace directives. Each is one matrix leg across the OS matrix for
+  # race tests; lint, vuln, and the coverage gate run on Linux. This keeps the
+  # vendor SDKs out of the core modules' dependency graphs.
+  source-destinations:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        module:
+          - source/kafka
+          - source/jetstream
+          - source/cloudevents
+          - examples/sourcedrive
+    runs-on: ${{ matrix.os }}
+    env:
+      GOWORK: "off"
+      THRESHOLD: "80"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: "**/go.sum"
+      - name: test -race
+        shell: bash
+        run: go test -C "${{ matrix.module }}" -race ./...
+      - name: golangci-lint
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: go -C "${{ matrix.module }}" run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: govulncheck
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: go -C "${{ matrix.module }}" run "$GOVULNCHECK" ./...
+      - name: coverage gate
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          go test -C "${{ matrix.module }}" -covermode=atomic -coverprofile=coverage.out ./...
+          pct=$(go -C "${{ matrix.module }}" tool cover -func=coverage.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}% (threshold ${THRESHOLD}%)"
+          awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
+
+  # Integration / E2E leg, behind the `integration` build tag, run with
+  # GOWORK=off. The in-workspace source modules run end-to-end; the SDK-backed
+  # source modules drive a real broker via testcontainers (Docker is available on
+  # GitHub-hosted ubuntu runners) and skip cleanly if a daemon is ever absent.
+  # Kept off the default test matrix so the hermetic checks stay fast.
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - source
+          - source/statemachine
+          - source/kafka
+          - source/jetstream
+          - source/cloudevents
+          - examples/sourcedrive
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: "**/go.sum"
+      - name: integration tests
+        shell: bash
+        run: go test -C "${{ matrix.module }}" -tags integration ./...

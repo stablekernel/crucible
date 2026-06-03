@@ -26,17 +26,20 @@ import (
 )
 
 // modules is the list of workspace Go modules these targets iterate. As new
-// modules land (broker, store, sink), add them here and every target picks them
-// up automatically.
+// modules land (broker, store, sink, source), add them here and every target
+// picks them up automatically.
 //
 // The SDK-heavy sink destinations (the AWS family, redis, nats, kafka,
-// gcppubsub, otel, statsd) are deliberately absent: they are standalone modules
-// kept out of the shared workspace so their vendor SDKs never enter the core
-// modules' dependency graphs. CI verifies them separately with GOWORK=off; run
-// SinkDestinations below to do the same locally.
+// gcppubsub, otel, statsd) and the SDK-backed source modules (source/kafka,
+// source/jetstream, source/cloudevents) are deliberately absent: they are
+// standalone modules kept out of the shared workspace so their vendor SDKs never
+// enter the core modules' dependency graphs. CI verifies them separately with
+// GOWORK=off; run SinkDestinations and SourceDestinations below to do the same
+// locally.
 var modules = []string{
 	"state", "telemetry", "telemetry/slog", "telemetry/otel", "telemetry/datadog",
 	"sink", "sink/bridge", "sink/file", "sink/http", "sink/prometheus", "sink/slog",
+	"source", "source/statemachine",
 }
 
 // sinkDestinations are the standalone sink modules kept out of the workspace
@@ -49,6 +52,16 @@ var sinkDestinations = []string{
 	"sink/gcppubsub", "sink/kafka", "sink/kinesis", "sink/nats", "sink/otel",
 	"sink/redis", "sink/s3", "sink/sns", "sink/sql", "sink/sqs", "sink/statsd",
 	"sink/timestream", "examples/sinkflow",
+}
+
+// sourceDestinations are the standalone source modules kept out of the workspace
+// (see modules above): the SDK-backed sources (source/kafka via franz-go,
+// source/jetstream via nats.go, source/cloudevents via the CloudEvents SDK) plus
+// the flagship examples/sourcedrive. Each builds via its own go.mod and replace
+// directives, so the SourceDestinations and Integration targets run with
+// GOWORK=off.
+var sourceDestinations = []string{
+	"source/kafka", "source/jetstream", "source/cloudevents", "examples/sourcedrive",
 }
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.
@@ -396,19 +409,53 @@ func SinkDestinations() error {
 	return nil
 }
 
-// integrationModules are every sink module that ships a //go:build integration
-// test, run by Integration with GOWORK=off. It is the workspace sink modules
-// plus the standalone ones.
-var integrationModules = append(
-	[]string{"sink/file", "sink/http", "sink/prometheus", "sink/slog"},
-	sinkDestinations...,
-)
+// SourceDestinations verifies the standalone SDK-backed source modules (the ones
+// kept out of the workspace; see sourceDestinations). Each is built with
+// GOWORK=off via its own go.mod and replace directives, running race tests,
+// lint, and the vulnerability scan. CI runs this as a separate leg so the vendor
+// SDKs never enter the core modules' dependency graphs.
+func SourceDestinations() error {
+	root, err := repoRoot()
+	if err != nil {
+		return err
+	}
+	cfg := filepath.Join(root, ".golangci.yml")
+	env := map[string]string{"GOWORK": "off"}
+	for _, mod := range sourceDestinations {
+		dir := filepath.Join(root, mod)
+		fmt.Printf("==> source-destinations: %s\n", mod)
+		if err := sh.RunWithV(env, "go", "test", "-C", dir, "-race", "./..."); err != nil {
+			return fmt.Errorf("test failed for %q: %w", mod, err)
+		}
+		if err := sh.RunWithV(env, "go", "-C", dir, "run", golangciLint, "run", "--config", cfg, "./..."); err != nil {
+			return fmt.Errorf("lint failed for %q: %w", mod, err)
+		}
+		if err := sh.RunWithV(env, "go", "-C", dir, "run", govulncheck, "./..."); err != nil {
+			return fmt.Errorf("govulncheck failed for %q: %w", mod, err)
+		}
+	}
+	return nil
+}
 
-// Integration runs the //go:build integration leg for every sink module with
-// GOWORK=off. The hermetic destinations (sql, http, file, slog, prometheus,
-// statsd, otel) run end-to-end; the container-backed destinations drive a real
-// emulator via testcontainers and skip cleanly when Docker is unavailable. This
-// target is excluded from the default Check, which stays hermetic and fast.
+// integrationModules are every sink and source module that ships a
+// //go:build integration test, run by Integration with GOWORK=off. It is the
+// in-workspace sink and source modules plus the standalone sink and source
+// destinations.
+var integrationModules = func() []string {
+	mods := []string{"sink/file", "sink/http", "sink/prometheus", "sink/slog"}
+	mods = append(mods, sinkDestinations...)
+	mods = append(mods, "source", "source/statemachine")
+	mods = append(mods, sourceDestinations...)
+	return mods
+}()
+
+// Integration runs the //go:build integration leg for every sink and source
+// module with GOWORK=off. The hermetic destinations (sql, http, file, slog,
+// prometheus, statsd, otel) run end-to-end; the container-backed destinations
+// (including the SDK-backed source modules: kafka, jetstream, cloudevents) drive
+// a real emulator via testcontainers and skip cleanly when Docker is
+// unavailable. This target is excluded from the default Check, which stays
+// hermetic and fast.
 func Integration() error {
 	root, err := repoRoot()
 	if err != nil {
