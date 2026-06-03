@@ -45,6 +45,25 @@ deliver-by-start options. A JetStream durable consumer is the grouping analog of
 a Kafka consumer group, but it has no partitions and no assignment callbacks, so
 JetStream does **not** pretend to be a `ConsumerGroups` backend.
 
+## redis (go-redis)
+
+`crucible/source/redis` is a consumer-group reader over go-redis:
+
+```go
+in, _ := redis.New(redis.WithAddr("localhost:6379"), redis.WithGroup("orders-svc"), redis.WithConsumer("worker-1"))
+sub, _ := in.Subscribe(ctx, source.SubscribeConfig{Topics: []string{"orders"}})
+m, _ := sub.Next(ctx)
+_ = sub.Settle(ctx, m, source.Ack())
+```
+
+It reads a Redis Stream with `XREADGROUP`, acks with `XACK`, leaves a naked
+entry in the pending list for a later `XPENDING` plus `XCLAIM` redelivery, and
+routes a terminated entry to a configured dead-letter stream before acking the
+original. Replay is by entry ID through `XRANGE`, and lag comes from
+`XINFO GROUPS` with an `XLEN` fallback. A Redis consumer group is the grouping
+analog of a Kafka consumer group, but it has no partitions and no assignment
+callbacks, so Redis does **not** pretend to be a `ConsumerGroups` backend.
+
 ## Capability table per backend
 
 Capabilities are detected by interface assertion, once, inside the engine. The
@@ -52,17 +71,17 @@ table is honest: an adapter satisfies a capability only when its backend truly
 supports it, and a compile-time `var _ Seekable = ...` assertion in each module
 keeps it accurate.
 
-| Capability | kafka | jetstream | Notes |
-|---|---|---|---|
-| `Seekable` | yes | yes | live `SetOffsets` on Kafka; consumer-recreate on JetStream |
-| `ConsumerGroups` | yes | no | Kafka rebalance hooks; JetStream has no partition assignment |
-| `SharedDurable` | no | yes | the JetStream durable-consumer grouping analog |
-| `PartitionOrdered` | yes | no | Kafka per-partition order |
-| `OrderedDelivery` | no | yes | JetStream `OrderedConsumer`, single-threaded |
-| `Batched` | yes | yes | batched fetch on both |
-| `Transactional` | yes | no | Kafka EOS only; JetStream does not, and does not fake it |
-| `Deduper` | yes | yes | dedup seam (see [reliability](/crucible/source/reliability/)) |
-| `LagReporter` | yes | yes | consumer-lag gauge |
+| Capability | kafka | jetstream | redis | Notes |
+|---|---|---|---|---|
+| `Seekable` | yes | yes | yes | live `SetOffsets` on Kafka; consumer-recreate on JetStream; entry-ID `XRANGE` on Redis |
+| `ConsumerGroups` | yes | no | no | Kafka rebalance hooks; JetStream and Redis have no partition assignment |
+| `SharedDurable` | no | yes | yes | the JetStream durable-consumer and Redis consumer-group grouping analogs |
+| `PartitionOrdered` | yes | no | no | Kafka per-partition order |
+| `OrderedDelivery` | no | yes | no | JetStream `OrderedConsumer`, single-threaded |
+| `Batched` | yes | yes | no | batched fetch on Kafka and JetStream |
+| `Transactional` | yes | no | no | Kafka EOS only; JetStream and Redis do not, and do not fake it |
+| `Deduper` | yes | yes | no | dedup seam (see [reliability](/crucible/source/reliability/)) |
+| `LagReporter` | yes | yes | yes | consumer-lag gauge; Redis reports group lag from `XINFO GROUPS` |
 
 The divergences are documented, never papered over. A `Nak(delay)` is a real
 delayed redelivery on JetStream but is best-effort on Kafka (pause plus reseek),
@@ -70,8 +89,8 @@ and that is called out where it matters.
 
 ## Roadmap and bring your own
 
-`source/redis` (Redis Streams) and `source/cdc` (Debezium/OpenCDC
-change-data-capture) are on the roadmap. The catalog is a convenience: any type
+`source/cdc` (Debezium/OpenCDC change-data-capture) is on the roadmap. The
+catalog is a convenience: any type
 that satisfies the `Inlet` interface is an inlet, and the
 [`memsource`](/crucible/source/reliability/#testing-the-loop) in-memory adapter
 is itself an `Inlet`, so you can drive the whole engine in a unit test with no
