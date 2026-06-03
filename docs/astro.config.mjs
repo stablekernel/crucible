@@ -49,8 +49,21 @@ export default defineConfig({
         },
       ],
       sidebar: [
-        // Each module is its own top-level section with nested subsections.
-        // Pages live in per-topic directories and order by `sidebar.order`.
+        // Top-level sections in reading order: the suite overview first, then
+        // each module, then the generated API reference. Pages live in
+        // per-topic directories and order by `sidebar.order`.
+        {
+          label: 'About',
+          // Suite-level overview: what Crucible is for and the philosophy
+          // behind it — facilitate how you build, not prescribe what you use.
+          items: [{ autogenerate: { directory: 'about' } }],
+        },
+        {
+          label: 'Sink',
+          // The egress IO seam. As further IO seams (broker, source) are
+          // documented, each gets its own top-level section like this.
+          items: [{ autogenerate: { directory: 'sink' } }],
+        },
         {
           label: 'State machine',
           items: [
@@ -68,12 +81,6 @@ export default defineConfig({
             { label: 'Examples', items: [{ autogenerate: { directory: 'examples' } }] },
             { label: 'Integrating', items: [{ autogenerate: { directory: 'integrating' } }] },
           ],
-        },
-        {
-          label: 'Sink',
-          // The egress IO seam. As further IO seams (broker, source) are
-          // documented, each gets its own top-level section like this.
-          items: [{ autogenerate: { directory: 'sink' } }],
         },
         {
           label: 'Reference',

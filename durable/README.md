@@ -152,11 +152,11 @@ with `go test -bench=. -benchmem -run=^$ ./durable/`.
 Stability label: **experimental** (pre-1.0; the API may change). Each module is
 independently versioned per-module SemVer.
 
-## Design & discussions
+## Design & docs
 
-Design rationale lives on the GitHub
-[Discussions board](https://github.com/stablekernel/crucible/discussions) under
-the **State Machine** category.
+Design rationale and guides live on the
+[documentation site](https://stablekernel.github.io/crucible/). For questions or
+proposals, open a GitHub issue.
 
 ## License
 

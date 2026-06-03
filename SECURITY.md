@@ -12,8 +12,8 @@ security updates.
 
 ## Reporting a vulnerability
 
-**Please do not report security vulnerabilities through public GitHub issues,
-discussions, or pull requests.**
+**Please do not report security vulnerabilities through public GitHub issues or
+pull requests.**
 
 Instead, report privately using GitHub's
 [private vulnerability reporting](https://github.com/stablekernel/crucible/security/advisories/new)
