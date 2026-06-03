@@ -23,4 +23,4 @@ labels: enhancement
 
 ## Additional context
 
-<!-- Links to relevant design discussions, prior art (e.g. xstate), etc. -->
+<!-- Links to relevant prior art (e.g. xstate), design docs, etc. -->

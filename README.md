@@ -95,16 +95,19 @@ and forcing nothing third-party on the consumer:
 Durable state and event persistence is tracked separately with the `durable`
 runtime, not here.
 
-## Design & discussions
+## Design & docs
 
-Design rationale and roadmaps live on the GitHub
-[Discussions board](https://github.com/stablekernel/crucible/discussions),
-organized into the **State Machine** and **Conventions** categories. Start with:
+Design rationale, concepts, and guides live on the
+[documentation site](https://stablekernel.github.io/crucible/). Start with:
 
-- [Crucible Engineering Standards](https://github.com/stablekernel/crucible/discussions/9)
-  — the suite-wide baseline every module is held to.
-- [State Machine — Overview & Roadmap](https://github.com/stablekernel/crucible/discussions/1)
-- [State Machine — Kernel Core](https://github.com/stablekernel/crucible/discussions/2)
+- [Suite overview & philosophy](https://stablekernel.github.io/crucible/about/overview/)
+  — the suite-wide baseline every module is built to.
+- [State machine introduction](https://stablekernel.github.io/crucible/start/introduction/)
+- [Concepts: machine & instance](https://stablekernel.github.io/crucible/concepts/machine-and-instance/)
+
+The suite-wide engineering standards are inlined in
+[CONTRIBUTING.md](./CONTRIBUTING.md#engineering-standards). For questions or
+proposals, open a GitHub issue.
 
 ## Contributing
 
