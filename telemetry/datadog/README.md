@@ -65,7 +65,7 @@ The DogStatsD sample rate defaults to `1.0`; override it with `WithSampleRate`.
 
 ## Pinned versions
 
-- Tracing: `github.com/DataDog/dd-trace-go/v2` **v2.8.2** — v2 is the current
+- Tracing: `github.com/DataDog/dd-trace-go/v2` **v2.8.2**. v2 is the current
   major of dd-trace-go (the older `gopkg.in/DataDog/dd-trace-go.v1` line is
   superseded).
 - Metrics: `github.com/DataDog/datadog-go/v5` **v5.8.3** (DogStatsD).
@@ -76,4 +76,4 @@ Stability label: **experimental** (pre-v1).
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).
+Apache 2.0. See [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).

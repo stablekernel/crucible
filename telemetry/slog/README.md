@@ -9,8 +9,8 @@ Import path: `github.com/stablekernel/crucible/telemetry/slog`
 ## What it is
 
 This adapter implements the `telemetry.Tracer` and `telemetry.Meter` interfaces
-on top of Go's `log/slog`. It is the reference adapter — it proves the telemetry
-seam end to end without pulling in any vendor SDK — and is useful for
+on top of Go's `log/slog`. It is the reference adapter, proving the telemetry
+seam end to end without pulling in any vendor SDK, and is useful for
 development, tests, and environments where structured logs are the only
 observability sink.
 
@@ -57,7 +57,7 @@ tel := telemetry.Nop().Apply(
 | Counter/Histogram/Gauge | `metric`         | DEBUG | `metric.name`, `metric.kind`, `metric.value`, `metric.unit`, `metric.attrs.*` |
 
 `Tracer.Start` carries the current span id in the returned context, so a nested
-span logs its parent's id — reproducing span parentage in the logs.
+span logs its parent's id, reproducing span parentage in the logs.
 
 ## Options
 
@@ -73,4 +73,4 @@ Stability label: **experimental** (pre-v1).
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).
+Apache 2.0. See [LICENSE](../../LICENSE) and [NOTICE](../../NOTICE).

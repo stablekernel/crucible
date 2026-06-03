@@ -1,7 +1,7 @@
 # Food-delivery example
 
 A complete, runnable order-lifecycle statechart built with Crucible. It models a
-generic food-ordering flow — place an order, hold payment, cook, deliver, capture —
+generic food-ordering flow (place an order, hold payment, cook, deliver, capture)
 and exercises the whole engine at once: hierarchy and parallel regions, actors,
 invoked services, timed deadlines, a compensation saga, and snapshot/restore across a
 restart.
@@ -31,7 +31,7 @@ Refunding invokes "refund"; on its result --> Canceled (terminal)
 ```
 
 Run it through the host `Rig` (the example's wiring of the Scheduler, ServiceRunner,
-and ActorSystem) — see `rig.go` — or embed the pieces directly.
+and ActorSystem); see `rig.go`, or embed the pieces directly.
 
 ## Requirement → engine feature
 
@@ -39,14 +39,14 @@ Each business requirement maps to one engine capability. This is the table to st
 
 | Business requirement | Engine feature | Where to look |
 |---|---|---|
-| "An order has data (basket, tip, payment hold) that changes as it progresses." | **Value-semantics context** (`Order` passed and returned by value). | `Order` struct; `m.Cast(order, …)` in `rig.go`. |
-| "Only well-defined steps may change that data — nothing mutates it behind your back." | **Assign reducers** are the *sole* context writers. Guards and the kernel see the context read-only. | every `Reducer(...)` and `.Assign(...)`; `recordHold`, `settleReducer`, etc. |
+| "An order has data (basket, tip, payment hold) that changes as it progresses." | **Value-semantics context** (`Order` passed and returned by value). | `Order` struct; `m.Cast(order, ...)` in `rig.go`. |
+| "Only well-defined steps may change that data; nothing mutates it behind your back." | **Assign reducers** are the *sole* context writers. Guards and the kernel see the context read-only. | every `Reducer(...)` and `.Assign(...)`; `recordHold`, `settleReducer`, etc. |
 | "Admit an order to fulfillment only if it clears a business rule." | **Core guard expressions** over a **ContextSchema** (typed compare + membership, evaluated in-kernel, type-checked at build). | `WithContextSchema(SchemaOf[Order]())`; `Field(...).Ge(...)`, `Field(...).In(...)` on the `Authorized` edge. |
 | "Some rules are richer than compare-and-match." | **Rich (CEL) guard** from `state/expr`, composed with the Core leaves via `Or`. | `expr.Guard(...)` building `generousOrder`; the `WhenExpr(Or(generous, And(...)))`. |
 | "Cooking and delivery happen alongside a delivery-time watchdog." | **Hierarchy + parallel regions** (an orthogonal `Active` superstate with two regions). | `SuperState(Active)` with `Region("Fulfillment")` ∥ `Region("Watchdog")`. |
 | "The kitchen and the driver are independent participants that report back." | **Actors**: child machines the order supervises; their output returns through the completion event. | `Actor("kitchen")`, `Actor("courier")`; `kitchenBehavior`, `courierBehavior`. |
-| "Hold the payment, then capture it; reverse it if the order is canceled." | **Invoked services** with `onDone`/`onError`. | `Service("authorize", …)`, `Service("refund", …)`; `Invoke(...)`. |
-| "A service's result must flow into the order's data." | **onDone-via-event**: the host re-fires the routing event carrying the result; the reducer reads it from `AssignCtx.Event` — no side channel. | `recordHold`, `recordRefund`, `recordPrep`, `recordDrop`. |
+| "Hold the payment, then capture it; reverse it if the order is canceled." | **Invoked services** with `onDone`/`onError`. | `Service("authorize", ...)`, `Service("refund", ...)`; `Invoke(...)`. |
+| "A service's result must flow into the order's data." | **onDone-via-event**: the host re-fires the routing event carrying the result; the reducer reads it from `AssignCtx.Event`, no side channel. | `recordHold`, `recordRefund`, `recordPrep`, `recordDrop`. |
 | "Flag an order that misses its delivery window." | **`after` / SLA timeout** via the Scheduler, driven deterministically with a fake clock in tests. | `After(SLAWindow)` in the Watchdog region; `Rig.BreachSLA`. |
 | "Canceling a paid order must reverse the charge." | **Compensation saga**: a post-payment cancellation invokes the refund and folds the reversed amount in. | the `Cancel` cross-cutting transition → `Refunding` → `recordRefund`. |
 | "Survive a process restart mid-order." | **Snapshot → restore**: the value context, active parallel configuration, pending timers, and in-flight actors all round-trip. | `Rig.Snapshot`, `RestoreRig`; `TestScenario_SnapshotRestoreMidOrder`. |
@@ -61,9 +61,9 @@ Each business requirement maps to one engine capability. This is the table to st
   actor completes, the host re-fires the routing event with the result as its payload;
   the `onDone` reducer reads it from `AssignCtx.Event`. There is no "last result"
   back-reference to thread through the builder.
-- **Decision logic is data.** Guards are authored as expressions over a typed schema —
+- **Decision logic is data.** Guards are authored as expressions over a typed schema:
   Core for the common compare/membership cases (evaluated in-kernel, zero dependency),
-  Rich (CEL) when you need real expressions — so tooling can read and check them.
+  Rich (CEL) when you need real expressions, so tooling can read and check them.
 - **The host owns the loop.** Crucible decides; the `Rig` dispatches the resulting
   effects (start a service, arm a timer, spawn an actor) to the world. The decision
   core stays pure.

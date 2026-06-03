@@ -1,6 +1,6 @@
 ---
 title: Effects and purity
-description: Fire returns state, effects, and a trace as data — no IO. The host dispatches the effects.
+description: Fire returns state, effects, and a trace as data, no IO. The host dispatches the effects.
 sidebar:
   order: 4
 ---
@@ -19,8 +19,8 @@ type FireResult[S comparable] struct {
 
 No effect is *performed* inside `Fire`. If a transition's action says "publish an
 `OrderPaid` message" or "charge the card", `Fire` records that intent as an
-`Effect` in the result and returns. The **host** — your handler, consumer, or
-test — inspects `res.Effects` and dispatches them:
+`Effect` in the result and returns. The **host** (your handler, consumer, or
+test) inspects `res.Effects` and dispatches them:
 
 ```go
 res := inst.Fire(ctx, Pay)
@@ -40,7 +40,7 @@ for _, eff := range res.Effects {
 Because the machine performs no IO, the *same* `*Machine` runs unchanged in
 wildly different hosts:
 
-- **A unit test** fires events and asserts on `NewState` and `Effects` — no
+- **A unit test** fires events and asserts on `NewState` and `Effects`, with no
   brokers, no databases, no mocks of the kernel.
 - **An HTTP handler** fires the event for an incoming request, then dispatches
   the effects to its real publishers and stores.
@@ -54,13 +54,13 @@ it runs.
 
 The `Trace` rounds this out: it is an ordered record of the transitions, guards,
 and regions that `Fire` walked, so you can explain, log, or replay any step
-after the fact — again, entirely as data.
+after the fact, again entirely as data.
 
 ## Dispatching the effects
 
 That `for _, eff := range res.Effects` loop is exactly the seam the
 [`crucible/sink`](/crucible/sink/overview/) module fills: a `Manifold` fans each
-effect out to every wired destination — SQL, a message bus, a metric — fire and
+effect out to every wired destination (SQL, a message bus, a metric), fire and
 forget, with neither kernel importing the other. The
 [state-to-sink bridge](/crucible/sink/with-state/) makes "fan every transition
 out" a one-liner. The kernel stays a pure decision core; sink is one ready-made

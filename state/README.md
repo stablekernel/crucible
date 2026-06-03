@@ -1,6 +1,6 @@
 # crucible/state
 
-A pure, embeddable **statechart engine** for Go — the kernel of the
+A pure, embeddable **statechart engine** for Go, the kernel of the
 [Crucible](../README.md) suite.
 
 > **Status:** experimental, pre-1.0. The engine is feature-complete and
@@ -17,7 +17,7 @@ from a unit test, a synchronous request handler, and an asynchronous event
 consumer.
 
 It is the extreme end of the suite's thin-seams philosophy: the engine is
-**stdlib-only** — it imports only the Go standard library and performs no
+**stdlib-only**, importing only the Go standard library and performing no
 injected IO. A tiny dependency graph is a tiny attack surface, and the boundary
 is enforced mechanically by an import-graph test.
 
@@ -28,12 +28,12 @@ The heart of the engine is a pure function. Firing an event returns
 
 ```go
 res := inst.Fire(ctx, Submit)
-// res.NewState — the resulting configuration
-// res.Effects  — abstract data the host dispatches
-// res.Trace    — a structured record of what happened
+// res.NewState: the resulting configuration
+// res.Effects:  abstract data the host dispatches
+// res.Trace:    a structured record of what happened
 ```
 
-Everything stateful — timers, invoked services, actors, mailboxes — lives in
+Everything stateful (timers, invoked services, actors, mailboxes) lives in
 **host-driven drivers** that the engine feeds with effect *data*. Entering a
 state that arms a timer emits a `ScheduleAfter` effect; a host `Scheduler` owns
 the real clock and re-fires the delayed event back through `Fire`. The same
@@ -46,70 +46,70 @@ every driver is deterministically testable with a `FakeClock`.
 
 A complete statechart feature surface:
 
-- **State kinds** — atomic, compound (hierarchical), **parallel** (orthogonal
+- **State kinds**: atomic, compound (hierarchical), **parallel** (orthogonal
   regions), and final states, nesting to arbitrary depth.
-- **History** — shallow and deep history pseudo-states that re-enter a compound
+- **History**: shallow and deep history pseudo-states that re-enter a compound
   state's last active configuration rather than its initial child.
-- **Guards** — named guard refs plus the **`And` / `Or` / `Not`** combinators and
+- **Guards**: named guard refs plus the **`And` / `Or` / `Not`** combinators and
   the config-aware **`stateIn`** built-in, composable into a serializable boolean
   expression tree.
-- **Actions & effects** — named action refs with serializable params; actions
+- **Actions & effects**: named action refs with serializable params; actions
   return abstract effects the host dispatches.
-- **Run-to-completion** — **eventless (`Always`) transitions**, **`Raise`** for
+- **Run-to-completion**: **eventless (`Always`) transitions**, **`Raise`** for
   internal events, and a macrostep loop that drains both to a stable
   configuration, with overflow protection.
-- **Transition forms** — **wildcard** catch-alls (`OnAny`), **forbidden**
+- **Transition forms**: **wildcard** catch-alls (`OnAny`), **forbidden**
   transitions (`Forbid`), and **`Reenter`** to force the external (exit/entry)
   form of an otherwise-internal self-transition.
-- **Delayed transitions** — `Transition(from).After(delay).On(event).GoTo(...)`,
+- **Delayed transitions**: `Transition(from).After(delay).On(event).GoTo(...)`,
   scheduled and auto-cancelled on exit by a host `Scheduler`.
-- **Invoked services** — state-scoped `Invoke(src, onDone, onError)` with
+- **Invoked services**: state-scoped `Invoke(src, onDone, onError)` with
   result/error routing, auto-stopped on exit, driven by a host `ServiceRunner`.
-- **Actor model** — child-machine actors, a host `ActorSystem`, mailboxes, and
-  dynamic `Spawn`, with **message passing** — `SendTo`, `SendParent`, `Respond`,
-  `ForwardTo`, and `StopChild` — and sender-tracked routing.
-- **Snapshots** — `Instance.Snapshot()` captures the full runtime state
+- **Actor model**: child-machine actors, a host `ActorSystem`, mailboxes, and
+  dynamic `Spawn`, with **message passing** (`SendTo`, `SendParent`, `Respond`,
+  `ForwardTo`, and `StopChild`) and sender-tracked routing.
+- **Snapshots**: `Instance.Snapshot()` captures the full runtime state
   (configuration, history, context, traces, pending timers/services/actors);
   `Machine.Restore` resumes from it without re-running entry actions, and
   `ResumeEffects` re-arms pending children. Actor trees persist recursively.
-- **Inspection & waiting** — an `Inspector` observer sink for the live
+- **Inspection & waiting**: an `Inspector` observer sink for the live
   event/transition/snapshot/actor stream, and `WaitFor(ctx, inst, predicate)`
   (plus `WaitInState` / `WaitDone`) that drives an instance until a predicate
   over its snapshot holds.
-- **Path enumeration** — `PlanPath` finds the shortest sequence to a target;
+- **Path enumeration**: `PlanPath` finds the shortest sequence to a target;
   `state/analysis` adds `ShortestPaths` and `SimplePaths` over the whole graph.
 
 ## What sets it apart
 
 These are Crucible's own strengths, stated plainly:
 
-- **Static analysis / model-checking** — `state/analysis` runs over a machine's
+- **Static analysis / model-checking**: `state/analysis` runs over a machine's
   IR to report reachability (unreachable/dead states), dead transitions,
   guardless nondeterminism, non-final dead ends, and liveness. Checks are exact
   where the IR proves them and heuristic where opaque guards limit certainty.
-- **Serializable IR** — the canonical machine is pure data, lossless to and from
+- **Serializable IR**: the canonical machine is pure data, lossless to and from
   JSON. Behavior is not embedded as closures; guards, actions, effects, and
   services are named references with serializable params, bound to a host
   registry at freeze time. A machine authored in Go and one loaded from JSON are
   the same machine.
-- **Conformance harness** — a reusable harness drives golden scenarios against
+- **Conformance harness**: a reusable harness drives golden scenarios against
   any machine, so a definition can be held to a fixed behavioral contract.
-- **Machine-evolution diffing** — `state/evolution` classifies the difference
+- **Machine-evolution diffing**: `state/evolution` classifies the difference
   between two definitions as additive or breaking and maps the result onto a
   SemVer bump, treating a machine definition as a schema.
-- **Visualization** — Mermaid and DOT export, with delayed edges annotated by
+- **Visualization**: Mermaid and DOT export, with delayed edges annotated by
   their delay.
-- **Compile-time type safety** — the engine is generic over `S`, `E`, and `C`;
+- **Compile-time type safety**: the engine is generic over `S`, `E`, and `C`;
   states, events, and context are checked by the Go type system, not stringly
   typed.
-- **Pluggable telemetry** — a `WithLogger(*slog.Logger)` seam (no-op by default)
+- **Pluggable telemetry**: a `WithLogger(*slog.Logger)` seam (no-op by default)
   is the only logging hook; the engine never logs unless asked and never imports
   a third-party logger. Determinism is preserved by injecting time and ID seams.
 
 ## Foundry vocabulary
 
-The lifecycle API uses a small "foundry" verb vocabulary. The noun stays plain —
-the type is a `Machine` — only the verbs are themed:
+The lifecycle API uses a small "foundry" verb vocabulary. The noun stays plain
+(the type is a `Machine`); only the verbs are themed:
 
 | Verb     | Role                                                                   |
 | -------- | ---------------------------------------------------------------------- |
@@ -169,7 +169,7 @@ func main() {
 `Cast` returns a running `Instance`; `Fire` advances it and returns the new
 state, the emitted effects, and the trace. The same machine can be serialized
 with `m.ToJSON()`, reloaded with `state.LoadFromJSON`, analyzed with
-`analysis.Analyze`, or rendered to Mermaid/DOT — all from the one definition.
+`analysis.Analyze`, or rendered to Mermaid/DOT, all from the one definition.
 
 ## Subpackages
 
@@ -189,7 +189,7 @@ independently versioned per-module SemVer.
 ## Design & docs
 
 Design rationale, concepts, and guides live on the
-[documentation site](https://stablekernel.github.io/crucible/) — see the
+[documentation site](https://stablekernel.github.io/crucible/). See the
 [state machine introduction](https://stablekernel.github.io/crucible/start/introduction/)
 and [machine & instance concepts](https://stablekernel.github.io/crucible/concepts/machine-and-instance/).
 For questions or proposals, open a GitHub issue.

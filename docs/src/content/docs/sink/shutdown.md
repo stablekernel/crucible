@@ -5,24 +5,24 @@ sidebar:
   order: 6
 ---
 
-<!-- IMAGE-SLOT: sink-shutdown-drain — a foundry at end of shift: the sky-squid tipping the last measured pour out of a reservoir ladle before banking the fire, channels running clear; ember/copper cooling to steel — 16:9 -->
+<!-- IMAGE-SLOT: sink-shutdown-drain: a foundry at end of shift: the sky-squid tipping the last measured pour out of a reservoir ladle before banking the fire, channels running clear; ember/copper cooling to steel; 16:9 -->
 ![Draining the last batch before banking the fire](../../../assets/sink-shutdown-drain.png)
 
 Buffered outlets hold payloads that have not yet reached their destination. On a
 clean shutdown you want those drained, the background loops stopped, and any
-held resources released — within a deadline.
+held resources released, all within a deadline.
 
 The Manifold exposes three lifecycle methods:
 
 ```go
 func (m *Manifold) Flush(ctx context.Context) error    // push buffered outlets out now
 func (m *Manifold) Shutdown(ctx context.Context) error  // flush, then stop + drain
-func (m *Manifold) Close() error                        // io.Closer → Shutdown(context.Background())
+func (m *Manifold) Close() error                        // io.Closer: Shutdown(context.Background())
 ```
 
 - **`Flush`** calls `Flush` on every attached `Flusher` (a `Reservoir`, the
   `statsd` aggregator) and joins their errors. Use it to force a release without
-  tearing anything down — for example before reading back what landed in a test.
+  tearing anything down, for example before reading back what landed in a test.
 - **`Shutdown`** flushes first, then calls `Shutdown` on every `Shutdowner`,
   draining in-flight work within `ctx`'s deadline. Background loops stop and wait
   to exit (no goroutine leak); shutdown is idempotent.
@@ -53,5 +53,5 @@ defer p.Stop()
 ```
 
 Because draining is bounded by the context you pass, a wedged destination can
-never hang your shutdown forever — it fails the deadline, the error is joined and
+never hang your shutdown forever. It fails the deadline, the error is joined and
 returned, and your process exits. Thin seams, predictable teardown.

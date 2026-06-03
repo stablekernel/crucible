@@ -2,7 +2,7 @@
 
 A [`crucible/sink`](../) destination that delivers payloads via HTTP POST using
 the standard library's `net/http`. Runtime dependencies: the standard library and
-`crucible/sink` only — no third-party HTTP client.
+`crucible/sink` only, no third-party HTTP client.
 
 ```go
 reg := httpsink.NewRegistry()

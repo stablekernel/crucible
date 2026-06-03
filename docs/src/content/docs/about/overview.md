@@ -1,13 +1,13 @@
 ---
 title: What Crucible is
-description: A high-level overview of the Crucible suite and the philosophy behind it — facilitate how you build event-driven services, not prescribe what you use.
+description: "A high-level overview of the Crucible suite and the philosophy behind it: facilitate how you build event-driven services, not prescribe what you use."
 sidebar:
   order: 1
 ---
 
 Crucible is a multi-module Go suite for building event-driven services:
 statecharts, durable execution, egress, and the seams between them. It is built
-on one conviction — **facilitate how you build, don't prescribe what you use.**
+on one conviction: **facilitate how you build, don't prescribe what you use.**
 
 ## What it's for
 
@@ -45,16 +45,16 @@ lock-in and no dependency you didn't ask for.
 
 Two pillars are documented here in depth:
 
-- **[state](/crucible/start/introduction/)** — the statechart engine. Author
+- **[state](/crucible/start/introduction/)**: the statechart engine. Author
   hierarchical, parallel, guarded machines, cast them to running instances,
   serialize them losslessly to JSON, and analyze and verify them before they
   ship. Pure stdlib.
-- **[sink](/crucible/sink/overview/)** — the egress seam. Fan one event out to
+- **[sink](/crucible/sink/overview/)**: the egress seam. Fan one event out to
   many destinations (databases, queues, webhooks, metrics) through a typed
   manifold, with buffering, telemetry, and graceful drain.
 
-Further modules — durable execution, clustering, transport, WebAssembly, and
-telemetry adapters — follow the same seam-and-default discipline and are
+Further modules (durable execution, clustering, transport, WebAssembly, and
+telemetry adapters) follow the same seam-and-default discipline and are
 versioned independently. The full module list lives in the
 [repository](https://github.com/stablekernel/crucible#modules).
 

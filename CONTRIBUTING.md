@@ -7,12 +7,12 @@ By participating you agree to abide by our [Code of Conduct](./CODE_OF_CONDUCT.m
 
 ## Engineering standards
 
-All contributions are held to the suite-wide standards below — the authoritative
+All contributions are held to the suite-wide standards below, the authoritative
 baseline every module is built to. Module-specific design lives in each module's
 own docs and the [documentation site](https://stablekernel.github.io/crucible/).
 
 The through-line is **thin seams, no-op defaults, no forced dependencies**. Every
-cross-cutting concern — logging, tracing, metrics, IDs, time — is a small,
+cross-cutting concern (logging, tracing, metrics, IDs, time) is a small,
 consumer-providable interface with a do-nothing default. Zero configuration means
 silent behavior, zero overhead, and zero extra imports; a consumer brings their
 logger, their tracer, their clock, and we never make them adopt ours. The pure
@@ -26,15 +26,15 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 - **Functional options everywhere.** Every public constructor and operation takes
   a variadic `...XxxOption` tail. Required inputs stay positional; everything
   optional or extensible is an option; a zero-option call reads clean. New
-  capability arrives as a new option — additive-only, never a breaking signature
+  capability arrives as a new option: additive-only, never a breaking signature
   change. Never hide a required input behind an option.
 - **Per-module SemVer** with a written compatibility policy, plus a **stability
   label** (experimental / beta / stable) declared in each module's README and
   godoc. The label sets the compatibility promise.
 - **Context-first.** Every IO or cancelable operation takes `context.Context` as
   its first parameter.
-- **Zero global state.** No package-level mutable state, no `init()` side effects —
-  everything is constructed explicitly and injected.
+- **Zero global state.** No package-level mutable state, no `init()` side effects.
+  Everything is constructed explicitly and injected.
 - **Never leak third-party types** in public signatures. Public APIs speak stdlib
   types or Crucible's own types only.
 - **Typed errors.** Return typed, wrapped errors (`%w`, `errors.Is` / `errors.As`
@@ -45,10 +45,10 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 - **Logging via `log/slog`.** Consumers pass their own `*slog.Logger`; the default
   is a no-op. Severity maps onto slog's integer levels, extending the standard four
   to a six-level scale: TRACE (-8), DEBUG (-4), INFO (0), WARN (+4), ERR (+8),
-  FATAL (+12).
+  and FATAL (+12).
 - **A library never exits the process.** Crucible code never calls `os.Exit`,
   `log.Fatal`, or panics on an operational error. FATAL is a severity, not an
-  action — log at FATAL severity (if a logger is provided) and return the error;
+  action: log at FATAL severity (if a logger is provided) and return the error;
   the consumer decides whether to exit. Panic is reserved strictly for programmer
   error at construction time, never for runtime conditions.
 - **Vendor-neutral telemetry.** Crucible defines its own minimal tracing/metrics
@@ -72,7 +72,7 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 
 ### Testing
 
-- **Layered suites** — unit + integration + e2e, each in its own scope — run under
+- **Layered suites** (unit + integration + e2e, each in its own scope) run under
   `-race` in CI.
 - **Native fuzzing** (`testing.F`) for parsers and the IR round-trip, plus
   property-based tests for invariants.
@@ -95,7 +95,7 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 
 ### Supply chain
 
-- **Dependency minimalism** — the kernel being stdlib-only is a security feature,
+- **Dependency minimalism.** The kernel being stdlib-only is a security feature,
   not just an aesthetic one. IO modules keep their dependency sets small and
   justified.
 - **govulncheck** in CI and **Dependabot** for dependency updates.
@@ -104,8 +104,8 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 
 Requirements:
 
-- **Go** — one of the last two minor releases (see [Supported versions](./SECURITY.md)).
-- **[Mage](https://magefile.org)** — the build tool. Install with
+- **Go**: one of the last two minor releases (see [Supported versions](./SECURITY.md)).
+- **[Mage](https://magefile.org)**: the build tool. Install with
   `go install github.com/magefile/mage@latest`, or run targets via
   `go run github.com/magefile/mage <target>`.
 
@@ -166,14 +166,14 @@ mage benchCompare v0.1.0     # working tree vs an explicit ref (tag/branch/SHA)
 ```
 
 It benches the base ref in a throwaway git worktree (your working tree is left
-untouched), prints the `benchstat` table, and exits non-zero on a regression —
+untouched), prints the `benchstat` table, and exits non-zero on a regression,
 the same verdict CI produces.
 
 ## Commits
 
 - **Conventional commits**: `type: subject` (e.g. `feat: add IR round-trip`).
   Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`.
-- **DCO sign-off** is required on every commit — there is **no CLA**. Add the
+- **DCO sign-off** is required on every commit; there is **no CLA**. Add the
   `Signed-off-by` trailer with `git commit -s`. By signing off you certify the
   [Developer Certificate of Origin](https://developercertificate.org/).
 - Commits should be **signed** (`git commit -S`) where possible.
@@ -201,7 +201,7 @@ is a tag push; the `Release` workflow does the rest.
    ```go
    report, _ := evolution.DiffJSON[State, Event, *Entity](goldenBytes, currentBytes)
    switch report.SemverBump() {
-   case evolution.Major: // a breaking change — follow the deprecation lifecycle first
+   case evolution.Major: // a breaking change; follow the deprecation lifecycle first
    case evolution.Minor: // additive only
    case evolution.Patch: // no schema change
    }
@@ -229,7 +229,7 @@ is a tag push; the `Release` workflow does the rest.
 ## Questions & design
 
 Design rationale and guides live on the
-[documentation site](https://stablekernel.github.io/crucible/) — start with the
+[documentation site](https://stablekernel.github.io/crucible/). Start with the
 [suite overview](https://stablekernel.github.io/crucible/about/overview/). For
 questions or to float an architectural change before writing a large PR, open a
 GitHub issue.

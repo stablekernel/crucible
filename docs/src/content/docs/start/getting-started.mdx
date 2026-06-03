@@ -18,7 +18,7 @@ The kernel depends only on the Go standard library.
 ## Your first machine, end to end
 
 A machine is generic over three types you define: **S** (state), **E** (event),
-and **C** (context — your domain entity). Here is a toy turnstile, forged and
+and **C** (context, your domain entity). Here is a toy turnstile, forged and
 fired from scratch.
 
 ```go
@@ -57,7 +57,7 @@ func main() {
 	// Cast an instance around an entity value.
 	inst := m.Cast(Turnstile{})
 
-	// Fire advances the instance and returns a FireResult. It performs NO IO —
+	// Fire advances the instance and returns a FireResult. It performs NO IO.
 	// NewState is the next state, Effects is data for the caller to dispatch.
 	res := inst.Fire(context.Background(), Coin)
 	fmt.Println(res.NewState) // Unlocked
@@ -79,7 +79,7 @@ stateDiagram-v2
 ## A real machine
 
 The same primitives scale to hierarchical and parallel statecharts. Here is the
-food-delivery order machine that ships as a worked example — note the nested
+food-delivery order machine that ships as a worked example. Note the nested
 `Active` region with parallel fulfillment and watchdog sub-machines, guarded
 transitions, and an `after(...)` timer:
 

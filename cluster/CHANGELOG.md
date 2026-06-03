@@ -23,7 +23,7 @@ behind the `Transport` interface.
   local primitives a transport and a supervisor drive. A `System` with no transport
   serves local actors and reports `ErrNoTransport` for a remote ref.
 - **In-memory transport.** `InMemoryTransport` connects node-scoped systems in one
-  process — the reference `Transport` for tests and single-process development — with
+  process (the reference `Transport` for tests and single-process development) with
   `ErrNodeUnreachable` for an unregistered node. A real network transport implements
   the same interface out of tree.
 - **Supervision.** `Supervisor` routes each escalated actor failure to a per-source

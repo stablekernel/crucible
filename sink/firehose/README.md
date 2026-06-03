@@ -18,7 +18,7 @@ m.Sink(ctx, OrderShipped{OrderID: "ord-42"})
 `Client` is a narrow two-method interface (`PutRecord`, `PutRecordBatch`)
 satisfied structurally by
 `*github.com/aws/aws-sdk-go-v2/service/firehose.Client`. Tests use a
-hand-rolled fake — no AWS credentials needed.
+hand-rolled fake, no AWS credentials needed.
 
 ## Op constructors
 

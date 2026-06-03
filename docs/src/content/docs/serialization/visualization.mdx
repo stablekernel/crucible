@@ -1,13 +1,13 @@
 ---
 title: Visualization
-description: Render any machine to Mermaid or GraphViz DOT — straight from the live machine or one loaded from JSON.
+description: Render any machine to Mermaid or GraphViz DOT, straight from the live machine or one loaded from JSON.
 sidebar:
   order: 3
 ---
 
 import Order from '../_generated/diagrams/_fooddelivery-order.md';
 
-{/* IMAGE-SLOT: render-twins — sky-squid holding two identical glowing statechart prints, one forged from code and one from a JSON document, overlaid to reveal a perfect match — 16:9 */}
+{/* IMAGE-SLOT: render-twins: sky-squid holding two identical glowing statechart prints, one forged from code and one from a JSON document, overlaid to reveal a perfect match; 16:9 */}
 ![Code and JSON render to the same diagram.](../../../assets/render-twins.png)
 
 A definition you can read is a definition you can trust. Crucible renders any
@@ -21,7 +21,7 @@ dot := m.ToDOT()          // GraphViz DOT, for richer SVG output
 ```
 
 `ToMermaid` produces a `stateDiagram-v2` that renders inline on GitHub and in
-docs. `ToDOT` emits GraphViz DOT — better for large, deeply hierarchical
+docs. `ToDOT` emits GraphViz DOT, better for large, deeply hierarchical
 machines where Mermaid grows unreadable, and for high-fidelity SVG on slides and
 docs sites. Both are deterministic: states keep their declared order, edges are
 sorted, so repeated calls are byte-identical and golden-stable.
@@ -43,7 +43,7 @@ m.ToDOT(state.TopToBottom())        // rankdir=TB
 
 ## Same graph, code or JSON
 
-Rendering is a pure function of the machine graph — the very structure the IR
+Rendering is a pure function of the machine graph, the very structure the IR
 carries. A machine loaded with [`LoadFromJSON`](/crucible/serialization/json-ir/)
 and re-quenched renders *identically* to one forged in code:
 
@@ -56,7 +56,7 @@ fmt.Println(m.ToMermaid()) // same diagram, byte for byte
 ## A real diagram
 
 The diagram below is generated at build time from `fooddelivery.NewModel()` via
-`ToMermaid()` — the same machine the example's tests exercise, so it can never
+`ToMermaid()`, the same machine the example's tests exercise, so it can never
 drift from the code:
 
 <Order/>

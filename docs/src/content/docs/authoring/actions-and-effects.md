@@ -1,11 +1,11 @@
 ---
 title: Actions and Effects
-description: Attach ordered effects to transitions — data the host dispatches, never IO the kernel performs.
+description: Attach ordered effects to transitions. Data the host dispatches, never IO the kernel performs.
 sidebar:
   order: 4
 ---
 
-<!-- IMAGE-SLOT: effect-conveyor — sky-squid placing sealed effect parcels onto a conveyor belt labelled "host dispatches", kernel booth stays still — 16:9 -->
+<!-- IMAGE-SLOT: effect-conveyor (sky-squid placing sealed effect parcels onto a conveyor belt labelled "host dispatches", kernel booth stays still) 16:9 -->
 ![Actions and effects](../../../assets/effect-conveyor.png)
 
 An **action** describes something the outside world should do: send an email, charge a card, emit a metric. Attach one with `Do`, naming an `ActionFn` registered on the machine. Multiple `Do` calls run **in declared order**:
@@ -27,7 +27,7 @@ func notifyCustomer(ctx state.ActionCtx[Order]) (state.Effect, error) {
 }
 ```
 
-The crucial discipline: **the kernel performs no IO**. An action returns an `Effect` — plain data — and the kernel collects every effect into the `FireResult`. Your host loop reads that slice and dispatches the real work. This keeps `Fire` deterministic and pure: the same context and event always yield the same effects, which is what makes the engine testable, replayable, and safe to run anywhere.
+The crucial discipline: **the kernel performs no IO**. An action returns an `Effect` (plain data) and the kernel collects every effect into the `FireResult`. Your host loop reads that slice and dispatches the real work. This keeps `Fire` deterministic and pure: the same context and event always yield the same effects, which is what makes the engine testable, replayable, and safe to run anywhere.
 
 ```mermaid
 stateDiagram-v2
@@ -39,4 +39,4 @@ stateDiagram-v2
     end note
 ```
 
-Contrast this with an **assign**. An assign rewrites the machine's own context (the next state of your data). An action emits a request for the world to change. A transition often does both — fold the new totals into context with `Assign`, and ask the host to notify the customer with `Do` — but they never blur: assigns mutate context, effects describe IO, and only the host acts on the latter.
+Contrast this with an **assign**. An assign rewrites the machine's own context (the next state of your data). An action emits a request for the world to change. A transition often does both, folding the new totals into context with `Assign` and asking the host to notify the customer with `Do`, but they never blur: assigns mutate context, effects describe IO, and only the host acts on the latter.

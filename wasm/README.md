@@ -1,6 +1,6 @@
 # crucible/wasm
 
-Run [Crucible](../README.md) [`state`](../state) **behaviors as WebAssembly** —
+Run [Crucible](../README.md) [`state`](../state) **behaviors as WebAssembly**:
 polyglot guards (and, ahead, services) authored in any language and evaluated by
 the host over a serializable JSON ABI.
 
@@ -14,8 +14,8 @@ Import path: `github.com/stablekernel/crucible/wasm`
 A guard is normally a Go func or a CEL expression. `wasm` adds a third option: a
 guard implemented as a **WebAssembly module**, so behavior logic can be written in
 any language that compiles to WASM and dropped into a machine by name. The host
-invokes the module over a small JSON ABI through **wazero — a pure-Go, CGo-free
-runtime** — so adopting it adds no C toolchain and no cross-compilation burden.
+invokes the module over a small JSON ABI through **wazero, a pure-Go, CGo-free
+runtime**, so adopting it adds no C toolchain and no cross-compilation burden.
 
 It lives apart from the kernel so the wazero dependency never enters the stdlib-only
 core: a deployment that uses only Go or CEL guards never compiles WASM in. The ABI
@@ -44,7 +44,7 @@ def := state.Forge[string, string, Order]("order").
 ```
 
 The guard composes like any other: combine it with `And`/`Or`/`Not`, or reference it
-by name from a JSON-authored machine. A broken module is **fail-safe** — an
+by name from a JSON-authored machine. A broken module is **fail-safe**: an
 evaluation error reports `false`, so the guarded transition is blocked rather than
 taken on a bad verdict.
 
@@ -63,7 +63,7 @@ serializes concurrent `Eval` calls behind a mutex (one linear memory per instanc
 
 A guest can be written in any WASM-targeting language; the test suite compiles a tiny
 Go `//go:wasmexport` guest with the standard toolchain (`GOOS=wasip1 GOARCH=wasm`,
-`-buildmode=c-shared`) — no TinyGo and no committed binary.
+`-buildmode=c-shared`), no TinyGo and no committed binary.
 
 ## Performance
 

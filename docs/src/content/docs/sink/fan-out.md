@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-<!-- IMAGE-SLOT: sink-reservoir-pour — a foundry reservoir/ladle filling to a fill-line then tipping a measured batch into a mold, a second ladle on an interval timer; sky-squid tending; ember/copper on steel — 16:9 -->
+<!-- IMAGE-SLOT: sink-reservoir-pour: a foundry reservoir/ladle filling to a fill-line then tipping a measured batch into a mold, a second ladle on an interval timer; sky-squid tending; ember/copper on steel; 16:9 -->
 ![Reservoir buffering and releasing in batches](../../../assets/sink-reservoir-pour.png)
 
 `Manifold.Sink` is the **only** emit path, and it returns nothing:
@@ -32,12 +32,12 @@ There is deliberately no `SinkWait`. A buffered outlet (see
 [Reservoir](#reservoir-batching) below) can only confirm *admission to its
 buffer*, not the eventual write, so a synchronous "all confirmed" return would
 be a dishonest guarantee. When you genuinely need confirmation for one critical
-destination, hold that `Outlet` directly and call it — you get an honest,
+destination, hold that `Outlet` directly and call it. You get an honest,
 per-destination error:
 
 ```go
 if err := auditOutlet.Sink(ctx, payload); err != nil {
-    return err // 500, retry, compensate — your call
+    return err // 500, retry, compensate: your call
 }
 m.Sink(ctx, payload) // everything else fans out fire-and-forget
 ```
@@ -51,7 +51,7 @@ if errors.As(err, &se) {
 }
 ```
 
-## Reservoir — batching
+## Reservoir: batching
 
 Wrap any outlet in a `Reservoir` to buffer payloads and release them in batches,
 by **size** or on an **interval**:
@@ -67,12 +67,12 @@ m.Attach(batched)
 On flush, if the wrapped outlet implements `BatchOutlet` the Reservoir calls
 `SinkBatch` once; otherwise it loops `Sink`. It records `sink.batch_size` and
 `sink.flush_latency_ms`, drops past an optional `WithMaxBuffered` cap (counted on
-`sink.dropped`), and reads its clock through `WithReservoirClock` — so tests
+`sink.dropped`), and reads its clock through `WithReservoirClock`, so tests
 drive flushes deterministically with **no sleeps**. The returned value is itself
 an `Outlet` (and a `Flusher` and `Shutdowner`), so it composes anywhere an outlet
 goes.
 
-## Poller — periodic sampling
+## Poller: periodic sampling
 
 Where a Reservoir reacts to payloads pushed in, a `Poller` *pulls*: on an
 interval it runs a `CollectFunc` that yields payloads, and sinks each to a target

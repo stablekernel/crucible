@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-<!-- IMAGE-SLOT: gatekeeper — sky-squid as a luminous gatekeeper checking a glowing condition card before opening a transition arch — 3:2 -->
+<!-- IMAGE-SLOT: gatekeeper (sky-squid as a luminous gatekeeper checking a glowing condition card before opening a transition arch) 3:2 -->
 ![Guards](../../../assets/gatekeeper.png)
 
 A guard is a condition that must hold for a transition to fire. Crucible offers two complementary styles, and both must pass when present.
@@ -19,7 +19,7 @@ Transition(Authorizing).On(Authorized).
     GoTo(Active).Assign("recordHold")
 ```
 
-**Expression guards** build a boolean tree from declarative nodes — no Go callback required, so they serialize cleanly. Combine `state.And`, `state.Or`, and `state.Not` with field predicates and `state.StateIn`:
+**Expression guards** build a boolean tree from declarative nodes, with no Go callback required, so they serialize cleanly. Combine `state.And`, `state.Or`, and `state.Not` with field predicates and `state.StateIn`:
 
 ```go
 generous := state.Field[Stage]("subtotal").Ge(state.Int[Stage](5000))

@@ -1,8 +1,8 @@
 # sink
 
 Fire-and-forget fan-out emitter for the Crucible suite. One `Manifold.Sink(ctx,
-payload)` call fans a payload out to every attached destination — SQL, DynamoDB,
-StatsD, a webhook, a log — without the call site knowing which are wired.
+payload)` call fans a payload out to every attached destination (SQL, DynamoDB,
+StatsD, a webhook, a log) without the call site knowing which are wired.
 
 ```go
 m := sink.NewManifold(sink.WithLogger(log), sink.WithTracer(tr), sink.WithMeter(mt))
@@ -14,7 +14,7 @@ m.Sink(ctx, payload)   // fire-and-forget fan-out; the only emit path
 defer m.Shutdown(ctx)
 
 // Need confirmation for one critical destination? Talk to it directly:
-if err := auditOutlet.Sink(ctx, payload); err != nil { /* retry, 500, … */ }
+if err := auditOutlet.Sink(ctx, payload); err != nil { /* retry, 500, ... */ }
 ```
 
 - **Fire-and-forget.** `Manifold.Sink` returns nothing; outlet failures go to the

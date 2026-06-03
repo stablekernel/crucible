@@ -5,10 +5,10 @@ sidebar:
   order: 2
 ---
 
-<!-- IMAGE-SLOT: two-front-ends-one-ir — a central glowing IR ingot (a JSON-etched metal bar) fed by two channels: on the left a code editor pouring molten Go, on the right a visual node-graph editor pouring molten diagram shapes; both crystallize into the same ingot, which then casts a running instance; foundry palette, sky-squid inspecting the ingot — 16:9 -->
+<!-- IMAGE-SLOT: two-front-ends-one-ir. A central glowing IR ingot (a JSON-etched metal bar) fed by two channels: on the left a code editor pouring molten Go, on the right a visual node-graph editor pouring molten diagram shapes; both crystallize into the same ingot, which then casts a running instance; foundry palette, sky-squid inspecting the ingot. 16:9 -->
 ![Two authoring front-ends emit one shared IR.](../../../assets/two-front-ends-one-ir.png)
 
-The canonical form of a Crucible machine is not Go code — it is an **IR**: a pure
+The canonical form of a Crucible machine is not Go code. It is an **IR**: a pure
 data structure describing states and transitions. The Forge DSL is one front-end
 that *emits* this IR. A future visual editor would be another. Both produce the
 same artifact.
@@ -16,7 +16,7 @@ same artifact.
 ## The config/implementation split
 
 The IR is *configuration*: it describes structure and references behavior by
-**name and params** through a `Ref` — it never embeds an executable function.
+**name and params** through a `Ref`; it never embeds an executable function.
 A transition might say "guard `generousOrder`" or "assign `applyDiscount` with
 `{percent: 10}`", but the function itself lives elsewhere.
 
@@ -41,7 +41,7 @@ ir, _ := state.LoadFromJSON[Status, Event, Order](data)
 m := ir.Provide(reg).Quench()
 ```
 
-When you author with the DSL directly, `Forge` carries its own registry — methods
+When you author with the DSL directly, `Forge` carries its own registry: methods
 like `.Guard`, `.Action`, and `.Reducer` register behavior into the same palette
 the refs resolve against.
 
@@ -50,7 +50,7 @@ the refs resolve against.
 - **Lossless round-trip.** `ToJSON` and `LoadFromJSON` serialize and rebuild the
   IR without loss, so a machine can be stored, versioned, diffed, and shipped as
   data independent of the binary that runs it.
-- **Dual authoring.** Code today, a visual editor tomorrow — the registry stays
+- **Dual authoring.** Code today, a visual editor tomorrow. The registry stays
   the single home for implementation, so the editor never needs to generate Go.
 - **Inspectable structure.** Static analysis, diagram rendering, and verification
   all operate on the IR alone, never on opaque closures.

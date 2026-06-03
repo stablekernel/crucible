@@ -5,12 +5,12 @@ sidebar:
   order: 2
 ---
 
-<!-- IMAGE-SLOT: sink-manifold-cutaway — a cutaway of a foundry manifold casting: one molten inlet channel branching into several outlet runners, each runner stamped with a destination glyph; sky-squid inspecting — 16:9 -->
+<!-- IMAGE-SLOT: sink-manifold-cutaway: a cutaway of a foundry manifold casting: one molten inlet channel branching into several outlet runners, each runner stamped with a destination glyph; sky-squid inspecting; 16:9 -->
 ![The Manifold casting: one inlet, many outlet runners](../../../assets/sink-manifold-cutaway.png)
 
 Two types carry the whole model.
 
-## Outlet — a single destination
+## Outlet: a single destination
 
 An `Outlet` is one place a payload can go:
 
@@ -21,7 +21,7 @@ type Outlet interface {
 ```
 
 `Sink` returns `ErrUnregistered` when the outlet has no handler for that
-payload's concrete type — a normal, silent skip, not a failure. Any other error
+payload's concrete type, a normal silent skip, not a failure. Any other error
 is a real failure. The smallest possible outlet is a function:
 
 ```go
@@ -31,7 +31,7 @@ m.Attach(sink.OutletFunc(func(ctx context.Context, p any) error {
 ```
 
 An outlet may also implement optional capabilities, which the Manifold detects
-by interface assertion and drives automatically — you never wire them by hand:
+by interface assertion and drives automatically. You never wire them by hand:
 
 | Capability | Method | Driven by |
 |---|---|---|
@@ -39,7 +39,7 @@ by interface assertion and drives automatically — you never wire them by hand:
 | `BatchOutlet` | `SinkBatch(ctx, []any) error` | `Reservoir` flushes |
 | `Shutdowner` | `Shutdown(ctx) error` | `Manifold.Shutdown` |
 
-## Manifold — one inlet, many outlets
+## Manifold: one inlet, many outlets
 
 A `Manifold` is the fan-out. Construct it with functional options, attach
 outlets fluently, and emit:
@@ -87,6 +87,6 @@ parent.Attach(sink.OutletFunc(func(ctx context.Context, p any) error {
 }))
 ```
 
-Most destinations are not hand-written outlets, though — they are
+Most destinations are not hand-written outlets, though. They are
 [`Emitter`s built from a typed client and a registry](/crucible/sink/destinations/).
 The next page covers what happens to a payload once it enters the Manifold.
