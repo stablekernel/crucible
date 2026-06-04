@@ -39,6 +39,10 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
+          # Skip the Go cache save on Windows: the tar/zstd cache-save post-step
+          # flakes intermittently on windows-latest and fails the job even when
+          # tests pass. Linux and macOS keep caching.
+          cache: ${{ runner.os != 'Windows' }}
       - name: test -race
         shell: bash
         run: |
@@ -73,6 +77,10 @@ jobs:
         with:
           go-version: "1.26.4"
           cache-dependency-path: "**/go.sum"
+          # Skip the Go cache save on Windows: the tar/zstd cache-save post-step
+          # flakes intermittently on windows-latest and fails the job even when
+          # tests pass. Linux and macOS keep caching.
+          cache: ${{ runner.os != 'Windows' }}
       - name: test -race
         shell: bash
         run: go test -C "${{ matrix.module }}" -race ./...
@@ -119,6 +127,10 @@ jobs:
         with:
           go-version: "1.26.4"
           cache-dependency-path: "**/go.sum"
+          # Skip the Go cache save on Windows: the tar/zstd cache-save post-step
+          # flakes intermittently on windows-latest and fails the job even when
+          # tests pass. Linux and macOS keep caching.
+          cache: ${{ runner.os != 'Windows' }}
       - name: integration tests
         shell: bash
         run: go test -C "${{ matrix.module }}" -tags integration ./...
