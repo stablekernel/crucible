@@ -31,13 +31,13 @@ A value `C` is not a stylistic preference. It is what makes the kernel's guarant
 
 ### The boundary recipe
 
-On the way in, when you hydrate an aggregate that *claims* to be in some state, use [`Assay`](/crucible/authoring/assay/) to check it is legally there before you resume driving it:
+On the way in, when you hydrate an aggregate that *claims* to be in some state, use [`Verify`](/crucible/authoring/verify/) to check it is legally there before you resume driving it:
 
 ```go
 order := repo.Load(ctx, id)              // hydrated externally
 view := order.project()
 
-if err := machine.Assay(order.State(), view); err != nil {
+if err := machine.Verify(order.State(), view); err != nil {
     return fmt.Errorf("order %s not legal in %s: %w", id, order.State(), err)
 }
 ```
@@ -58,7 +58,7 @@ repo.Save(ctx, order)                    // YOUR persistence, YOUR transaction
 ```mermaid
 flowchart LR
     L[load aggregate] --> P[project to value C]
-    P --> A[Assay legal?]
+    P --> A[Verify legal?]
     A --> F[Fire]
     F --> E[apply effects to aggregate]
     E --> S[persist in your txn]

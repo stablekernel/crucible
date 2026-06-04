@@ -66,13 +66,13 @@ func ExampleMachine_ToJSON() {
 	// stable: true
 }
 
-// ExampleMachine_Assay checks an externally-built entity against a state's
+// ExampleMachine_Verify checks an externally-built entity against a state's
 // declarative requirements without firing a transition.
-func ExampleMachine_Assay() {
+func ExampleMachine_Verify() {
 	m := buildDocMachine()
 
-	missing := m.Assay(Approved, &Document{Status: Approved})
-	ok := m.Assay(Approved, &Document{Status: Approved, ReviewerID: strptr("rev-1")})
+	missing := m.Verify(Approved, &Document{Status: Approved})
+	ok := m.Verify(Approved, &Document{Status: Approved, ReviewerID: strptr("rev-1")})
 
 	fmt.Println("missing reviewer:", missing != nil)
 	fmt.Println("with reviewer:", ok)

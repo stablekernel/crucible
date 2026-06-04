@@ -37,7 +37,7 @@ The ack comes only after a successful durable `Store.Save`
   so redelivery is provably idempotent with no external dedup store. Make the id
   extractor `WithEventID`.
 - **State-aware rejection.** A `Fire` rejected because the event is illegal for
-  the current state (no transition, or a failing guard/`Assay`) returns
+  the current state (no transition, or a failing guard/`Verify`) returns
   `source.Reject` (Term, `InvalidForState`) carrying a `*source.GuardRejection` —
   distinct from a transient `Store`/infra error, which returns `source.Nak`
   (Retryable).

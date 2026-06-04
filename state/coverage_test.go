@@ -27,7 +27,7 @@ func TestErrorMessages(t *testing.T) {
 		{&state.ErrNoPath{From: "A", To: "B"}, "no path from \"A\" to \"B\""},
 		{&state.ErrNoInitialState{Machine: "m"}, "no CurrentStateFn"},
 		{&state.MultiRegionErr{Errors: []error{errors.New("r1"), errors.New("r2")}}, "2 regions errored"},
-		{&state.AssayError{Failures: []state.RequirementFailure{{Name: "req"}}}, "assay failed"},
+		{&state.VerifyError{Failures: []state.RequirementFailure{{Name: "req"}}}, "verify failed"},
 	}
 	for _, c := range cases {
 		if got := c.err.Error(); !strings.Contains(got, c.want) {
@@ -153,10 +153,10 @@ func TestQuenchError_Message(t *testing.T) {
 		Quench()
 }
 
-// TestAssay_UndeclaredState covers the Assay early return on an unknown state.
-func TestAssay_UndeclaredState(t *testing.T) {
+// TestVerify_UndeclaredState covers the Verify early return on an unknown state.
+func TestVerify_UndeclaredState(t *testing.T) {
 	m := buildDocMachine()
-	err := m.Assay(DocState(99), &Document{})
+	err := m.Verify(DocState(99), &Document{})
 	var us *state.ErrUndeclaredState
 	if !errors.As(err, &us) {
 		t.Fatalf("err = %v, want *ErrUndeclaredState", err)

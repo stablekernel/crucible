@@ -252,16 +252,16 @@ func WithEventData(data any) FireOption {
 	}
 }
 
-// AssayOption configures Assay.
-type AssayOption func(*assayConfig)
+// VerifyOption configures Verify.
+type VerifyOption func(*verifyConfig)
 
-type assayConfig struct{ aggregate bool }
+type verifyConfig struct{ aggregate bool }
 
-// Aggregate makes Assay collect all failing requirements in one pass instead of
+// Aggregate makes Verify collect all failing requirements in one pass instead of
 // failing fast at the first. It is a pure directive option (it carries no value),
 // so it drops the With prefix that value-carrying options keep — matching Strict
 // and CollectAll.
-func Aggregate() AssayOption { return func(c *assayConfig) { c.aggregate = true } }
+func Aggregate() VerifyOption { return func(c *verifyConfig) { c.aggregate = true } }
 
 // PlanOption configures PlanPath.
 type PlanOption func(*planConfig)

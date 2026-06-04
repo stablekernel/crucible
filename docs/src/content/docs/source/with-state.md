@@ -56,7 +56,7 @@ state, not a side table you have to operate.
 
 ## State-aware rejection is first-class
 
-An event that is invalid for the current state is a guard (or Assay) rejection,
+An event that is invalid for the current state is a guard (or Verify) rejection,
 not an infra failure. The bridge classifies it as `Term` (poison) and routes it
 to the [DLQ](/crucible/source/reliability/#dlq), distinct from a transient error
 that becomes a `Nak` and retries. Offset-based libraries cannot tell these apart;

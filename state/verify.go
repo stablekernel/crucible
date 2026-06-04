@@ -12,12 +12,12 @@ func (m *Machine[S, E, C]) Requirements(s S) []Requirement[C] {
 	return append([]Requirement[C](nil), reqs...)
 }
 
-// Assay checks that an externally-constructed entity legally satisfies a
+// Verify checks that an externally-constructed entity legally satisfies a
 // state's declarative requirements, without firing. The default mode is
-// fail-fast (the returned *AssayError carries the first failure); Aggregate
+// fail-fast (the returned *VerifyError carries the first failure); Aggregate
 // collects every failure in one pass. The error type is uniform across modes.
-func (m *Machine[S, E, C]) Assay(s S, entity C, opts ...AssayOption) error {
-	cfg := assayConfig{}
+func (m *Machine[S, E, C]) Verify(s S, entity C, opts ...VerifyOption) error {
+	cfg := verifyConfig{}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -43,7 +43,7 @@ func (m *Machine[S, E, C]) Assay(s S, entity C, opts ...AssayOption) error {
 	}
 
 	if len(failures) > 0 {
-		return &AssayError{Failures: failures}
+		return &VerifyError{Failures: failures}
 	}
 	return nil
 }

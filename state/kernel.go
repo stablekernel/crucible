@@ -72,7 +72,7 @@ const (
 type WaitMode int
 
 // Wait modes. SyncReply awaits a reply, FireAndForget emits and moves on, and
-// ValidatePoll signals the consumer to poll the entity (re-running Assay) until
+// ValidatePoll signals the consumer to poll the entity (re-running Verify) until
 // it validates.
 const (
 	SyncReply WaitMode = iota
@@ -508,7 +508,7 @@ type ActionCtx[C any] struct {
 // ActionFn produces an effect (or error) for a transition.
 type ActionFn[C any] func(ctx ActionCtx[C]) (Effect, error)
 
-// Requirement is a declarative condition for a state, used by Assay.
+// Requirement is a declarative condition for a state, used by Verify.
 type Requirement[C any] struct {
 	Name      string
 	Predicate func(C) bool

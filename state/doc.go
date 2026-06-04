@@ -64,11 +64,11 @@
 //     finalizer that binds refs and panics on misconfiguration.
 //   - Cast    — pour a running instance from the machine.
 //   - Fire    — send an event to an instance and advance it.
-//   - Assay   — check that an externally-constructed entity is legally in a
-//     given state.
+//   - Verify  — plain verb (favoring discoverability over metaphor): check that
+//     an externally-constructed entity is legally in a given state.
 //
-// Operations that favor discoverability over metaphor stay plain: PlanPath,
-// Requirements, Trace, and the To*/LoadFromJSON serializers.
+// Operations that favor discoverability over metaphor stay plain: Verify,
+// PlanPath, Requirements, Trace, and the To*/LoadFromJSON serializers.
 //
 // # Context: assigns and value semantics
 //
@@ -200,7 +200,7 @@
 //
 // The kernel implements the Forge/Temper/Quench build path, Cast/Fire pure step
 // semantics with guards, actions, typed errors and an opt-in structured Trace,
-// Assay/Requirements, PlanPath (BFS), FireSeq/FireEach batch helpers, and
+// Verify/Requirements, PlanPath (BFS), FireSeq/FireEach batch helpers, and
 // lossless ToJSON/LoadFromJSON/Provide round-trip.
 //
 // Hierarchical and orthogonal states extend the same surface: a state may
