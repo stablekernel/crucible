@@ -70,23 +70,15 @@ source also ships composable reliability middleware as its own opt-in modules
 (`source/retry`, `source/dlq`, `source/idempotency`, `source/schema`) and an
 in-memory `source/memsource` test source, each experimental.
 
-The engine emits effects as pure data; the IO modules are the thin seams that
-carry those effects to real transports and sinks. Each is
-"bring your own adapter," none forced on the consumer.
-
 ## Status
 
-Early and evolving. The `state` module is now a complete, embeddable statechart
-engine, covering hierarchical, parallel, and final states; history; guard combinators;
-delayed transitions; invoked services; an actor model with message passing;
-snapshots; inspection; and JSON (de)serialization. It is backed by its `analysis`,
-`evolution`, and `conformance` companion packages. Treat its API as experimental
-until it reaches v1. The `telemetry` interface and its `slog`, `otel`, and
-`datadog` adapters are released. The `sink` egress seam and its destination
-adapters, and the `source` ingress seam with its Kafka, JetStream, and Redis
-Streams adapters, CloudEvents and CDC codecs, reliability middleware, and
-state-machine bridge, are now available and documented; the `broker` module is
-planned.
+Early and evolving. `state` is a complete, embeddable statechart engine, covering
+hierarchical, parallel, and final states, history, guard combinators, delayed
+transitions, invoked services, an actor model, snapshots, and JSON
+(de)serialization, backed by its `analysis`, `evolution`, and `conformance`
+packages. `telemetry`, `sink`, and `source` (with all their adapters, codecs, and
+middleware) are released and documented; `broker` is planned. Treat every API as
+experimental until it reaches v1.
 
 ## Roadmap
 
@@ -121,22 +113,6 @@ A small set of tools works the IR directly:
 
 Durable state and event persistence is tracked separately with the `durable`
 runtime, not here.
-
-## Design & docs
-
-Design rationale, concepts, and guides live on the
-[documentation site](https://stablekernel.github.io/crucible/).
-
-Start with:
-
-- [Suite overview & philosophy](https://stablekernel.github.io/crucible/about/overview/):
-  the suite-wide baseline every module is built to.
-- [State machine introduction](https://stablekernel.github.io/crucible/start/introduction/)
-- [Concepts: machine & instance](https://stablekernel.github.io/crucible/concepts/machine-and-instance/)
-
-The suite-wide engineering standards are inlined in
-[CONTRIBUTING.md](./CONTRIBUTING.md#engineering-standards). For questions or
-proposals, open a GitHub issue.
 
 ## Contributing
 
