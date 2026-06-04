@@ -88,7 +88,11 @@ Streams adapters, CloudEvents and CDC codecs, reliability middleware, and
 state-machine bridge, are now available and documented; the `broker` module is
 planned.
 
-## Roadmap: event-driven seams
+## Roadmap
+
+Two kinds of seam frame the work ahead, and both build on the engine without
+reaching into the kernel: the IO edges where effects leave and events arrive, and
+the serializable IR as a first-class artifact anything can read or write.
 
 The kernel emits effects as pure data; a small family of bring-your-own-adapter
 IO seams moves events to and from the outside world, each defaulting to a no-op
@@ -105,17 +109,8 @@ and forcing nothing third-party on the consumer:
   `source/cdc` codec decodes Debezium/OpenCDC change-event topics into typed
   change events; a native database write-ahead-log connector (logical replication
   slot, binlog) remains future work.
-- [ ] **`bellows`** _(exploring)_: resilience seam. Circuit-breaking and
-  backpressure around the IO edges.
 
-Durable state and event persistence is tracked separately with the `durable`
-runtime, not here.
-
-## Roadmap: authoring & visualization
-
-The serializable IR is a first-class artifact, not just an internal format: anything
-that reads or writes it can build on the engine without reaching into the kernel. A
-small set of tools works the IR directly.
+A small set of tools works the IR directly:
 
 - [ ] **Visual editor** _(planned)_: a browser workbench over the IR. Author, simulate,
   and inspect machines, with reachability and version-diff overlays from the existing
@@ -123,6 +118,9 @@ small set of tools works the IR directly.
 - [ ] **IR CLI** _(exploring)_: headless IR tooling for CI. Lint reachability and
   nondeterminism, render diagrams, and classify version diffs straight from a machine's
   IR.
+
+Durable state and event persistence is tracked separately with the `durable`
+runtime, not here.
 
 ## Design & docs
 
