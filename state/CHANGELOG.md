@@ -435,8 +435,14 @@ representative hot-path numbers.
   directly, or that parsed the type-name suffix of an `EffectsEmitted` label, must
   update; type-switching on the effect structs is unaffected (the structs only
   gained methods and tags).
-- **BREAKING: the `Assay` option `WithAggregate` is renamed `Aggregate`.** The
-  option that makes `Assay` collect all failing requirements in one pass instead
+- **BREAKING: the state trust-boundary check `Assay` is renamed `Verify`.** The
+  method `Machine.Assay`, its error type `AssayError`, and its option type
+  `AssayOption` become `Machine.Verify`, `VerifyError`, and `VerifyOption`. The
+  rename trades the foundry metaphor for a plain, discoverable verb; the
+  behavior and signatures are otherwise unchanged. Replace `Assay`, `AssayError`,
+  and `AssayOption` at the call site.
+- **BREAKING: the `Verify` option `WithAggregate` is renamed `Aggregate`.** The
+  option that makes `Verify` collect all failing requirements in one pass instead
   of failing fast is now `Aggregate()`. Replace `WithAggregate()` with
   `Aggregate()` at the call site.
 - The determinism and ordering contract is now explicit and frozen: emission
@@ -485,7 +491,7 @@ Initial release of the pure state-machine kernel.
 
 ### Added
 
-- Kernel core: `Forge`/`Temper`/`Quench`/`Cast`/`Fire`/`Assay` foundry API with
+- Kernel core: `Forge`/`Temper`/`Quench`/`Cast`/`Fire`/`Verify` foundry API with
   pure-function step semantics. Firing an event returns `(newState, effects,
   trace)` with no IO.
 - Serializable definition IR with lossless JSON round-trip; guards, actions, and

@@ -38,7 +38,7 @@ Treating context as an immutable value, replaced and never edited, is what gives
   value reproduces the same results, every time.
 - **Durable execution.** A snapshot can be persisted, reloaded, and resumed
   because nothing lives in hidden pointers or background goroutines.
-- **Verification.** `Assay` can check an entity's legality against a state
+- **Verification.** `Verify` can check an entity's legality against a state
   because the entity *is* the value the guards see.
 
 ## The pointer escape hatch

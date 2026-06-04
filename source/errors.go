@@ -77,7 +77,7 @@ func (e *DecodeError) Unwrap() error { return e.Err }
 // decode failure to dead-letter with a single errors.Is(err, ErrPoison) check.
 func (e *DecodeError) Is(target error) bool { return target == ErrPoison }
 
-// GuardRejection wraps a guard/Assay rejection: a well-formed event that is not
+// GuardRejection wraps a guard/Verify rejection: a well-formed event that is not
 // legal for the target's current state. It is errors.Is / errors.As friendly via
 // Unwrap and reports ErrInvalidForState from Is, so a guard rejection is
 // recognized as state-invalid (and routed to dead-letter as a distinct, "wrong

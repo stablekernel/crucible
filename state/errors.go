@@ -236,17 +236,17 @@ func (e *MultiRegionErr) Error() string {
 // Unwrap exposes the per-region errors for errors.As / errors.Is traversal.
 func (e *MultiRegionErr) Unwrap() []error { return e.Errors }
 
-// AssayError aggregates one or more failing requirements found by Assay.
-type AssayError struct {
+// VerifyError aggregates one or more failing requirements found by Verify.
+type VerifyError struct {
 	Failures []RequirementFailure
 }
 
-func (e *AssayError) Error() string {
+func (e *VerifyError) Error() string {
 	names := make([]string, 0, len(e.Failures))
 	for _, f := range e.Failures {
 		names = append(names, f.Name)
 	}
-	return fmt.Sprintf("crucible/state: assay failed: %s", strings.Join(names, ", "))
+	return fmt.Sprintf("crucible/state: verify failed: %s", strings.Join(names, ", "))
 }
 
 // ErrUnsupportedSchema is returned by LoadFromJSON when an IR document declares a

@@ -27,7 +27,7 @@
 //     is the dedup key.
 //   - State-aware rejection. A [state.Instance.Fire] that fails because the
 //     event is illegal for the current state (no declared transition, or a
-//     failing guard/[state.Machine.Assay]) returns [source.Reject]
+//     failing guard/[state.Machine.Verify]) returns [source.Reject]
 //     (Term, classified InvalidForState) carrying a [*source.GuardRejection] —
 //     distinct from a transient [Store] or infrastructure error, which returns
 //     [source.Nak] (Retryable). "Wrong time" and "try again later" are

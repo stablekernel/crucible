@@ -123,10 +123,11 @@ The lifecycle API uses a small "foundry" verb vocabulary. The noun stays plain
 | `Quench` | Freeze the definition into an immutable `Machine`; binds refs.         |
 | `Cast`   | Pour a running instance from the machine.                              |
 | `Fire`   | Send an event to an instance and advance it.                           |
-| `Assay`  | Check that an externally-built entity is legally in a given state.     |
 
-Operations that favor discoverability over metaphor stay plain: `PlanPath`,
-`Requirements`, `Trace`, and the `To*` / `LoadFromJSON` serializers.
+Operations that favor discoverability over metaphor stay plain: `Verify`,
+`PlanPath`, `Requirements`, `Trace`, and the `To*` / `LoadFromJSON` serializers.
+
+`Verify` checks that an externally-built entity is legally in a given state.
 
 The public API follows the suite's functional-options convention: required
 inputs stay positional; everything optional is a variadic option, so a
