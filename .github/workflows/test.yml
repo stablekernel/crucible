@@ -32,6 +32,10 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: "**/go.sum"
+          # Skip the Go cache save on Windows: the tar/zstd cache-save post-step
+          # flakes intermittently on windows-latest and fails the job even when
+          # tests pass. Linux and macOS keep caching.
+          cache: ${{ runner.os != 'Windows' }}
       - name: test -race
         shell: bash
         run: |
