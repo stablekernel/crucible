@@ -242,6 +242,8 @@ func outcomeName(o state.Outcome) string {
 		return "PolicyDenied"
 	case state.OutcomeEffectError:
 		return "EffectError"
+	case state.OutcomeAssignFailed:
+		return "AssignFailed"
 	default:
 		return "Unknown"
 	}
