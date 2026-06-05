@@ -71,6 +71,24 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'source' } }],
         },
         {
+          label: 'Telemetry',
+          // The vendor-neutral observability seam the IO modules depend on,
+          // plus its optional backend adapters.
+          items: [{ autogenerate: { directory: 'telemetry' } }],
+        },
+        {
+          label: 'Runtimes',
+          // Host-side runtimes layered additively over the state kernel:
+          // durable execution, distribution, the gRPC transport, and polyglot
+          // WASM behaviors. Each leaves the kernel pure and stdlib-only.
+          items: [
+            { label: 'Durable execution', items: [{ autogenerate: { directory: 'durable' } }] },
+            { label: 'Cluster', items: [{ autogenerate: { directory: 'cluster' } }] },
+            { label: 'Transport', items: [{ autogenerate: { directory: 'transport' } }] },
+            { label: 'WASM behaviors', items: [{ autogenerate: { directory: 'wasm' } }] },
+          ],
+        },
+        {
           label: 'State machine',
           items: [
             { label: 'Start here', items: [{ autogenerate: { directory: 'start' } }] },
