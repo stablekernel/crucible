@@ -65,7 +65,7 @@ func fetchMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svc
 			return c
 		}).
 		State("idle").
-		State("loading").Invoke("fetch", "ok", "fail").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").Final().
 		State("errored").Final().
 		Initial("idle").
@@ -228,8 +228,8 @@ func chainMachine(svcA, svcB state.ServiceFn[svcCtx]) *state.Machine[string, str
 			return c
 		}).
 		State("idle").
-		State("first").Invoke("svcA", "aDone", "aFail").
-		State("second").Invoke("svcB", "bDone", "bFail").
+		State("first").Invoke("svcA", state.WithInvokeOnDone("aDone"), state.WithInvokeOnError("aFail")).
+		State("second").Invoke("svcB", state.WithInvokeOnDone("bDone"), state.WithInvokeOnError("bFail")).
 		State("done").Final().
 		State("failed").Final().
 		Initial("idle").

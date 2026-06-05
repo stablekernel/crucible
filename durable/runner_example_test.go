@@ -148,7 +148,7 @@ func quoteMachine(fn state.ServiceFn[*quoteCtx]) *state.Machine[string, string, 
 			return c
 		}).
 		State("cart").
-		State("quoting").Invoke("price", "priced", "failed").
+		State("quoting").Invoke("price", state.WithInvokeOnDone("priced"), state.WithInvokeOnError("failed")).
 		State("quoted").Final().
 		State("rejected").Final().
 		Initial("cart").
@@ -222,7 +222,7 @@ func fulfillmentMachine() *state.Machine[string, string, *fulfillmentCtx] {
 			return c
 		}).
 		Actor("ship").
-		State("supervising").InvokeActor("ship", "shipped", "failed").
+		State("supervising").InvokeActor("ship", state.WithInvokeOnDone("shipped"), state.WithInvokeOnError("failed")).
 		State("complete").Final().
 		State("aborted").Final().
 		Initial("supervising").

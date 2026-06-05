@@ -95,7 +95,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 
-	res, ok := h.svc.Run(ctx, id)
+	res, ok := h.svc.Tick(ctx, id)
 	if !ok {
 		return state.FireResult[S]{}, false, nil
 	}
