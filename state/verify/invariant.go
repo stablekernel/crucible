@@ -118,23 +118,27 @@ type configGraph struct {
 	// edges maps a source state to its path-advancing outgoing transitions in
 	// declaration order, so exploration is deterministic.
 	edges map[string][]searchEdge
+	// children inverts parent into a sorted child list per state, computed once at
+	// build time. leavesUnder walks it on the hot successors path, so caching it
+	// avoids rebuilding and re-sorting the whole index on every call.
+	children map[string][]string
 }
 
 // buildConfigGraph flattens the machine's public IR into a configGraph. A machine
 // whose IR cannot be read yields the zero graph (hasInitial false) rather than
 // panicking, matching Verify's no-panic contract.
 func buildConfigGraph[S comparable, E comparable, C any](m *state.Machine[S, E, C]) configGraph {
-	g := configGraph{
-		parent:          map[string]string{},
-		leaf:            map[string]bool{},
-		compoundInitial: map[string]string{},
-		regionInitials:  map[string][]string{},
-		edges:           map[string][]searchEdge{},
-	}
 	ir, ok := loadIR(m)
 	if !ok {
-		return g
+		return emptyConfigGraph()
 	}
+	return buildConfigGraphFromIR(ir)
+}
+
+// buildConfigGraphFromIR builds the configGraph from an already-loaded IR, so a
+// caller that round-tripped the machine once can reuse it.
+func buildConfigGraphFromIR[S comparable, E comparable, C any](ir *state.IR[S, E, C]) configGraph {
+	g := emptyConfigGraph()
 	if ir.HasInitial {
 		g.hasInitial = true
 		g.initial = fmt.Sprint(ir.Initial)
@@ -142,7 +146,34 @@ func buildConfigGraph[S comparable, E comparable, C any](m *state.Machine[S, E, 
 	for i := range ir.States {
 		collectConfig(&ir.States[i], "", &g)
 	}
+	g.children = buildChildIndex(g.parent)
 	return g
+}
+
+// emptyConfigGraph returns a configGraph with initialized maps and no states.
+func emptyConfigGraph() configGraph {
+	return configGraph{
+		parent:          map[string]string{},
+		leaf:            map[string]bool{},
+		compoundInitial: map[string]string{},
+		regionInitials:  map[string][]string{},
+		edges:           map[string][]searchEdge{},
+	}
+}
+
+// buildChildIndex inverts the parent map into a sorted child list per state, so a
+// subtree walk is deterministic and does not range a map directly.
+func buildChildIndex(parent map[string]string) map[string][]string {
+	idx := map[string][]string{}
+	for name, p := range parent {
+		if p != "" {
+			idx[p] = append(idx[p], name)
+		}
+	}
+	for p := range idx {
+		sort.Strings(idx[p])
+	}
+	return idx
 }
 
 // collectConfig records one state's structure — parent, leaf-ness, compound and
@@ -348,7 +379,6 @@ func (g configGraph) successors(leaves []string) []configStep {
 // it is every descendant leaf, found by walking the parent relation (which covers
 // both compound children and region states).
 func (g configGraph) leavesUnder(node string) map[string]bool {
-	children := g.childIndex()
 	out := map[string]bool{}
 	var walk func(n string)
 	walk = func(n string) {
@@ -356,7 +386,7 @@ func (g configGraph) leavesUnder(node string) map[string]bool {
 			out[n] = true
 			return
 		}
-		for _, c := range children[n] {
+		for _, c := range g.children[n] {
 			walk(c)
 		}
 	}
@@ -365,21 +395,6 @@ func (g configGraph) leavesUnder(node string) map[string]bool {
 		out[node] = true
 	}
 	return out
-}
-
-// childIndex inverts the parent map into a sorted child list per state, so a
-// subtree walk is deterministic and does not range a map directly.
-func (g configGraph) childIndex() map[string][]string {
-	idx := map[string][]string{}
-	for name, p := range g.parent {
-		if p != "" {
-			idx[p] = append(idx[p], name)
-		}
-	}
-	for p := range idx {
-		sort.Strings(idx[p])
-	}
-	return idx
 }
 
 // invariantFor decides a single invariant over an already-built exploration,

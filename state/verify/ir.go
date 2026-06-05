@@ -25,11 +25,17 @@ type topology struct {
 // cannot be read yields the zero topology rather than panicking, matching
 // Verify's no-panic contract.
 func readTopology[S comparable, E comparable, C any](m *state.Machine[S, E, C]) topology {
-	t := topology{parent: map[string]string{}}
 	ir, ok := loadIR(m)
 	if !ok {
-		return t
+		return topology{parent: map[string]string{}}
 	}
+	return topologyFromIR(ir)
+}
+
+// topologyFromIR builds a topology from an already-loaded IR, so a caller that has
+// round-tripped the machine once can reuse it instead of re-serializing.
+func topologyFromIR[S comparable, E comparable, C any](ir *state.IR[S, E, C]) topology {
+	t := topology{parent: map[string]string{}}
 	for i := range ir.States {
 		collectStates(&ir.States[i], "", &t)
 	}
@@ -57,7 +63,15 @@ func collectStates[S comparable, E comparable, C any](s *state.State[S, E, C], p
 // declares no initial state.
 func initialName[S comparable, E comparable, C any](m *state.Machine[S, E, C]) string {
 	ir, ok := loadIR(m)
-	if !ok || !ir.HasInitial {
+	if !ok {
+		return ""
+	}
+	return initialNameFromIR(ir)
+}
+
+// initialNameFromIR returns the initial state name from an already-loaded IR.
+func initialNameFromIR[S comparable, E comparable, C any](ir *state.IR[S, E, C]) string {
+	if !ir.HasInitial {
 		return ""
 	}
 	return fmt.Sprint(ir.Initial)

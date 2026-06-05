@@ -65,16 +65,17 @@ type searchEdge struct {
 // whose IR cannot be read yields the zero graph (hasInitial false) rather than
 // panicking, matching Verify's no-panic contract.
 func buildSearchGraph[S comparable, E comparable, C any](m *state.Machine[S, E, C]) searchGraph {
-	g := searchGraph{
-		nodes:           map[string]bool{},
-		parent:          map[string]string{},
-		initialChildren: map[string][]string{},
-		edges:           map[string][]searchEdge{},
-	}
 	ir, ok := loadIR(m)
 	if !ok {
-		return g
+		return emptySearchGraph()
 	}
+	return buildSearchGraphFromIR(ir)
+}
+
+// buildSearchGraphFromIR builds the searchGraph from an already-loaded IR, so a
+// caller that round-tripped the machine once can reuse it.
+func buildSearchGraphFromIR[S comparable, E comparable, C any](ir *state.IR[S, E, C]) searchGraph {
+	g := emptySearchGraph()
 	if ir.HasInitial {
 		g.hasInitial = true
 		g.initial = fmt.Sprint(ir.Initial)
@@ -83,6 +84,16 @@ func buildSearchGraph[S comparable, E comparable, C any](m *state.Machine[S, E, 
 		collectSearch(&ir.States[i], "", &g)
 	}
 	return g
+}
+
+// emptySearchGraph returns a searchGraph with initialized maps and no states.
+func emptySearchGraph() searchGraph {
+	return searchGraph{
+		nodes:           map[string]bool{},
+		parent:          map[string]string{},
+		initialChildren: map[string][]string{},
+		edges:           map[string][]searchEdge{},
+	}
 }
 
 // collectSearch records one state's structure — parent, initial-descent children,

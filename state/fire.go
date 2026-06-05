@@ -422,6 +422,10 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 // events outrank the wildcard — and the wildcard outranks bubbling to an
 // ancestor.
 func matchingTransitions[S comparable, E comparable, C any](s *State[S, E, C], event E) []*Transition[S, E, C] {
+	// The overwhelmingly common case is a state with one or more specific matches
+	// and no wildcard. Collect specifics first; only allocate a second slice and
+	// merge when a wildcard is actually present, so the steady-state path returns a
+	// single slice with no merge allocation. A state with no matches returns nil.
 	var specific, wild []*Transition[S, E, C]
 	for ti := range s.Transitions {
 		t := &s.Transitions[ti]
@@ -435,7 +439,15 @@ func matchingTransitions[S comparable, E comparable, C any](s *State[S, E, C], e
 			specific = append(specific, t)
 		}
 	}
-	return append(specific, wild...)
+	if len(wild) == 0 {
+		return specific
+	}
+	if len(specific) == 0 {
+		return wild
+	}
+	out := make([]*Transition[S, E, C], 0, len(specific)+len(wild))
+	out = append(out, specific...)
+	return append(out, wild...)
 }
 
 // forbids reports whether state s explicitly forbids event: a transition marked
@@ -756,9 +768,15 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 			return effects, a.Name, aerr
 		}
 		effects = append(effects, e)
-		tr.recordEffect(fmt.Sprintf("%s:%s", a.Name, effectLabel(e)))
-		if ms, ok := commMicrostep(e); ok {
-			tr.note(ms)
+		// recordEffect/note are no-ops in lite mode, so build the formatted effect
+		// label and probe the comm microstep only when the full trace will keep them.
+		// This keeps the default (lite) hot path free of the Sprintf and effectLabel
+		// allocation on every action.
+		if tr.full {
+			tr.recordEffect(fmt.Sprintf("%s:%s", a.Name, effectLabel(e)))
+			if ms, ok := commMicrostep(e); ok {
+				tr.note(ms)
+			}
 		}
 	}
 	return effects, "", nil
