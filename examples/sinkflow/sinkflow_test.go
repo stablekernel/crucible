@@ -4,13 +4,44 @@ package sinkflow_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
 
+	csink "github.com/stablekernel/crucible/sink"
+	"github.com/stablekernel/crucible/sink/bridge"
+
 	"github.com/stablekernel/crucible/examples/sinkflow"
 	"github.com/stablekernel/crucible/telemetry"
 )
+
+// TestFlakyOutletSinkRejectsUnregisteredPayload covers FlakyOutlet.Sink's
+// non-Transition branch: the bridge always hands it a bridge.Transition, but the
+// outlet defends against a misregistered transformer by returning
+// sink.ErrUnregistered for any other payload type. A matching-event Transition
+// then exercises the induced-failure branch, whose error renders a non-empty
+// message.
+func TestFlakyOutletSinkRejectsUnregisteredPayload(t *testing.T) {
+	t.Parallel()
+	out := &sinkflow.FlakyOutlet{FailOnEvent: sinkflow.Dispatch}
+
+	if err := out.Sink(context.Background(), "not a transition"); !errors.Is(err, csink.ErrUnregistered) {
+		t.Fatalf("Sink(non-transition) = %v, want ErrUnregistered", err)
+	}
+
+	err := out.Sink(context.Background(), bridge.Transition{Machine: "order", Event: sinkflow.Dispatch})
+	if err == nil {
+		t.Fatal("Sink of the failing event = nil, want an induced failure")
+	}
+	if err.Error() == "" {
+		t.Fatal("induced failure rendered an empty error message")
+	}
+
+	if got := len(out.Delivered); got != 0 {
+		t.Fatalf("a rejected and a failed Sink should record nothing; Delivered=%d", got)
+	}
+}
 
 // --- recording telemetry + logging seams for the assertions -----------------
 
