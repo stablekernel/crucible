@@ -170,6 +170,55 @@ func TestTransport_RemoteSpawnError(t *testing.T) {
 	}
 }
 
+// TestTransport_DeliverMarshalError reports an error when the event cannot be
+// JSON-encoded, before any RPC is attempted. A channel is not JSON-marshalable.
+func TestTransport_DeliverMarshalError(t *testing.T) {
+	ctx := context.Background()
+	nodeB := newNodeSystem("node-b")
+	lis := bufconn.Listen(1 << 20)
+	gs := transport.NewServer(nodeB)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	tr := transport.New()
+	tr.AddNode("node-b", dialBuf(t, lis))
+
+	_, err := tr.Deliver(ctx, state.ActorRef{ID: "w-1", Node: "node-b"}, make(chan int))
+	if err == nil {
+		t.Fatal("Deliver with an unmarshalable event = nil error, want a marshal error")
+	}
+}
+
+// TestTransport_SpawnMarshalError reports an error when the spawn input cannot be
+// JSON-encoded, before any RPC is attempted.
+func TestTransport_SpawnMarshalError(t *testing.T) {
+	ctx := context.Background()
+	nodeB := newNodeSystem("node-b")
+	lis := bufconn.Listen(1 << 20)
+	gs := transport.NewServer(nodeB)
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+
+	tr := transport.New()
+	tr.AddNode("node-b", dialBuf(t, lis))
+
+	// A map value that cannot be marshaled (a channel) fails json.Marshal.
+	_, err := tr.Spawn(ctx, "node-b", "worker", "w-1", map[string]any{"bad": make(chan int)})
+	if err == nil {
+		t.Fatal("Spawn with an unmarshalable input = nil error, want a marshal error")
+	}
+}
+
+// TestTransport_StateAtUnknownNode reports an unreachable node for a StateAt to a
+// node that was never registered.
+func TestTransport_StateAtUnknownNode(t *testing.T) {
+	ctx := context.Background()
+	tr := transport.New()
+	if _, err := tr.StateAt(ctx, "ghost", "inst-1", 0); err == nil {
+		t.Fatal("StateAt on an unregistered node = nil error, want unreachable")
+	}
+}
+
 // TestTransport_SatisfiesClusterTransport is a compile-time check that *Transport
 // is a cluster.Transport.
 func TestTransport_SatisfiesClusterTransport(t *testing.T) {

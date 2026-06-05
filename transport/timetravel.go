@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -128,7 +129,7 @@ func (t *Transport) StateAt(ctx context.Context, node, id string, step int) ([]b
 	}
 	var resp StateAtResponse
 	if err := conn.Invoke(ctx, methodStateAt, &StateAtRequest{ID: id, Step: step}, &resp, grpc.ForceCodec(jsonCodec{})); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("transport: state-at on node %q: %w", node, err)
 	}
 	return resp.Snapshot, nil
 }
