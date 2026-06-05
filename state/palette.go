@@ -373,14 +373,8 @@ func BuiltinPalette() []Descriptor {
 		{
 			Kind:        KindAction,
 			Name:        stopActorBuiltinName,
-			Description: "Stops a running spawned actor by id.",
+			Description: "Stops a running spawned or invoked-child actor by id.",
 			Params:      []ParamSpec{{Name: stopActorIDParam, Type: StringParam, Required: true}},
-		},
-		{
-			Kind:        KindAction,
-			Name:        stopChildBuiltinName,
-			Description: "Stops a spawned child actor by id.",
-			Params:      []ParamSpec{{Name: stopChildIDParam, Type: StringParam, Required: true}},
 		},
 		{
 			Kind:        KindAction,

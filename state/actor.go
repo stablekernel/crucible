@@ -19,7 +19,7 @@ import "context"
 //
 // Scope: this file ships the actor RUNTIME — child-machine actors, the actor
 // system, mailboxes, delivery, and lifecycle. The message-SEND action sugar
-// (sendTo / sendParent / respond / forwardTo / stopChild) lives in actor_comms.go
+// (sendTo / sendParent / respond / forwardTo) lives in actor_comms.go
 // and rides on top of the mailbox and Deliver mechanism defined here.
 // An actor ref is a runtime value (created when the actor is spawned), so it
 // is never part of the IR; the invoke/spawn declarations that produce actors are

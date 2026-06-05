@@ -218,14 +218,15 @@ func TestComm_ForwardDeliversTypedEvent(t *testing.T) {
 	}
 }
 
-// TestComm_StopChildStopsActor asserts the stopChild action stops a spawned actor.
-func TestComm_StopChildStopsActor(t *testing.T) {
+// TestComm_StopActorStopsActor asserts the StopActor action stops a spawned actor
+// from a transition.
+func TestComm_StopActorStopsActor(t *testing.T) {
 	ctx := context.Background()
 	m := state.Forge[string, string, *trec]("parent").
 		State("running").
 		Initial("running").
 		CurrentStateFn(func(*trec) string { return "running" }).
-		Transition("running").On("kill").GoTo("running").StopChild("victim").
+		Transition("running").On("kill").GoTo("running").StopActor("victim").
 		Quench()
 
 	entity := &trec{}
@@ -241,7 +242,7 @@ func TestComm_StopChildStopsActor(t *testing.T) {
 	res := parent.Fire(ctx, "kill")
 	sys.Absorb(ctx, res.Effects)
 	if sys.IsRunning("victim") {
-		t.Fatal("victim should be stopped after stopChild")
+		t.Fatal("victim should be stopped after StopActor")
 	}
 	if sys.Running() != 0 {
 		t.Fatalf("running = %d, want 0", sys.Running())
@@ -263,7 +264,7 @@ func TestComm_IRRoundTrip(t *testing.T) {
 			SendParent("up").
 			Respond("ack").
 			ForwardTo("child-2").
-			StopChild("child-1").
+			StopActor("child-1").
 			Transition("b").On("sys").GoTo("a").
 			SendTo("", "hello", state.WithSendToSystemID("named")).
 			ForwardTo("", state.WithSendToSystemID("named")).

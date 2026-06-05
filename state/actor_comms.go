@@ -2,8 +2,8 @@ package state
 
 // This file adds the actor-communication action sugar on top of the actor
 // runtime (actor.go, actor_system.go): the built-in send/stop actions a machine
-// uses to message other actors — sendTo, sendParent, respond, forwardTo, and
-// stopChild. They follow the same shape as the spawn / stop /
+// uses to message other actors — sendTo, sendParent, respond, and forwardTo.
+// They follow the same shape as the spawn / stop /
 // cancel built-ins: the kernel handles each ref directly at Fire time and emits a
 // DATA effect (SendTo / SendParent / RespondToSender / ForwardEvent / StopActor)
 // alongside the transition's other effects. The kernel never delivers a message,
@@ -91,7 +91,6 @@ const (
 	sendParentBuiltinName = "crucible.sendParent"
 	respondBuiltinName    = "crucible.respond"
 	forwardToBuiltinName  = "crucible.forwardTo"
-	stopChildBuiltinName  = "crucible.stopChild"
 )
 
 // Reserved params keys for the actor-communication built-ins. Targets are stable
@@ -101,7 +100,6 @@ const (
 	sendToTargetParam   = "target"
 	sendToSystemIDParam = "systemId"
 	sendEventParam      = "event"
-	stopChildIDParam    = "id"
 )
 
 // commMicrostep returns the trace microstep label for an actor-communication or
@@ -144,7 +142,7 @@ func commTarget(targetID, systemID string) string {
 func isCommBuiltinAction(name string) bool {
 	switch name {
 	case sendToBuiltinName, sendParentBuiltinName, respondBuiltinName,
-		forwardToBuiltinName, stopChildBuiltinName:
+		forwardToBuiltinName:
 		return true
 	default:
 		return false
@@ -168,9 +166,6 @@ func evalCommBuiltinAction(a Ref) (Effect, error) {
 		target, _ := a.Params[sendToTargetParam].(string)
 		systemID, _ := a.Params[sendToSystemIDParam].(string)
 		return ForwardEvent{TargetID: target, SystemID: systemID}, nil
-	case stopChildBuiltinName:
-		id, _ := a.Params[stopChildIDParam].(string)
-		return StopActor{ID: id}, nil
 	default:
 		return nil, &ErrUnknownBuiltin{Name: a.Name}
 	}
