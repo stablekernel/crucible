@@ -65,6 +65,10 @@ stability label.
 | `source/cloudevents`  | CloudEvents codec with structured and binary content modes.                      | experimental |
 | `source/cdc`          | Change-data-capture codec: decode Debezium/OpenCDC change events, drive by key.   | experimental |
 | `source/statemachine` | Bridge: an inbound message drives a transition, ack tied to the durable commit.  | experimental |
+| `durable`             | Durable-execution runtime: record and replay nondeterminism to survive a crash. | experimental |
+| `cluster`             | Distribution runtime: remote actors, supervision, and live instance migration.  | experimental |
+| `transport`           | gRPC network transport for cluster: remote deliver/spawn and time-travel.        | experimental |
+| `wasm`                | Run state behaviors as WebAssembly: polyglot guards over a JSON ABI via wazero.  | experimental |
 
 source also ships composable reliability middleware as its own opt-in modules
 (`source/retry`, `source/dlq`, `source/idempotency`, `source/schema`) and an
@@ -77,8 +81,11 @@ hierarchical, parallel, and final states, history, guard combinators, delayed
 transitions, invoked services, an actor model, snapshots, and JSON
 (de)serialization, backed by its `analysis`, `evolution`, and `conformance`
 packages. `telemetry`, `sink`, and `source` (with all their adapters, codecs, and
-middleware) are released and documented; `broker` is planned. Treat every API as
-experimental until it reaches v1.
+middleware) are released and documented, as are the host-side runtimes over the
+kernel: `durable` (durable execution), `cluster` (distribution and live
+migration), `transport` (the gRPC network transport for cluster), and `wasm`
+(polyglot behaviors). `broker` is planned. Treat every API as experimental until
+it reaches v1.
 
 ## Roadmap
 
