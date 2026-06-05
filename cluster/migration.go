@@ -32,7 +32,17 @@ type Checkpoint struct {
 
 // Capture snapshots a running instance, its actor tree, and its machine definition
 // into a Checkpoint ready to ship to another node. It is a pure read: it neither
-// fires the instance nor mutates any actor. Call it at a quiescent point.
+// fires the instance nor mutates any actor.
+//
+// # Consistency boundary
+//
+// The instance snapshot and the actor-tree snapshot are read as two separate
+// operations, not under one combined lock, so Capture does not by itself produce a
+// point-in-time-consistent pair. The caller must ensure no Fire or actor delivery
+// runs against the instance for the duration of the call — that is what "quiescent"
+// means here. Captured under concurrent firing, the snapshot and the actor tree may
+// reflect different instants and Restore could rebuild a tree that does not match
+// the kernel configuration. Quiesce the instance (stop driving it) before Capture.
 func Capture[S comparable, E comparable, C any](inst *state.Instance[S, E, C], sys *state.ActorSystem[S, E, C], machine *state.Machine[S, E, C]) (Checkpoint, error) {
 	snap, err := state.MarshalSnapshot(inst.Snapshot())
 	if err != nil {

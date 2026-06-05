@@ -5,6 +5,31 @@ All notable changes to `crucible/cluster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`Supervisor.Forget`.** Discards a supervisor's per-actor restart bookkeeping
+  (spent-restart counter and any scheduled backoff restart) for an actor id. A host
+  calls it when an actor is permanently stopped, so the restart map does not
+  accumulate one entry per distinct actor id for the process lifetime under churn.
+
+### Fixed
+
+- **Backoff overflow.** `backoffDelay` clamps to `math.MaxInt64` before the
+  `time.Duration` conversion, so an uncapped schedule (no max set) with a high
+  restart count no longer overflows into a negative or wrapped delay.
+- **Nil-respawner Tick.** `Supervisor.Tick` guards against a Respawner cleared
+  between scheduling a backoff and the due tick: the due restart is a no-op and the
+  pending restart is preserved rather than panicking.
+
+### Documentation
+
+- **Capture consistency boundary.** `Capture`'s godoc now states that the instance
+  snapshot and actor-tree snapshot are read as two separate operations, so the
+  caller must quiesce the instance (no concurrent Fire or delivery) for the pair to
+  be point-in-time consistent.
+
 ## [0.1.0]
 
 The first release of the host-side distribution runtime for the `crucible/state`

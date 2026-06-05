@@ -121,6 +121,68 @@ func TestMigration_BreakingTargetRefused(t *testing.T) {
 	}
 }
 
+// TestMigration_Restore_BadMachineIR reports an error when the captured machine IR
+// cannot be decoded, rather than silently proceeding with no compatibility gate.
+func TestMigration_Restore_BadMachineIR(t *testing.T) {
+	ctx := context.Background()
+	cp := capturedInB(t)
+	cp.MachineIR = json.RawMessage(`{not valid ir`)
+
+	_, _, err := cluster.Restore(ctx, cp, migSource())
+	if err == nil {
+		t.Fatal("Restore with a corrupt machine IR must error")
+	}
+	if errors.Is(err, cluster.ErrIncompatibleMigration) {
+		t.Fatalf("a decode failure must not masquerade as an incompatible-migration refusal: %v", err)
+	}
+}
+
+// TestMigration_Restore_BadSnapshot reports an error when the captured snapshot
+// cannot be unmarshaled, after the compatibility gate has passed.
+func TestMigration_Restore_BadSnapshot(t *testing.T) {
+	ctx := context.Background()
+	cp := capturedInB(t)
+	cp.Snapshot = json.RawMessage(`{"current": 12345}`) // wrong shape for the snapshot
+
+	_, _, err := cluster.Restore(ctx, cp, migSource())
+	if err == nil {
+		t.Fatal("Restore with a corrupt snapshot must error")
+	}
+}
+
+// TestMigration_Restore_BadActors reports an error when a captured actor entry
+// cannot be decoded, rather than restoring a partial actor tree.
+func TestMigration_Restore_BadActors(t *testing.T) {
+	ctx := context.Background()
+	cp := capturedInB(t)
+	cp.Actors = map[string]json.RawMessage{"w-bad": json.RawMessage(`{not an actor`)}
+
+	_, _, err := cluster.Restore(ctx, cp, migSource(), cluster.WithActorBehaviors(map[string]state.ActorBehavior{
+		"child": childBehavior(),
+	}))
+	if err == nil {
+		t.Fatal("Restore with a corrupt actor entry must error")
+	}
+}
+
+// TestMigration_Capture_Marshalable confirms Capture succeeds on a well-formed
+// instance and that the captured snapshot, IR, and actor tree are all valid JSON
+// (the marshal/serialize/snapshot success paths the error branches guard).
+func TestMigration_Capture_Marshalable(t *testing.T) {
+	cp := capturedInB(t)
+	if !json.Valid(cp.Snapshot) {
+		t.Error("captured Snapshot is not valid JSON")
+	}
+	if !json.Valid(cp.MachineIR) {
+		t.Error("captured MachineIR is not valid JSON")
+	}
+	for id, raw := range cp.Actors {
+		if !json.Valid(raw) {
+			t.Errorf("captured actor %q is not valid JSON", id)
+		}
+	}
+}
+
 // TestMigration_ActorsMove confirms a migrated instance carries its running actors.
 func TestMigration_ActorsMove(t *testing.T) {
 	ctx := context.Background()

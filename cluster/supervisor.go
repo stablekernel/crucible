@@ -213,6 +213,29 @@ func (s *Supervisor) tryRestart(ctx context.Context, esc *state.ActorEscalation)
 	return true
 }
 
+// Forget discards the supervisor's per-actor restart bookkeeping for actorID: its
+// spent-restart counter and any not-yet-applied backoff restart scheduled for it.
+// A host calls it when an actor is permanently stopped (not restarted), so the
+// supervisor's restart map does not accumulate one entry per distinct actor id for
+// the process lifetime under churn. Forgetting an unknown id is a no-op. After
+// Forget a re-spawn of the same id starts a fresh restart budget, so call it only
+// for a genuine teardown, never between a failure and its restart.
+func (s *Supervisor) Forget(actorID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.restarts, actorID)
+	if len(s.pending) == 0 {
+		return
+	}
+	kept := s.pending[:0]
+	for _, p := range s.pending {
+		if p.actorID != actorID {
+			kept = append(kept, p)
+		}
+	}
+	s.pending = kept
+}
+
 // Handled returns a snapshot of the failures this supervisor has processed, in
 // order. The returned slice is a copy and safe to retain.
 func (s *Supervisor) Handled() []HandledEscalation {
