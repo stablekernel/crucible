@@ -134,6 +134,38 @@ func TestRig_RestoreAndAccessors(t *testing.T) {
 	}
 }
 
+// TestRig_RunRefundNoService covers RunRefund's no-service-running branch: with
+// no refund service armed (the order was never canceled), the Tick finds nothing
+// to run and RunRefund reports false rather than fabricating a result.
+func TestRig_RunRefundNoService(t *testing.T) {
+	ctx := context.Background()
+	rig, err := fooddelivery.NewRig(fooddelivery.WithOrder(fooddelivery.Order{Subtotal: 5000, Tip: 1500, Priority: "fast"}))
+	if err != nil {
+		t.Fatalf("NewRig: %v", err)
+	}
+	rig.Submit(ctx)
+	rig.SettleAuthorization(ctx, true) // active order, but no refund ever armed
+
+	if fr, ran := rig.RunRefund(ctx); ran {
+		t.Fatalf("RunRefund with no armed refund service = ran, fr=%+v; want not ran", fr)
+	}
+}
+
+// TestRestoreRig_RestoreError covers RestoreRig's restore-error branch: a
+// snapshot naming a state the freshly forged machine does not declare cannot be
+// restored, so RestoreRig surfaces the error rather than returning a half-built
+// rig.
+func TestRestoreRig_RestoreError(t *testing.T) {
+	bad := state.Snapshot[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order]{
+		Machine:       "order",
+		Current:       fooddelivery.Stage(-1), // not a declared state
+		Configuration: []fooddelivery.Stage{fooddelivery.Stage(-1)},
+	}
+	if _, err := fooddelivery.RestoreRig(bad); err == nil {
+		t.Fatal("RestoreRig with an undeclared-state snapshot = nil error, want a restore failure")
+	}
+}
+
 // TestStage_StringFallback covers the String fallback arms for out-of-range values.
 func TestStage_StringFallback(t *testing.T) {
 	if got := fooddelivery.Stage(-1).String(); got != "Stage?" {
