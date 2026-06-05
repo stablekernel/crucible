@@ -136,6 +136,16 @@ func ShortestPaths[S comparable, E comparable, C any](m *state.Machine[S, E, C])
 // Paths to each target are returned in a deterministic order: discovered by a
 // declaration-order depth-first walk, then sorted by length and by their event
 // sequence so the set is reproducible.
+//
+// Cost: enumeration always terminates (a simple path never repeats a state), but
+// the number of simple paths is combinatorial in the graph's branching, not
+// linear in its size. A densely connected machine — many states each reachable
+// from many others — can have a number of simple paths that grows factorially
+// with the state count, so SimplePaths can allocate a very large result and run
+// for a long time on such a model. There is no built-in depth or count bound. Use
+// it on bounded, sparsely connected definitions (the typical hand-authored
+// statechart); for a dense or generated model prefer ShortestPaths, or enumerate
+// against a copy of the machine pruned to the states and transitions of interest.
 func SimplePaths[S comparable, E comparable, C any](m *state.Machine[S, E, C]) (map[string][]Path, error) {
 	g, err := buildGraph(m)
 	if err != nil {
