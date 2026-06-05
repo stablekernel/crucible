@@ -574,22 +574,6 @@ func writeAtomic(path string, data []byte) error {
 	return syncDir(filepath.Dir(path))
 }
 
-// syncDir fsyncs a directory so a rename or create within it is durable across a
-// crash. A failure to open or sync the directory is reported; a platform that
-// does not support syncing a directory handle (a rare case) surfaces its error to
-// the caller rather than being silently ignored.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("crucible/durable: opening dir %q to sync: %w", dir, err)
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("crucible/durable: syncing dir %q: %w", dir, err)
-	}
-	return nil
-}
-
 // encodeInstanceID maps an InstanceID to a filesystem-safe directory name. An id
 // composed only of safe characters is used verbatim for readability; any other
 // id is hex-escaped per byte, so arbitrary ids (including path separators) map to
