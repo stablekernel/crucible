@@ -105,32 +105,34 @@ func TestRunPolyglotEquivalence_RejectsModuleWithoutABI(t *testing.T) {
 // whether building the CEL model or the WASM model — surfaces through the harness rather
 // than being swallowed. The model builder seam is injected to fail.
 func TestRunPolyglotEquivalence_ModelBuildErrors(t *testing.T) {
+	t.Parallel()
 	wasmBytes := buildGenerousGuest(t)
 	sentinel := errors.New("model build boom")
 
 	t.Run("CEL model build fails", func(t *testing.T) {
-		restore := newModel
-		newModel = func(...fooddelivery.Option) (*state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], error) {
+		t.Parallel()
+		deps := productionDeps()
+		deps.newModel = func(...fooddelivery.Option) (*state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], error) {
 			return nil, sentinel
 		}
-		t.Cleanup(func() { newModel = restore })
-		if _, err := RunPolyglotEquivalence(context.Background(), wasmBytes); !errors.Is(err, sentinel) {
+		if _, err := runPolyglotEquivalence(context.Background(), wasmBytes, deps); !errors.Is(err, sentinel) {
 			t.Fatalf("expected the model build error to surface; got %v", err)
 		}
 	})
 
 	t.Run("WASM model build fails", func(t *testing.T) {
-		restore := newModel
+		t.Parallel()
+		real := productionDeps()
 		calls := 0
-		newModel = func(opts ...fooddelivery.Option) (*state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], error) {
+		deps := real
+		deps.newModel = func(opts ...fooddelivery.Option) (*state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], error) {
 			calls++
 			if calls == 1 { // the CEL model builds; the WASM model (second call) fails.
-				return restore()
+				return real.newModel()
 			}
 			return nil, sentinel
 		}
-		t.Cleanup(func() { newModel = restore })
-		if _, err := RunPolyglotEquivalence(context.Background(), wasmBytes); !errors.Is(err, sentinel) {
+		if _, err := runPolyglotEquivalence(context.Background(), wasmBytes, deps); !errors.Is(err, sentinel) {
 			t.Fatalf("expected the WASM model build error to surface; got %v", err)
 		}
 	})
@@ -139,32 +141,34 @@ func TestRunPolyglotEquivalence_ModelBuildErrors(t *testing.T) {
 // TestRunPolyglotEquivalence_DriveErrors confirms a drive failure on either engine
 // surfaces through the harness, exercising both per-case error paths via the drive seam.
 func TestRunPolyglotEquivalence_DriveErrors(t *testing.T) {
+	t.Parallel()
 	wasmBytes := buildGenerousGuest(t)
 	sentinel := errors.New("drive boom")
 
 	t.Run("CEL drive fails", func(t *testing.T) {
-		restore := driveAuthorizedFn
-		driveAuthorizedFn = func(context.Context, *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], fooddelivery.Order) (orderOutcome, error) {
+		t.Parallel()
+		deps := productionDeps()
+		deps.driveAuthorize = func(context.Context, *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], fooddelivery.Order) (orderOutcome, error) {
 			return outcomeBlocked, sentinel
 		}
-		t.Cleanup(func() { driveAuthorizedFn = restore })
-		if _, err := RunPolyglotEquivalence(context.Background(), wasmBytes); !errors.Is(err, sentinel) {
+		if _, err := runPolyglotEquivalence(context.Background(), wasmBytes, deps); !errors.Is(err, sentinel) {
 			t.Fatalf("expected the CEL drive error to surface; got %v", err)
 		}
 	})
 
 	t.Run("WASM drive fails", func(t *testing.T) {
-		restore := driveAuthorizedFn
+		t.Parallel()
+		real := productionDeps()
 		calls := 0
-		driveAuthorizedFn = func(ctx context.Context, m *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], o fooddelivery.Order) (orderOutcome, error) {
+		deps := real
+		deps.driveAuthorize = func(ctx context.Context, m *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], o fooddelivery.Order) (orderOutcome, error) {
 			calls++
 			if calls == 1 { // the CEL drive succeeds; the WASM drive (second call) fails.
-				return restore(ctx, m, o)
+				return real.driveAuthorize(ctx, m, o)
 			}
 			return outcomeBlocked, sentinel
 		}
-		t.Cleanup(func() { driveAuthorizedFn = restore })
-		if _, err := RunPolyglotEquivalence(context.Background(), wasmBytes); !errors.Is(err, sentinel) {
+		if _, err := runPolyglotEquivalence(context.Background(), wasmBytes, deps); !errors.Is(err, sentinel) {
 			t.Fatalf("expected the WASM drive error to surface; got %v", err)
 		}
 	})
