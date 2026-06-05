@@ -15,7 +15,7 @@ type AssignFn[C any] func(in AssignCtx[C]) C
 ```
 
 ```go
-reg.Assign("recordPayment", func(a state.AssignCtx[Order]) Order {
+reg.Reducer("recordPayment", func(a state.AssignCtx[Order]) Order {
     a.Entity.Paid = true            // a.Entity is a copy
     a.Entity.PaidAt = clockNow(a)   // mutate the copy freely
     return a.Entity                 // the returned value becomes the next context

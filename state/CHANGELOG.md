@@ -55,8 +55,10 @@ representative hot-path numbers.
   Escape guards are read-only by contract.
 - Assign reducers, the sole context-mutation site under the value-semantics
   context contract. An `AssignFn[C]` is a total pure reducer
-  (`ctxView, event, params → C`) registered by `Registry.Assign` (alias
-  `Builder.Reducer`) and wired onto a transition by `Builder.Assign(name)`. The
+  (`ctxView, event, params → C`) registered by `Registry.Reducer` (alias
+  `Builder.Reducer`) and wired onto a transition by `Builder.Assign(name)`,
+  splitting registration (the noun verb `Reducer`) from wiring (the verb `Assign`)
+  to mirror Guard/When and Action/Do. The
   kernel folds the assigns declared on a transition's exit, transition, and entry
   phases (in that order, declaration order within each phase, each seeing the
   prior result), and the folded value becomes the instance's context at commit.
@@ -413,7 +415,7 @@ representative hot-path numbers.
   place context changes is an assign reducer. Actions emit effects; they cannot
   write context. A consumer that previously mutated the context through a pointer
   inside an action must move those writes into an `AssignFn` registered with
-  `Registry.Assign`/`Builder.Reducer` and wired with `Builder.Assign(name)`. This
+  `Registry.Reducer`/`Builder.Reducer` and wired with `Builder.Assign(name)`. This
   is the central change for clean serialization, deterministic replay, and
   cross-stack evaluation.
 - **BREAKING: the reserved `ContextDelta` slot on the action result is removed.**

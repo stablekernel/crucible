@@ -23,8 +23,8 @@ func recordHold(in state.AssignCtx[Order]) Order {
 Register reducers by name, then reference them on a transition. Multiple `Assign` calls **fold in declared order**, each receiving the output of the previous:
 
 ```go
-reg.Assign("recordHold", recordHold)
-reg.Assign("markBreached", markBreached)
+reg.Reducer("recordHold", recordHold)
+reg.Reducer("markBreached", markBreached)
 
 // builder form is equivalent:
 b.Reducer("settle", settleReducer)

@@ -82,7 +82,7 @@
 // prior result — committing the folded value to the instance at the end of the
 // step. Wire an assign with the Assign transition verb or the OnEntryAssign /
 // OnExitAssign state verbs; register the reducer with Builder.Reducer (or
-// Registry.Assign). A service result or actor done-data reaches its onDone
+// Registry.Reducer). A service result or actor done-data reaches its onDone
 // transition's assign through the re-fired done event's payload (AssignCtx.Event),
 // delivered with the WithEventData fire option — no host side channel.
 //
