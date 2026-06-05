@@ -1,14 +1,24 @@
 name: Deploy docs
 
 # Publishes the Starlight docs site to GitHub Pages on every push to main that
-# touches the docs source, the suite's Go source (so regenerated API/diagrams
-# stay current — see the DS2 TODO below), or this workflow.
+# touches the docs source, the suite's Go source (so the regenerated API
+# reference and Mermaid diagrams stay current), the generator itself, or this
+# workflow. Every module whose godoc feeds the generated Reference section is
+# listed so a godoc change in any of them redeploys the site, not just state.
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'tools/docsgen/**'
       - 'state/**'
+      - 'sink/**'
+      - 'source/**'
+      - 'telemetry/**'
+      - 'durable/**'
+      - 'cluster/**'
+      - 'transport/**'
+      - 'wasm/**'
       - '.github/workflows/docs-deploy.yml'
 
 # Least-privilege: read the repo, mint an OIDC token for Pages, write the

@@ -137,6 +137,9 @@ jobs:
       - name: golangci-lint (source/statemachine)
         working-directory: source/statemachine
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
+      - name: golangci-lint (tools/docsgen)
+        working-directory: tools/docsgen
+        run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
 
   # The state-machine race-test matrix lives in a reusable workflow so its legs
   # render as a single collapsible "state machine tests / …" tree in the checks
