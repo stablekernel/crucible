@@ -55,6 +55,53 @@ func TestOverlaps_OverlappingGuardsAreReported(t *testing.T) {
 	}
 }
 
+// TestOverlaps_DeterministicOrder builds a state with several distinct overlap
+// groups (different events) and asserts repeated scans return byte-identical
+// ordered results. Without a deterministic group iteration order the overlaps
+// would shuffle between runs and break golden assertions.
+func TestOverlaps_DeterministicOrder(t *testing.T) {
+	build := func() *state.Machine[string, string, ctx] {
+		return state.Forge[string, string, ctx]("multi").
+			WithContextSchema(state.SchemaOf[ctx]()).
+			Guard("g", func(state.GuardCtx[ctx]) bool { return true }).
+			State("s").
+			// Three distinct events, each with two opaque-guarded competing edges.
+			Transition("s").On("e1").GoTo("a1").WhenExpr(state.Guard[string]("g")).
+			Transition("s").On("e1").GoTo("b1").WhenExpr(state.Guard[string]("g")).
+			Transition("s").On("e2").GoTo("a2").WhenExpr(state.Guard[string]("g")).
+			Transition("s").On("e2").GoTo("b2").WhenExpr(state.Guard[string]("g")).
+			Transition("s").On("e3").GoTo("a3").WhenExpr(state.Guard[string]("g")).
+			Transition("s").On("e3").GoTo("b3").WhenExpr(state.Guard[string]("g")).
+			State("a1").State("b1").State("a2").State("b2").State("a3").State("b3").
+			Initial("s").
+			Quench()
+	}
+
+	first, err := symbolic.Overlaps(build())
+	if err != nil {
+		t.Fatalf("Overlaps: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("Overlaps = %+v, want three groups", first)
+	}
+	// Repeated scans of freshly built (structurally identical) machines must agree
+	// on order, run after run.
+	for i := 0; i < 50; i++ {
+		got, err := symbolic.Overlaps(build())
+		if err != nil {
+			t.Fatalf("Overlaps[%d]: %v", i, err)
+		}
+		if len(got) != len(first) {
+			t.Fatalf("Overlaps[%d] length = %d, want %d", i, len(got), len(first))
+		}
+		for j := range got {
+			if got[j] != first[j] {
+				t.Fatalf("Overlaps[%d][%d] = %+v, want %+v (nondeterministic order)", i, j, got[j], first[j])
+			}
+		}
+	}
+}
+
 func TestOverlaps_OpaqueGuardsAreConservativelyReported(t *testing.T) {
 	// Named-ref guards are opaque to the analyzer, so it cannot prove them disjoint
 	// and reports the pair — a false positive is the safe direction for

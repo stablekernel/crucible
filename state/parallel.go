@@ -113,9 +113,14 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 }
 
 // regionErrOutcome maps a region-level error to the appropriate outcome,
-// mirroring the main commit path: assign reducer failures use
-// OutcomeAssignFailed while guard failures use OutcomeGuardFailed.
+// mirroring the main commit path: a bound action that errored surfaces as
+// OutcomeEffectError, an assign reducer panic as OutcomeAssignFailed, and a
+// failing guard predicate as OutcomeGuardFailed.
 func regionErrOutcome(err error) Outcome {
+	var afe *ActionFailedError
+	if errors.As(err, &afe) {
+		return OutcomeEffectError
+	}
 	var ap *AssignPanicError
 	if errors.As(err, &ap) {
 		return OutcomeAssignFailed
@@ -195,8 +200,11 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	for _, s := range exits {
 		tr.recordExit(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
-			eff, _, _ := i.runActions(n.state.OnExit, entity, tr)
+			eff, errName, err := i.runActions(n.state.OnExit, entity, tr)
 			effects = append(effects, eff...)
+			if err != nil {
+				return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
+			}
 			next, _, aErr := i.applyAssigns(n.state.OnExitAssign, i.entity, eventData, tr)
 			if aErr != nil {
 				return effects, aErr
@@ -217,8 +225,11 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	// Swap this region's leaf in the configuration.
 	i.replaceRegionLeaf(r, leaf, m.descendToLeaves(to))
 
-	eff, _, _ := i.runActions(t.Effects, entity, tr)
+	eff, errName, err := i.runActions(t.Effects, entity, tr)
 	effects = append(effects, eff...)
+	if err != nil {
+		return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
+	}
 	next, _, aErr := i.applyAssigns(t.Assigns, i.entity, eventData, tr)
 	if aErr != nil {
 		return effects, aErr
@@ -228,8 +239,11 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	for _, s := range entries {
 		tr.recordEntry(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
-			eff, _, _ := i.runActions(n.state.OnEntry, entity, tr)
+			eff, errName, err := i.runActions(n.state.OnEntry, entity, tr)
 			effects = append(effects, eff...)
+			if err != nil {
+				return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
+			}
 			next, _, aErr := i.applyAssigns(n.state.OnEntryAssign, i.entity, eventData, tr)
 			if aErr != nil {
 				return effects, aErr

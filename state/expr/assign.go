@@ -1,6 +1,7 @@
 package expr
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -60,8 +61,8 @@ func Assign[C any](reg *state.Registry[C], name, source string, schema state.Con
 		return fmt.Errorf("assign %q: build program: %w", name, err)
 	}
 
-	reg.Reducer(name, celAssign[C](program, schema))
-
+	// Record the catalog entry before mutating the registry so a duplicate-name
+	// collision fails authoring without leaving a half-registered reducer behind.
 	if cfg.catalog != nil {
 		astBytes, err := checkedASTBytes(ast)
 		if err != nil {
@@ -75,6 +76,8 @@ func Assign[C any](reg *state.Registry[C], name, source string, schema state.Con
 			return fmt.Errorf("assign %q: %w", name, err)
 		}
 	}
+
+	reg.Reducer(name, celAssign[C](program, schema))
 	return nil
 }
 
@@ -96,10 +99,12 @@ func celAssign[C any](program cel.Program, schema state.ContextSchema) state.Ass
 		if err != nil {
 			return in.Entity
 		}
-		// ConvertToNative to the map[string]any target type yields that type or an
-		// error, so the assertion is safe; an empty update set is a no-op.
-		updates := native.(map[string]any)
-		if len(updates) == 0 {
+		// ConvertToNative to the map[string]any target type yields that type on
+		// success, but guard the assertion defensively: a reducer is total and must
+		// never panic, so an unexpected dynamic type is treated as a no-op. An empty
+		// update set is likewise a no-op.
+		updates, ok := native.(map[string]any)
+		if !ok || len(updates) == 0 {
 			return in.Entity
 		}
 		return mergeUpdates(in.Entity, updates)
@@ -110,13 +115,18 @@ func celAssign[C any](program cel.Program, schema state.ContextSchema) state.Ass
 // projection: the prior context is marshaled to a map, the updates replace the named
 // keys, and the result is unmarshaled back into a fresh context value. A marshaling
 // failure leaves the entity unchanged.
+//
+// The base map is decoded with UseNumber so that numeric fields not named by the
+// update set keep their exact textual representation rather than being widened to
+// float64. Without it, an int64 sibling larger than 2^53 would lose precision on
+// the re-marshal round-trip even though the assign never touched it.
 func mergeUpdates[C any](entity C, updates map[string]any) C {
 	base, err := json.Marshal(entity)
 	if err != nil {
 		return entity
 	}
-	var m map[string]any
-	if err = json.Unmarshal(base, &m); err != nil {
+	m, err := decodeMapUseNumber(base)
+	if err != nil {
 		return entity
 	}
 	for k, v := range updates {
@@ -131,4 +141,17 @@ func mergeUpdates[C any](entity C, updates map[string]any) C {
 		return entity
 	}
 	return next
+}
+
+// decodeMapUseNumber unmarshals a JSON object into a map while preserving every
+// number as a json.Number, so large integers survive the merge round-trip without
+// being coerced to float64.
+func decodeMapUseNumber(data []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }

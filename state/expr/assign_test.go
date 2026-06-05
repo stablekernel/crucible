@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/state"
 	"github.com/stablekernel/crucible/state/expr"
@@ -133,6 +134,23 @@ func TestAssign_UnmarshalableContextIsNoOp(t *testing.T) {
 	got := fireAssign(t, `{"status": "x"}`, order{Status: "orig", Total: math.NaN()})
 	if got.Status != "orig" {
 		t.Fatalf("status = %q, want orig (unmarshalable context left unchanged)", got.Status)
+	}
+}
+
+// TestAssign_PreservesLargeInt64Sibling confirms that an assign which only touches
+// one field leaves an untouched int64 sibling (here a large time.Duration) exact,
+// rather than corrupting it through a float64 JSON round-trip. A value above 2^53
+// nanoseconds cannot be represented exactly as a float64, so a non-UseNumber merge
+// would silently mangle it.
+func TestAssign_PreservesLargeInt64Sibling(t *testing.T) {
+	// 2^53 + 7 nanoseconds: the smallest range where float64 loses integer precision.
+	const huge = time.Duration((int64(1) << 53) + 7)
+	got := fireAssign(t, `{"status": "updated"}`, order{Status: "orig", Window: huge})
+	if got.Status != "updated" {
+		t.Fatalf("status = %q, want updated", got.Status)
+	}
+	if got.Window != huge {
+		t.Fatalf("window = %d, want %d (large int64 sibling must survive the merge exactly)", got.Window, huge)
 	}
 }
 

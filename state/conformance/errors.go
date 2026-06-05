@@ -23,6 +23,22 @@ func (e *ErrUnknownEvent) Error() string {
 	return fmt.Sprintf("conformance: scenario references unknown event %q", e.Name)
 }
 
+// ErrInitialStateMismatch is returned when a scenario declares a non-empty
+// InitialState that does not match the typed start state the caller resolved for
+// the run. Running anyway would silently replay the event sequence from a
+// different state than the serialized scenario describes, so the run is rejected.
+type ErrInitialStateMismatch struct {
+	// Declared is the scenario's serialized InitialState.
+	Declared string
+	// Resolved is the rendered form of the typed start state passed by the caller.
+	Resolved string
+}
+
+func (e *ErrInitialStateMismatch) Error() string {
+	return fmt.Sprintf("conformance: scenario initial state %q does not match the resolved start state %q",
+		e.Declared, e.Resolved)
+}
+
 // Mismatch is one field-level divergence found by an oracle comparison.
 type Mismatch struct {
 	// Scenario is the name of the scenario whose run diverged.

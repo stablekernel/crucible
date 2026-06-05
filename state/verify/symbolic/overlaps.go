@@ -60,12 +60,20 @@ func Overlaps[S comparable, E comparable, C any](m *state.Machine[S, E, C]) ([]O
 	}
 	var overlaps []Overlap[S, E]
 	for si := range states {
+		// Group same-source/same-event transitions, tracking each key's first-seen
+		// order so the scan is deterministic: ranging the map directly would emit
+		// overlaps in random order across runs and break golden/idempotency checks.
 		groups := map[key][]state.Transition[S, E, C]{}
+		var order []key
 		for _, t := range states[si].Transitions {
 			k := key{from: t.From, on: t.On}
+			if _, seen := groups[k]; !seen {
+				order = append(order, k)
+			}
 			groups[k] = append(groups[k], t)
 		}
-		for k, ts := range groups {
+		for _, k := range order {
+			ts := groups[k]
 			for i := 0; i < len(ts); i++ {
 				for j := i + 1; j < len(ts); j++ {
 					if !Disjoint(transitionGuard(ts[i]), transitionGuard(ts[j]), schema) {

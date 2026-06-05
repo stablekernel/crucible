@@ -88,6 +88,55 @@ func TestUnreachableState(t *testing.T) {
 	}
 }
 
+// collKey is a state type whose String renders only its Name, so two distinct
+// keys with the same Name collide when the analysis graph flattens them by their
+// rendered name. It models the real hazard: distinct typed states (here in
+// separate branches) that are indistinguishable once stringified.
+type collKey struct {
+	ID   int
+	Name string
+}
+
+func (c collKey) String() string { return c.Name }
+
+// TestDuplicateState_CollisionIsReported proves that two distinct states whose
+// rendered names collide are surfaced as a duplicate_state error rather than
+// being silently merged into one analysis node.
+func TestDuplicateState_CollisionIsReported(t *testing.T) {
+	a := collKey{ID: 1, Name: "dup"}
+	b := collKey{ID: 2, Name: "dup"}
+	final := collKey{ID: 3, Name: "done"}
+
+	m := state.Forge[collKey, string, any]("coll").
+		State(a).
+		Transition(a).On("go").GoTo(final).
+		State(b).
+		Transition(b).On("go").GoTo(final).
+		State(final).Final().
+		Initial(a).
+		Quench()
+
+	r := analysis.Analyze(m)
+	dups := r.OfKind(analysis.KindDuplicateState)
+	if len(dups) == 0 {
+		t.Fatalf("expected a duplicate_state finding for the colliding name; report:\n%s", r)
+	}
+	for _, f := range dups {
+		if f.State != "dup" {
+			t.Fatalf("duplicate_state finding state = %q, want dup", f.State)
+		}
+		if f.Severity != analysis.SeverityError {
+			t.Fatalf("duplicate_state finding should be an error, got %s", f.Severity)
+		}
+	}
+
+	// Without restricts the pass: excluding the kind suppresses the finding.
+	rr := analysis.Analyze(m, analysis.Without(analysis.KindDuplicateState))
+	if len(rr.OfKind(analysis.KindDuplicateState)) != 0 {
+		t.Fatalf("Without(KindDuplicateState) should suppress the finding; report:\n%s", rr)
+	}
+}
+
 func TestDeadTransition(t *testing.T) {
 	// The self-loop on the unreachable "orphan" can never fire.
 	m := forge("dead-transition").

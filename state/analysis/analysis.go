@@ -52,6 +52,15 @@ const (
 	// that are always false at run time, the state is stuck despite looking live
 	// here. Skipped entirely when the machine declares no final states.
 	KindCannotReachFinal Kind = "cannot_reach_final"
+
+	// KindDuplicateState marks two distinct declared states that flatten to the
+	// same name. The analysis graph keys nodes by the state's rendered name, so a
+	// collision (two states in different regions or branches whose names render
+	// identically) would silently merge into one node and quietly mask the other
+	// state's reachability, dead-end, and liveness defects. Surfacing it as a
+	// finding makes the ambiguity explicit instead of analyzing a graph that does
+	// not match the declared machine.
+	KindDuplicateState Kind = "duplicate_state"
 )
 
 // Severity ranks a finding's seriousness.
@@ -154,6 +163,16 @@ func Analyze[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts 
 	}
 
 	var r Report
+	if cfg.enabled(KindDuplicateState) {
+		for _, name := range g.duplicates {
+			r.Findings = append(r.Findings, Finding{
+				Kind:     KindDuplicateState,
+				Severity: SeverityError,
+				State:    name,
+				Message:  fmt.Sprintf("state %q is declared more than once; its analysis node collides and other declarations are masked", name),
+			})
+		}
+	}
 	if cfg.enabled(KindUnreachableState) {
 		checkUnreachable(g, &r)
 	}
@@ -271,6 +290,9 @@ type graph struct {
 	initial    string
 	hasInitial bool
 	hasFinal   bool
+	// duplicates names every state that collided with an already-recorded node
+	// during flatten, in declaration order, so Analyze can surface the ambiguity.
+	duplicates []string
 }
 
 // buildGraph serializes the machine to its IR and flattens the (possibly
@@ -349,8 +371,15 @@ func flatten[S comparable, E comparable, C any](g *graph, s *state.State[S, E, C
 		}
 	}
 
-	g.nodes[name] = n
-	g.order = append(g.order, name)
+	if _, exists := g.nodes[name]; exists {
+		// A second state flattened to a name already recorded: the graph would
+		// otherwise silently merge the two. Record the collision so Analyze reports
+		// it; keep the first node so the rest of the pass stays deterministic.
+		g.duplicates = append(g.duplicates, name)
+	} else {
+		g.nodes[name] = n
+		g.order = append(g.order, name)
+	}
 
 	for i := range s.Children {
 		flatten(g, &s.Children[i], name)

@@ -2,6 +2,7 @@ package conformance_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -111,6 +112,55 @@ func TestRunAgainst_RecordsEffectsAndTrace(t *testing.T) {
 	}
 	if res.Trace.Steps[0].Outcome != "Success" {
 		t.Fatalf("step 0 outcome = %q, want Success", res.Trace.Steps[0].Outcome)
+	}
+}
+
+func TestRunAgainst_InitialStateMismatchIsRejected(t *testing.T) {
+	m := buildDocMachine()
+	// The scenario declares it starts in Submitted, but the caller resolves the
+	// start state to draft: the events must not be replayed from the wrong state.
+	sc := conformance.Scenario{
+		MachineID: "document", InitialState: "Submitted",
+		Events: []conformance.Event{{Event: "Submit"}},
+		Assertions: []conformance.Assertion{
+			{Type: conformance.AssertNoErrors, Expected: true},
+		},
+	}
+	res := conformance.RunAgainst(m, sc, newDoc(), docCodec(), draft)
+
+	var mismatch *conformance.ErrInitialStateMismatch
+	if !errors.As(res.Err, &mismatch) {
+		t.Fatalf("err = %v, want *ErrInitialStateMismatch", res.Err)
+	}
+	if mismatch.Declared != "Submitted" || mismatch.Resolved != "Draft" {
+		t.Fatalf("mismatch = %+v, want Declared=Submitted Resolved=Draft", mismatch)
+	}
+	// No events were fired: the run aborted before stepping the instance.
+	if len(res.Trace.Steps) != 0 {
+		t.Fatalf("trace steps = %d, want 0 (run aborted)", len(res.Trace.Steps))
+	}
+	// The NoErrors assertion must observe the recorded error and fail.
+	if res.Passed() {
+		t.Fatal("a mismatched scenario must not pass its NoErrors assertion")
+	}
+}
+
+func TestRunAgainst_EmptyInitialStateSkipsCheck(t *testing.T) {
+	m := buildDocMachine()
+	// An empty InitialState defers entirely to the caller's start state.
+	sc := conformance.Scenario{
+		MachineID: "document",
+		Events:    []conformance.Event{{Event: "Submit"}},
+		Assertions: []conformance.Assertion{
+			{Type: conformance.AssertNoErrors, Expected: true},
+		},
+	}
+	res := conformance.RunAgainst(m, sc, newDoc(), docCodec(), draft)
+	if res.Err != nil {
+		t.Fatalf("empty InitialState should skip the consistency check, got err %v", res.Err)
+	}
+	if len(res.Trace.Steps) != 1 {
+		t.Fatalf("trace steps = %d, want 1", len(res.Trace.Steps))
 	}
 }
 
