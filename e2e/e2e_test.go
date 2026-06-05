@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stablekernel/crucible/cluster"
@@ -11,6 +14,7 @@ import (
 	"github.com/stablekernel/crucible/state"
 	"github.com/stablekernel/crucible/state/expr"
 	"github.com/stablekernel/crucible/transport"
+	"github.com/stablekernel/crucible/wasm"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -81,6 +85,119 @@ func TestE2E_DurableCELAssignSurvivesRecovery(t *testing.T) {
 	}
 	if got := rec.Instance().Current(); got != "paid" {
 		t.Fatalf("recovered state = %q, want paid", got)
+	}
+}
+
+// ---- wasm ⊗ state ⊗ durable: a WASM-backed guard survives record/replay ----
+
+type approvalOrder struct {
+	Amount int64  `json:"amount"`
+	Status string `json:"status"`
+}
+
+// buildApprovalGuest compiles the approval guard guest to wasip1/wasm with the
+// standard Go toolchain (no committed binary, no TinyGo) and returns its bytes,
+// mirroring the wasm package's own guest build so the e2e joint compiles its
+// guard the same proven way.
+func buildApprovalGuest(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	out := filepath.Join(dir, "approval.wasm")
+	cmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, "./testdata/approvalguest")
+	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	if buildOut, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build approval guest: %v\n%s", err, buildOut)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read built guest: %v", err)
+	}
+	return b
+}
+
+// approvalMachine forges an order machine whose approve transition is gated by a
+// WASM-backed guard (amount >= 100), authored through the full production flow
+// (Forge → ToJSON → LoadFromJSON → Provide) so the foreign-engine guard resolves
+// exactly like an in-tree one.
+func approvalMachine(t *testing.T, mod *wasm.Module) *state.Machine[string, string, approvalOrder] {
+	t.Helper()
+	reg := state.NewRegistry[approvalOrder]()
+	node := wasm.Guard[string](reg, "approved", mod)
+
+	def := state.Forge[string, string, approvalOrder]("approval").
+		Guard("approved", func(state.GuardCtx[approvalOrder]) bool { return false }). // stub, replaced by Provide
+		State("pending").
+		State("approved").
+		Initial("pending").
+		Transition("pending").On("approve").GoTo("approved").WhenExpr(node).
+		Quench()
+
+	js, err := def.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON: %v", err)
+	}
+	ir, err := state.LoadFromJSON[string, string, approvalOrder](js)
+	if err != nil {
+		t.Fatalf("LoadFromJSON: %v", err)
+	}
+	return ir.Provide(reg).Quench()
+}
+
+// TestE2E_WASMGuardedDurableTransitionSurvivesRecovery drives a durable instance
+// through a transition gated by a WebAssembly-backed guard, then recovers it from
+// the store — proving a foreign-engine guard composes with the durable
+// record/replay seam: the approved order persists at approved and replays
+// deterministically, and a below-threshold order is blocked through the same
+// WASM evaluator. It is hermetic (the guest is built on demand with the Go wasm
+// toolchain) and deterministic (the guard is a pure predicate over context).
+func TestE2E_WASMGuardedDurableTransitionSurvivesRecovery(t *testing.T) {
+	ctx := context.Background()
+	mod, err := wasm.Compile(ctx, buildApprovalGuest(t))
+	if err != nil {
+		t.Fatalf("compile guard: %v", err)
+	}
+	t.Cleanup(func() { _ = mod.Close(ctx) })
+
+	m := approvalMachine(t, mod)
+	store := durable.NewMemStore()
+	runner := durable.NewRunner(m, store)
+
+	// An at-threshold order: the WASM guard admits it, the durable runner records
+	// the transition, and recovery replays it to the same approved state.
+	const okID = "order-ok"
+	okH, err := runner.Start(ctx, okID, approvalOrder{Amount: 150, Status: "pending"}, state.WithInitialState("pending"))
+	if err != nil {
+		t.Fatalf("start ok order: %v", err)
+	}
+	if _, err = okH.Fire(ctx, "approve"); err != nil {
+		t.Fatalf("fire approve: %v", err)
+	}
+	if got := okH.Instance().Current(); got != "approved" {
+		t.Fatalf("WASM guard should admit amount 150; current=%q, want approved", got)
+	}
+
+	rec, err := durable.Recover(ctx, m, store, okID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if got := rec.Instance().Current(); got != "approved" {
+		t.Fatalf("recovered state = %q, want approved (WASM-guarded transition replayed)", got)
+	}
+
+	// A below-threshold order: the same WASM guard blocks it, so the transition is
+	// rejected (a GuardFailedError) and the durable instance never leaves pending.
+	const lowID = "order-low"
+	lowH, err := runner.Start(ctx, lowID, approvalOrder{Amount: 50, Status: "pending"}, state.WithInitialState("pending"))
+	if err != nil {
+		t.Fatalf("start low order: %v", err)
+	}
+	_, err = lowH.Fire(ctx, "approve")
+	var guardErr *state.GuardFailedError
+	if !errors.As(err, &guardErr) {
+		t.Fatalf("fire approve (low) error = %v, want a *state.GuardFailedError from the WASM guard", err)
+	}
+	if got := lowH.Instance().Current(); got != "pending" {
+		t.Fatalf("WASM guard should block amount 50; current=%q, want pending", got)
 	}
 }
 
