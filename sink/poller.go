@@ -18,26 +18,15 @@ type PollerOption func(*pollerConfig)
 
 type pollerConfig struct {
 	interval time.Duration
-	now      func() time.Time
 }
 
 func defaultPollerConfig() pollerConfig {
-	return pollerConfig{interval: 60 * time.Second, now: time.Now}
+	return pollerConfig{interval: 60 * time.Second}
 }
 
 // WithPollInterval sets the sampling period. The default is 60s.
 func WithPollInterval(d time.Duration) PollerOption {
 	return func(c *pollerConfig) { c.interval = d }
-}
-
-// WithPollerClock injects the clock the Poller reads, for deterministic tests.
-// The default is time.Now. A nil clock is ignored.
-func WithPollerClock(now func() time.Time) PollerOption {
-	return func(c *pollerConfig) {
-		if now != nil {
-			c.now = now
-		}
-	}
 }
 
 // Poller periodically runs a CollectFunc and sinks each yielded payload to a
@@ -47,7 +36,6 @@ type Poller struct {
 	target   Outlet
 	collect  CollectFunc
 	interval time.Duration
-	now      func() time.Time
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -55,14 +43,14 @@ type Poller struct {
 	started bool
 }
 
-// NewPoller binds a target and a CollectFunc into a Poller. Defaults: interval
-// 60s, now = time.Now.
+// NewPoller binds a target and a CollectFunc into a Poller. The default
+// interval is 60s.
 func NewPoller(target Outlet, collect CollectFunc, opts ...PollerOption) *Poller {
 	cfg := defaultPollerConfig()
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &Poller{target: target, collect: collect, interval: cfg.interval, now: cfg.now}
+	return &Poller{target: target, collect: collect, interval: cfg.interval}
 }
 
 // Start launches the sampling loop and returns the Poller for chaining. It is
