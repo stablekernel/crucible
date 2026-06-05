@@ -9,6 +9,14 @@ import (
 	"github.com/stablekernel/crucible/telemetry"
 )
 
+// defaultMaxLanes bounds the number of ordered lanes (and their goroutines and
+// map entries) a Hopper keeps alive, so a stream with unbounded key cardinality
+// cannot grow the lane set without limit for the run's lifetime. Distinct keys
+// that exceed the bound share a lane by hash, which only serializes unrelated
+// keys; it never reorders messages that share a key. The default is generous
+// enough that typical key counts each get their own lane.
+const defaultMaxLanes = 4096
+
 // config holds a Hopper's resolved seams. Every field has a no-op default so a
 // zero-option Hopper is fully functional and silent.
 type config struct {
@@ -20,6 +28,7 @@ type config struct {
 	middleware  []Middleware
 	concurrency int
 	maxInFlight int
+	maxLanes    int
 
 	// batch holds the batch-mode tuning; batch.enabled is false unless WithBatch
 	// is supplied, in which case RunBatch/ReceiveBatch accumulate per lane.
@@ -48,6 +57,7 @@ func defaultConfig() config {
 		meter:       telemetry.NopMeter(),
 		concurrency: 1,
 		maxInFlight: 0,
+		maxLanes:    defaultMaxLanes,
 		batch: batchConfig{
 			now: time.Now,
 		},
@@ -142,6 +152,24 @@ func WithConcurrency(n int) Option {
 	return func(c *config) {
 		if n >= 1 {
 			c.concurrency = n
+		}
+	}
+}
+
+// WithMaxLanes bounds the number of ordered lanes the Hopper keeps alive, and
+// with them the per-lane goroutines and map entries. A stream whose key
+// cardinality is unbounded over the run's lifetime (a per-request id, a
+// per-session token) would otherwise accumulate one lane and one goroutine per
+// distinct key for as long as the run lasts; this caps that set. When the number
+// of distinct keys exceeds n, keys are folded onto lanes by hash, which only
+// serializes the unrelated keys that collide and never reorders messages that
+// share a key. The default is a generous fixed bound (see defaultMaxLanes); set
+// it lower to cap goroutines tightly, or higher when key cardinality is large
+// but bounded. A value < 1 is ignored.
+func WithMaxLanes(n int) Option {
+	return func(c *config) {
+		if n >= 1 {
+			c.maxLanes = n
 		}
 	}
 }

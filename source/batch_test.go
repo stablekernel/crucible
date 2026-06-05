@@ -217,6 +217,70 @@ func TestHopper_BatchResultCountMismatch(t *testing.T) {
 	}
 }
 
+// TestHopper_BatchResultOverCount checks that returning more results than the
+// batch holds settles every message and does not panic: the extra results are
+// discarded, and the mismatch is surfaced (recorded on the span) rather than
+// swallowed.
+func TestHopper_BatchResultOverCount(t *testing.T) {
+	t.Parallel()
+	h := memsource.NewHarness(t,
+		[]source.Option{source.WithBatch(2, 0)},
+		memsource.Msg{Key: "k"},
+		memsource.Msg{Key: "k"},
+	)
+	h.RunBatch(func(_ context.Context, ms []source.Message) []source.Result {
+		// Three results for two messages: the third is extra and must be dropped
+		// without affecting the two real messages.
+		return []source.Result{source.Ack(), source.Ack(), source.Ack()}
+	})
+	h.AssertCounts(memsource.Counts{Acked: 2})
+}
+
+// TestHopper_ReceiveBatchSubscribesAndRuns covers the ReceiveBatch entry point,
+// the batch analog of Receive: it subscribes through the inlet, drives the batch
+// handler, and settles every message.
+func TestHopper_ReceiveBatchSubscribesAndRuns(t *testing.T) {
+	t.Parallel()
+	in := memsource.New(
+		memsource.WithMessages(
+			memsource.Msg{Key: "k", Value: []byte("a")},
+			memsource.Msg{Key: "k", Value: []byte("b")},
+		),
+	)
+	hp := source.New(source.WithBatch(2, 0))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- hp.ReceiveBatch(ctx, in, source.SubscribeConfig{Topics: []string{"t"}},
+			func(_ context.Context, ms []source.Message) []source.Result {
+				res := make([]source.Result, len(ms))
+				for i := range res {
+					res[i] = source.Ack()
+				}
+				return res
+			})
+	}()
+
+	// ReceiveBatch does not auto-close the subscription's stream; cancel to drain
+	// once the queued messages have been handled.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ReceiveBatch returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReceiveBatch did not return")
+	}
+	if c := in.Ledger().Counts(); c.Acked != 2 {
+		t.Fatalf("acked = %d, want 2", c.Acked)
+	}
+}
+
 // TestHopper_BatchDecodeFailureIsolated checks one undecodable message terminates
 // alone without poisoning its batch-mates.
 func TestHopper_BatchDecodeFailureIsolated(t *testing.T) {

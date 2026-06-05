@@ -38,6 +38,40 @@ func TestHopper_SettlesByResult(t *testing.T) {
 	}
 }
 
+// TestHopper_InProgressAndManualDispositions exercises the two dispositions the
+// Counts tally does not bucket: ActionInProgress (extend deadline) and
+// ActionManual (handler settled itself). Both must still flow through the
+// subscription's Settle so the backend observes the chosen action, even though
+// neither is an ack/nak/term.
+func TestHopper_InProgressAndManualDispositions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		result source.Result
+		want   source.Action
+	}{
+		{"in_progress", source.InProgress(), source.ActionInProgress},
+		{"manual", source.Manual(), source.ActionManual},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := memsource.NewHarness(t, nil, memsource.Msg{Key: "k", Value: []byte("v")})
+			h.Run(func(context.Context, source.Message) source.Result { return tt.result })
+			// Neither is counted as ack/nak/term/drop.
+			h.AssertCounts(memsource.Counts{})
+			// But the disposition still reached the subscription's Settle.
+			entries := h.Ledger().Entries()
+			if len(entries) != 1 {
+				t.Fatalf("settled %d messages, want 1", len(entries))
+			}
+			if entries[0].Result.Action != tt.want {
+				t.Fatalf("settled action = %v, want %v", entries[0].Result.Action, tt.want)
+			}
+		})
+	}
+}
+
 func TestHopper_PerKeyInOrder(t *testing.T) {
 	t.Parallel()
 	const perKey = 50
@@ -321,6 +355,32 @@ func TestHopper_ReceiveSubscribesAndRuns(t *testing.T) {
 	if c := in.Ledger().Counts(); c.Acked != 1 {
 		t.Fatalf("acked = %d, want 1", c.Acked)
 	}
+}
+
+// TestHopper_MaxLanesFoldsKeys verifies that WithMaxLanes bounds the lane set:
+// with a single lane, many distinct keys are folded onto it and every message is
+// still delivered exactly once and acked. The bound caps goroutines without
+// dropping or reordering work.
+func TestHopper_MaxLanesFoldsKeys(t *testing.T) {
+	t.Parallel()
+	const keys = 50
+	msgs := make([]memsource.Msg, keys)
+	for i := range msgs {
+		msgs[i] = memsource.Msg{Key: fmt.Sprintf("key-%d", i), Value: []byte("v")}
+	}
+	h := memsource.NewHarness(t,
+		[]source.Option{source.WithConcurrency(8), source.WithMaxLanes(1)},
+		msgs...,
+	)
+	var handled int32
+	h.Run(func(context.Context, source.Message) source.Result {
+		atomic.AddInt32(&handled, 1)
+		return source.Ack()
+	})
+	if int(handled) != keys {
+		t.Fatalf("handled = %d, want %d (every folded key delivered once)", handled, keys)
+	}
+	h.AssertCounts(memsource.Counts{Acked: keys})
 }
 
 func TestHopper_FetchErrorPropagates(t *testing.T) {

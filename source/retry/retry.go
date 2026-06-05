@@ -11,8 +11,7 @@
 // The attempt count is carried on a typed context value ([WithAttempt]/[Attempt])
 // rather than a magic-string header, and the next attempt is propagated to inner
 // middleware (notably source/dlq) by the same channel. The backoff schedule is
-// fully config-driven through functional options; nothing is hardcoded. A clock
-// is injected for deterministic tests.
+// fully config-driven through functional options; nothing is hardcoded.
 package retry
 
 import (
@@ -23,14 +22,6 @@ import (
 
 	"github.com/stablekernel/crucible/source"
 )
-
-// AttemptHeader is the typed header key under which the retry middleware stamps
-// the current attempt number when it produces a redelivery [source.Result] whose
-// backoff a downstream backend cannot itself thread back through context (the
-// attempt is also carried on the context via [WithAttempt]). It is a named
-// constant, not an inline magic string, so dead-letter middleware reads the same
-// key the retry middleware writes.
-const AttemptHeader = "crucible-retry-attempt"
 
 // attemptKey is the unexported context key type the attempt count travels on, so
 // it never collides with another package's context values.
@@ -99,7 +90,6 @@ func (b expBackoff) Delay(attempt int) time.Duration {
 type config struct {
 	maxAttempts int
 	backoff     Backoff
-	now         func() time.Time
 }
 
 func defaultConfig() config {
@@ -112,7 +102,6 @@ func defaultConfig() config {
 			jitter: true,
 			randF:  rand.Float64,
 		},
-		now: time.Now,
 	}
 }
 
@@ -162,21 +151,12 @@ func WithBackoffFunc(b Backoff) Option {
 	}
 }
 
-// WithClock injects the clock the middleware reads, for deterministic tests. It
-// is currently used only where a future-facing schedule needs the current time;
-// the backoff itself is relative. The default is time.Now. A nil clock is
-// ignored.
-func WithClock(now func() time.Time) Option {
-	return func(c *config) {
-		if now != nil {
-			c.now = now
-		}
-	}
-}
-
 // WithJitterSource injects the [0,1) random source used for full jitter, so a
-// test can make a jittered schedule deterministic. It applies to the default and
-// [WithBackoff] schedules. A nil source is ignored.
+// test can make a jittered schedule deterministic. It applies to the exponential
+// schedules this package builds (the default and [WithBackoff]); it has no effect
+// on a custom [Backoff] installed with [WithBackoffFunc], which owns its own
+// randomness. Order matters: apply WithJitterSource after the WithBackoff it
+// should patch. A nil source is ignored.
 func WithJitterSource(randF func() float64) Option {
 	return func(c *config) {
 		if randF == nil {
