@@ -657,13 +657,16 @@ func TestNak_RequeueRaisesPerEntryFloor(t *testing.T) {
 		t.Fatalf("Next() error = %v", err)
 	}
 	// Nak with a Requeue (10s) far larger than minIdle: the entry's floor is now+10s.
-	if err := sub.Settle(context.Background(), m, source.NakAfter(10*time.Second, errors.New("retry"))); err != nil {
+	err = sub.Settle(context.Background(), m, source.NakAfter(10*time.Second, errors.New("retry")))
+	if err != nil {
 		t.Fatalf("Settle(nak) error = %v", err)
 	}
 
 	// Before the floor passes, NakRedeliver must hold the entry back.
-	if n, err := sub.NakRedeliver(context.Background(), 0); err != nil || n != 0 {
-		t.Fatalf("NakRedeliver() before floor = %d,%v want 0,nil", n, err)
+	var nBefore int
+	nBefore, err = sub.NakRedeliver(context.Background(), 0)
+	if err != nil || nBefore != 0 {
+		t.Fatalf("NakRedeliver() before floor = %d,%v want 0,nil", nBefore, err)
 	}
 
 	// Advance past the floor: the entry is now eligible and is reclaimed.
