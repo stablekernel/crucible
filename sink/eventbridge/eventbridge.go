@@ -48,7 +48,7 @@ func PutEvents(input *awseb.PutEventsInput) csink.Op[Client] {
 			return err
 		}
 		if out.FailedEntryCount > 0 {
-			return partialFailureError(out.Entries)
+			return partialFailureError(out.FailedEntryCount, out.Entries)
 		}
 		return nil
 	})
@@ -73,8 +73,11 @@ func PutEvent(eventBusName, source, detailType, detail string) csink.Op[Client] 
 
 // partialFailureError builds a descriptive error from the failed entries
 // returned in a PutEvents response. EventBridge returns HTTP 200 for partial
-// failures, so the Op must inspect FailedEntryCount explicitly.
-func partialFailureError(entries []types.PutEventsResultEntry) error {
+// failures, so the Op inspects FailedEntryCount explicitly and passes it here as
+// the authoritative count. The reported number is FailedEntryCount, not the
+// number of entries that happened to carry an ErrorCode, so the count and its
+// plural stay correct even when an entry omits a code.
+func partialFailureError(failed int32, entries []types.PutEventsResultEntry) error {
 	var parts []string
 	for _, e := range entries {
 		if e.ErrorCode == nil {
@@ -87,14 +90,13 @@ func partialFailureError(entries []types.PutEventsResultEntry) error {
 		}
 		parts = append(parts, fmt.Sprintf("%s: %s", code, msg))
 	}
-	n := len(parts)
 	suffix := "y"
-	if n != 1 {
+	if failed != 1 {
 		suffix = "ies"
 	}
 	return fmt.Errorf(
 		"eventbridge: %d entr%s failed: %s",
-		n,
+		failed,
 		suffix,
 		strings.Join(parts, "; "),
 	)
