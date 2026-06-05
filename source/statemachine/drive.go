@@ -167,7 +167,7 @@ func emitEffects(ctx context.Context, sink Sink, effects []state.Effect) error {
 // errors.Is(err, source.ErrInvalidForState); otherwise it reports false and the
 // caller treats the error as transient.
 func classifyFire[K comparable, E any](err error, event E, from K) (*source.GuardRejection, bool) {
-	var invalid *state.ErrInvalidTransition
+	var invalid *state.InvalidTransitionError
 	if errors.As(err, &invalid) {
 		return &source.GuardRejection{
 			Event: fmt.Sprint(event),
@@ -175,7 +175,7 @@ func classifyFire[K comparable, E any](err error, event E, from K) (*source.Guar
 			Err:   err,
 		}, true
 	}
-	var guard *state.ErrGuardFailed
+	var guard *state.GuardFailedError
 	if errors.As(err, &guard) {
 		return &source.GuardRejection{
 			Event: fmt.Sprint(event),

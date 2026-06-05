@@ -283,7 +283,7 @@ func TestAssign_ParallelRegionFolds(t *testing.T) {
 }
 
 // TestAssign_ParallelRegionPanicStopsCommit asserts a region reducer that panics
-// surfaces as OutcomeAssignFailed / *ErrAssignPanic and stops the commit — it
+// surfaces as OutcomeAssignFailed / *AssignPanicError and stops the commit — it
 // must not silently no-op, which was the prior behavior on the parallel path.
 func TestAssign_ParallelRegionPanicStopsCommit(t *testing.T) {
 	m := state.Forge[string, string, acct]("par-assign-panic").
@@ -309,9 +309,9 @@ func TestAssign_ParallelRegionPanicStopsCommit(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("panicking region reducer should fail the fire")
 	}
-	var ap *state.ErrAssignPanic
+	var ap *state.AssignPanicError
 	if !errors.As(res.Err, &ap) {
-		t.Fatalf("error = %v, want *ErrAssignPanic", res.Err)
+		t.Fatalf("error = %v, want *AssignPanicError", res.Err)
 	}
 	if ap.AssignName != "boom" {
 		t.Fatalf("assign name = %q, want boom", ap.AssignName)
@@ -386,9 +386,9 @@ func TestAssign_PanicStopsCommit(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("panicking reducer should fail the fire")
 	}
-	var ap *state.ErrAssignPanic
+	var ap *state.AssignPanicError
 	if !errors.As(res.Err, &ap) {
-		t.Fatalf("error = %v, want *ErrAssignPanic", res.Err)
+		t.Fatalf("error = %v, want *AssignPanicError", res.Err)
 	}
 	if ap.AssignName != "boom" {
 		t.Fatalf("assign name = %q, want boom", ap.AssignName)
@@ -399,7 +399,7 @@ func TestAssign_PanicStopsCommit(t *testing.T) {
 }
 
 // TestAssign_UnboundRefFailsQuench asserts a transition that wires an unregistered
-// assign fails Quench with the typed *ErrUnboundRef (Kind "assign"), exactly like
+// assign fails Quench with the typed *UnboundRefError (Kind "assign"), exactly like
 // an unbound guard, action, or service.
 func TestAssign_UnboundRefFailsQuench(t *testing.T) {
 	defer func() {
@@ -411,9 +411,9 @@ func TestAssign_UnboundRefFailsQuench(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic value is not an error: %T", r)
 		}
-		var ub *state.ErrUnboundRef
+		var ub *state.UnboundRefError
 		if !errors.As(err, &ub) {
-			t.Fatalf("panic = %v, want *ErrUnboundRef", err)
+			t.Fatalf("panic = %v, want *UnboundRefError", err)
 		}
 		if ub.Kind != "assign" || ub.Name != "ghost" {
 			t.Fatalf("unbound ref = {%q, %q}, want {assign, ghost}", ub.Kind, ub.Name)

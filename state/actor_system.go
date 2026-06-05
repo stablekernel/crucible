@@ -313,7 +313,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 	s.mu.Unlock()
 
 	if !ok {
-		s.routeError(ctx, e, &ErrUnboundActor{Name: e.Src.Name})
+		s.routeError(ctx, e, &UnboundActorError{Name: e.Src.Name})
 		return
 	}
 	inst, err := behavior(e.Input)

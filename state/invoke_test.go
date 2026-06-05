@@ -157,7 +157,7 @@ func TestInvoke_StoppedOnExit(t *testing.T) {
 }
 
 // TestInvoke_UnboundServiceQuench asserts an invoke whose Src is not registered
-// fails Quench with the typed *ErrUnboundRef (Kind "service"), exactly like an
+// fails Quench with the typed *UnboundRefError (Kind "service"), exactly like an
 // unbound guard or action.
 func TestInvoke_UnboundServiceQuench(t *testing.T) {
 	defer func() {
@@ -169,9 +169,9 @@ func TestInvoke_UnboundServiceQuench(t *testing.T) {
 		if !ok {
 			t.Fatalf("panic value is not an error: %T", r)
 		}
-		var ub *state.ErrUnboundRef
+		var ub *state.UnboundRefError
 		if !errors.As(err, &ub) {
-			t.Fatalf("panic = %v, want *ErrUnboundRef", err)
+			t.Fatalf("panic = %v, want *UnboundRefError", err)
 		}
 		if ub.Kind != "service" || ub.Name != "missing" {
 			t.Fatalf("unbound ref = {%q, %q}, want {service, missing}", ub.Kind, ub.Name)

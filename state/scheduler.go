@@ -79,7 +79,7 @@ func evalBuiltinAction(a Ref) (Effect, error) {
 	case isCommBuiltinAction(a.Name):
 		return evalCommBuiltinAction(a)
 	default:
-		return nil, &ErrUnknownBuiltin{Name: a.Name}
+		return nil, &UnknownBuiltinError{Name: a.Name}
 	}
 }
 

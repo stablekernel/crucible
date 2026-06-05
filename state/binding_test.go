@@ -173,7 +173,7 @@ func TestRegistry_AssignBindingRecorded(t *testing.T) {
 }
 
 // TestEvalAssign_UnboundRefFailsClosed asserts the defensive fire-time guard:
-// an assign ref with no bound reducer surfaces as a typed *ErrAssignPanic and
+// an assign ref with no bound reducer surfaces as a typed *AssignPanicError and
 // leaves the context unchanged, rather than silently dropping the fold.
 func TestEvalAssign_UnboundRefFailsClosed(t *testing.T) {
 	m := Forge[string, string, bindOrder]("x").State("a").Initial("a").Quench()
@@ -181,9 +181,9 @@ func TestEvalAssign_UnboundRefFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("unbound assign ref should fail")
 	}
-	var ap *ErrAssignPanic
+	var ap *AssignPanicError
 	if !errors.As(err, &ap) || ap.AssignName != "ghost" {
-		t.Fatalf("error = %v, want *ErrAssignPanic{ghost}", err)
+		t.Fatalf("error = %v, want *AssignPanicError{ghost}", err)
 	}
 	if next.Amount != 3 {
 		t.Fatalf("context changed on unbound assign: %+v", next)

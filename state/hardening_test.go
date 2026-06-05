@@ -165,7 +165,7 @@ func TestSelfTransition(t *testing.T) {
 
 // TestActionError_AdvancesStateRecordsEffectError asserts the locked decision:
 // state advances before actions run; a failing action records OutcomeEffectError
-// and the typed *ErrActionFailed, with the state already advanced.
+// and the typed *ActionFailedError, with the state already advanced.
 func TestActionError_AdvancesStateRecordsEffectError(t *testing.T) {
 	type s = int
 	type e = int
@@ -186,9 +186,9 @@ func TestActionError_AdvancesStateRecordsEffectError(t *testing.T) {
 		Quench()
 
 	res := m.Cast(nil).Fire(context.Background(), go0)
-	var af *state.ErrActionFailed
+	var af *state.ActionFailedError
 	if !errors.As(res.Err, &af) {
-		t.Fatalf("err = %v, want *ErrActionFailed", res.Err)
+		t.Fatalf("err = %v, want *ActionFailedError", res.Err)
 	}
 	if !errors.Is(res.Err, boom) {
 		t.Fatalf("err does not unwrap to boom: %v", res.Err)
@@ -202,7 +202,7 @@ func TestActionError_AdvancesStateRecordsEffectError(t *testing.T) {
 }
 
 // TestProvide_UnboundActionRef asserts an unbound action ref also panics with
-// *ErrUnboundRef (kind "action").
+// *UnboundRefError (kind "action").
 func TestProvide_UnboundActionRef(t *testing.T) {
 	defer func() {
 		r := recover()
@@ -213,9 +213,9 @@ func TestProvide_UnboundActionRef(t *testing.T) {
 		if !ok {
 			t.Fatalf("recovered non-error: %v", r)
 		}
-		var ub *state.ErrUnboundRef
+		var ub *state.UnboundRefError
 		if !errors.As(err, &ub) {
-			t.Fatalf("err = %v, want *ErrUnboundRef", err)
+			t.Fatalf("err = %v, want *UnboundRefError", err)
 		}
 		if ub.Kind != "action" {
 			t.Fatalf("Kind = %q, want action", ub.Kind)
@@ -230,7 +230,7 @@ func TestProvide_UnboundActionRef(t *testing.T) {
 }
 
 // TestGuardPanic_RecoveredAsTypedError asserts a panicking guard is recovered
-// into *ErrGuardPanic rather than crashing the process.
+// into *GuardPanicError rather than crashing the process.
 func TestGuardPanic_RecoveredAsTypedError(t *testing.T) {
 	type s = int
 	type e = int
@@ -241,9 +241,9 @@ func TestGuardPanic_RecoveredAsTypedError(t *testing.T) {
 		Quench()
 
 	res := m.Cast(nil).Fire(context.Background(), 0)
-	var gp *state.ErrGuardPanic
+	var gp *state.GuardPanicError
 	if !errors.As(res.Err, &gp) {
-		t.Fatalf("err = %v, want *ErrGuardPanic", res.Err)
+		t.Fatalf("err = %v, want *GuardPanicError", res.Err)
 	}
 	if res.Trace.Outcome != state.OutcomeGuardPanic {
 		t.Fatalf("outcome = %v, want OutcomeGuardPanic", res.Trace.Outcome)

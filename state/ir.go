@@ -188,7 +188,7 @@ func LoadFromJSON[S comparable, E comparable, C any](b []byte, opts ...LoadOptio
 
 // Provide binds every Ref in the IR against the host registry and returns a
 // Builder ready to Quench. Refs that do not resolve are surfaced at Quench as
-// the typed *ErrUnboundRef (the same failure the DSL raises for an unregistered
+// the typed *UnboundRefError (the same failure the DSL raises for an unregistered
 // ref), so a UI/JSON-authored machine and a DSL-authored machine fail
 // identically.
 func (ir *IR[S, E, C]) Provide(reg *Registry[C], opts ...ProvideOption) *Builder[S, E, C] {

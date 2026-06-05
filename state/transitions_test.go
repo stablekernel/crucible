@@ -271,9 +271,9 @@ func TestRaise_CycleOverflowsTyped(t *testing.T) {
 
 	inst := m.Cast(&trec{}, state.WithInitialState("a"))
 	res := inst.Fire(context.Background(), "go")
-	var overflow *state.ErrMicrostepOverflow
+	var overflow *state.MicrostepOverflowError
 	if !errors.As(res.Err, &overflow) {
-		t.Fatalf("err = %v, want *ErrMicrostepOverflow", res.Err)
+		t.Fatalf("err = %v, want *MicrostepOverflowError", res.Err)
 	}
 }
 

@@ -167,6 +167,6 @@ func evalCommBuiltinAction(a Ref) (Effect, error) {
 		systemID, _ := a.Params[sendToSystemIDParam].(string)
 		return ForwardEvent{TargetID: target, SystemID: systemID}, nil
 	default:
-		return nil, &ErrUnknownBuiltin{Name: a.Name}
+		return nil, &UnknownBuiltinError{Name: a.Name}
 	}
 }

@@ -18,7 +18,7 @@ import (
 // flows back to the binding.
 //
 // A nil error and a result whose Err is nil is a successful transition; a result
-// carrying a [state.ErrInvalidTransition] or [state.ErrGuardFailed] is the
+// carrying a [state.InvalidTransitionError] or [state.GuardFailedError] is the
 // state-aware rejection. Returning a non-nil error (not the FireResult.Err) is a
 // transient failure resolving the instance — a nak.
 type FireFunc[K comparable, E comparable] func(ctx context.Context, key K, event E) (state.FireResult[K], error)

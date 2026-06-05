@@ -23,7 +23,7 @@ func (m *Machine[S, E, C]) Verify(s S, entity C, opts ...VerifyOption) error {
 	}
 
 	if _, ok := m.stateByName(s); !ok {
-		return &ErrUndeclaredState{State: fmtState(s)}
+		return &UndeclaredStateError{State: fmtState(s)}
 	}
 
 	var failures []RequirementFailure

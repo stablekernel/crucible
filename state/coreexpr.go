@@ -322,12 +322,12 @@ func appendErr(errs []error, err error) []error {
 // node) against the live context value. It reads each operand — a field-ref
 // resolves the dotted path against the entity by reflection; a literal yields its
 // constant — then compares them with the op's typed comparison. An unresolvable
-// field path or an incomparable pair surfaces a typed ErrGuardPanic, matching how
+// field path or an incomparable pair surfaces a typed GuardPanicError, matching how
 // a named guard's failure surfaces, so a malformed Core guard fails the firing
 // deterministically rather than silently passing.
 func evalCorePredicate[S comparable, C any](g *GuardNode[S], entity C) (bool, error) {
 	guardErr := func(reason string) error {
-		return &ErrGuardPanic{GuardName: renderGuardExpr(g), Recovered: reason}
+		return &GuardPanicError{GuardName: renderGuardExpr(g), Recovered: reason}
 	}
 
 	switch g.Op {

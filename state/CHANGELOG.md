@@ -29,7 +29,7 @@ representative hot-path numbers.
   preserves unknown fields on nested nodes (machine, state, transition, `Ref`,
   `GuardNode`) so a document written by a newer build round-trips losslessly
   through an older one, and rejects only a higher *major* schema version (the
-  typed `*ErrUnsupportedSchema`). IR encoding is deterministic (stable key order)
+  typed `*UnsupportedSchemaError`). IR encoding is deterministic (stable key order)
   so a definition hashes and diffs reproducibly.
 - Closed-enum extension policy. Every IR enum that may grow (guard op, state
   kind, param type, descriptor kind, effect kind) has a documented
@@ -96,7 +96,7 @@ representative hot-path numbers.
   on `NewEffectRegistry`) decodes it back to a concrete effect. Per the
   closed-enum extension policy, an unrecognized effect kind is preserved verbatim
   on load (surfaced as `UnknownEffect`) and rejected only at dispatch
-  (`EffectRegistry.Dispatchable` returns the typed `*ErrUnknownEffectKind`), never
+  (`EffectRegistry.Dispatchable` returns the typed `*UnknownEffectKindError`), never
   silently dropped or applied. Effects remain data the host applies; the kernel
   does not execute them. The `Effect` alias stays `any`, so bare domain effects
   are unaffected.
@@ -220,7 +220,7 @@ representative hot-path numbers.
   - **Declarative invoke + service registry.** A state declares
     `Invocation{ID, Src, Input, OnDone, OnError}`; service implementations bind by
     name through `Registry.Service` / `Builder.Service`, parallel to guards and
-    actions. An unbound service ref fails `Quench` with the typed `*ErrUnboundRef`
+    actions. An unbound service ref fails `Quench` with the typed `*UnboundRefError`
     (`Kind: "service"`), consistent with unbound guards/actions. Authored via the
     DSL `Invoke(src, ...InvokeOption)` whose outcomes are options —
     `WithInvokeOnDone` / `WithInvokeOnError` — alongside `WithInput`,
@@ -333,8 +333,8 @@ representative hot-path numbers.
     (e.g. `And(Or(g1, g2), Not(g3))`). Evaluation short-circuits exactly like a
     plain multi-guard transition: `And` stops at the first false, `Or` at the
     first true. A failing composite reports the failing leaf(s) when cheap, else
-    the composite, preserving the typed `ErrGuardFailed`; a leaf panic still
-    surfaces as `ErrGuardPanic`.
+    the composite, preserving the typed `GuardFailedError`; a leaf panic still
+    surfaces as `GuardPanicError`.
   - **`stateIn(state)`.** A first-class, config-aware built-in guard, true when
     the instance's active configuration includes the named state (its active
     leaves and their ancestor spine), so it is correct for atomic, compound, and
@@ -370,7 +370,7 @@ representative hot-path numbers.
     transitions until the configuration is stable, recording each as a Trace
     microstep. The internal queue is macrostep-local, so `Fire` stays pure. An
     unhandled raised event is ignored; a non-settling raise/eventless cycle fails fast
-    with the typed `ErrMicrostepOverflow`.
+    with the typed `MicrostepOverflowError`.
   - DSL also gains `Always()` to author eventless transitions directly (previously
     IR-only). The wildcard target, forbidden marker, reenter flag, and raised-event
     list serialize in the IR and round-trip losslessly through JSON; `raise` is
@@ -460,6 +460,22 @@ representative hot-path numbers.
   the service settled and an empty slice when the id is not in flight. A caller
   that checked the old `ok` bool now checks `len(results) > 0` and reads
   `results[0]` for the routed result.
+- **BREAKING: the struct error types are renamed from the `Err*` prefix to the
+  idiomatic `*Error` suffix.** The `Err*` prefix is the Go convention for sentinel
+  error values, not for struct types a caller inspects with `errors.As`; these are
+  all struct types with no sentinel vars. `ErrInvalidTransition`, `ErrGuardFailed`,
+  `ErrGuardPanic`, `ErrAssignPanic`, `ErrPolicyDenied`, `ErrUndeclaredState`,
+  `ErrUnboundRef`, `ErrActionFailed`, `ErrMicrostepOverflow`, `ErrNoPath`,
+  `ErrNoInitialState`, `ErrUnknownBuiltin`, `ErrUnboundActor`, `ErrUnsupportedSchema`,
+  `ErrUnknownEffectKind`, and `MultiRegionErr` become `InvalidTransitionError`,
+  `GuardFailedError`, `GuardPanicError`, `AssignPanicError`, `PolicyDeniedError`,
+  `UndeclaredStateError`, `UnboundRefError`, `ActionFailedError`,
+  `MicrostepOverflowError`, `NoPathError`, `NoInitialStateError`,
+  `UnknownBuiltinError`, `UnboundActorError`, `UnsupportedSchemaError`,
+  `UnknownEffectKindError`, and `MultiRegionError`, matching the already-correct
+  `WaitTimeoutError`, `SnapshotError`, `SnapshotVersionError`, and `VerifyError`.
+  Behavior and fields are unchanged; update the type name at each `errors.As`
+  target, type switch, and struct literal.
 - The determinism and ordering contract is now explicit and frozen: emission
   order is exit → transition → entry across the cascade, declaration order within
   a set, fixed parallel-region order, and the run-to-completion interleave for
@@ -468,7 +484,7 @@ representative hot-path numbers.
 
 ### Fixed
 
-- `Cast` returns the typed `*ErrInvalidTransition` consistently for an event that
+- `Cast` returns the typed `*InvalidTransitionError` consistently for an event that
   matches no transition, including inside parallel regions, so a caller can
   distinguish "no transition" from other failures uniformly.
 - On-entry lifecycle effects (`after` / `invoke` / actor `spawn`) are now emitted

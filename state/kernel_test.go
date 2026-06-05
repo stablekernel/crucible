@@ -79,7 +79,7 @@ func TestFire_TraceAlwaysNonNil(t *testing.T) {
 	}
 }
 
-// TestFire_InvalidTransition asserts the typed ErrInvalidTransition.
+// TestFire_InvalidTransition asserts the typed InvalidTransitionError.
 func TestFire_InvalidTransition(t *testing.T) {
 	m, rec := safeBuild(t)
 	if rec != nil {
@@ -87,13 +87,13 @@ func TestFire_InvalidTransition(t *testing.T) {
 	}
 	inst := m.Cast(&Document{Status: Published})
 	res := inst.Fire(context.Background(), Submit)
-	var it *state.ErrInvalidTransition
+	var it *state.InvalidTransitionError
 	if !errors.As(res.Err, &it) {
-		t.Fatalf("err = %v, want *ErrInvalidTransition", res.Err)
+		t.Fatalf("err = %v, want *InvalidTransitionError", res.Err)
 	}
 }
 
-// TestFire_GuardFailed asserts the typed ErrGuardFailed when a guard returns
+// TestFire_GuardFailed asserts the typed GuardFailedError when a guard returns
 // false (no reviewer on the document).
 func TestFire_GuardFailed(t *testing.T) {
 	m, rec := safeBuild(t)
@@ -102,9 +102,9 @@ func TestFire_GuardFailed(t *testing.T) {
 	}
 	inst := m.Cast(&Document{Status: Submitted}) // no reviewer set on this entity
 	res := inst.Fire(context.Background(), Approve)
-	var gf *state.ErrGuardFailed
+	var gf *state.GuardFailedError
 	if !errors.As(res.Err, &gf) {
-		t.Fatalf("err = %v, want *ErrGuardFailed", res.Err)
+		t.Fatalf("err = %v, want *GuardFailedError", res.Err)
 	}
 	if gf.GuardName != "hasReviewer" {
 		t.Fatalf("GuardName = %q, want %q", gf.GuardName, "hasReviewer")
@@ -133,7 +133,7 @@ func TestPlanPath(t *testing.T) {
 	}
 }
 
-// TestPlanPath_NoPath asserts the typed ErrNoPath when no sequence connects.
+// TestPlanPath_NoPath asserts the typed NoPathError when no sequence connects.
 func TestPlanPath_NoPath(t *testing.T) {
 	m, rec := safeBuild(t)
 	if rec != nil {
@@ -141,9 +141,9 @@ func TestPlanPath_NoPath(t *testing.T) {
 	}
 	doc := &Document{}
 	_, err := m.PlanPath(Archived, Draft, doc)
-	var np *state.ErrNoPath
+	var np *state.NoPathError
 	if !errors.As(err, &np) {
-		t.Fatalf("err = %v, want *ErrNoPath", err)
+		t.Fatalf("err = %v, want *NoPathError", err)
 	}
 }
 

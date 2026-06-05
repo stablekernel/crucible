@@ -58,7 +58,7 @@ func TestRoundTrip_Identity(t *testing.T) {
 	}
 }
 
-// TestProvide_UnboundRef asserts Provide fails with *ErrUnboundRef when a ref
+// TestProvide_UnboundRef asserts Provide fails with *UnboundRefError when a ref
 // name in the IR has no registry binding.
 func TestProvide_UnboundRef(t *testing.T) {
 	m, rec := safeBuild(t)
@@ -83,9 +83,9 @@ func TestProvide_UnboundRef(t *testing.T) {
 			t.Fatal("expected Provide/Quench to fail on unbound ref")
 		}
 		if err, ok := r.(error); ok {
-			var ub *state.ErrUnboundRef
+			var ub *state.UnboundRefError
 			if !errors.As(err, &ub) {
-				t.Fatalf("recovered err = %v, want *ErrUnboundRef", err)
+				t.Fatalf("recovered err = %v, want *UnboundRefError", err)
 			}
 		}
 	}()

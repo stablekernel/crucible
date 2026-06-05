@@ -9,7 +9,7 @@ import (
 // CurrentSchemaVersion is the IR wire-format version this build emits and
 // accepts. It is a major.minor string: a higher minor (same major) loads with
 // unknown fields preserved for forward-compat, while a higher major is refused by
-// LoadFromJSON as *ErrUnsupportedSchema. Every document ToJSON emits is stamped
+// LoadFromJSON as *UnsupportedSchemaError. Every document ToJSON emits is stamped
 // with this version, so an IR on the wire is self-describing.
 const CurrentSchemaVersion = "1.0"
 
@@ -157,5 +157,5 @@ func cloneMeta(in map[string]any) map[string]any {
 // schemaError builds the typed rejection for a document whose schema major
 // exceeds the loader's. Centralized so the message stays consistent.
 func schemaError(got string) error {
-	return &ErrUnsupportedSchema{Got: got, Supported: CurrentSchemaVersion}
+	return &UnsupportedSchemaError{Got: got, Supported: CurrentSchemaVersion}
 }
