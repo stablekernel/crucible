@@ -16,12 +16,22 @@ package kinesis
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 
 	csink "github.com/stablekernel/crucible/sink"
 )
+
+// ErrPartialFailure reports that a PutRecords batch returned HTTP 200 but the
+// response carried a non-zero FailedRecordCount, meaning one or more records
+// were rejected. Kinesis does not surface these as a request-level error, so
+// the Op inspects FailedRecordCount and returns this sentinel (wrapped with the
+// per-record detail) instead of silently succeeding. Match it with errors.Is.
+var ErrPartialFailure = errors.New("kinesis: PutRecords reported failed records")
 
 // Client is the narrow Kinesis surface this destination needs. It is satisfied
 // structurally by *kinesis.Client from the AWS SDK v2, keeping the package free
@@ -81,11 +91,44 @@ func PutRecordOf(params PutRecordParams) csink.Op[Client] {
 // single PutRecords call. The StreamName or StreamARN field (or both) in input
 // must identify the target stream. The caller owns the input struct and must
 // not mutate it concurrently after calling PutRecords.
+//
+// Kinesis returns HTTP 200 for a batch in which some records were rejected, so
+// the Op inspects FailedRecordCount on the response. When it is non-zero the Op
+// returns an error that wraps [ErrPartialFailure] and lists the per-record error
+// codes, rather than reporting success.
 func PutRecords(input *kinesis.PutRecordsInput) csink.Op[Client] {
 	return csink.OpFunc[Client](func(ctx context.Context, c Client) error {
-		_, err := c.PutRecords(ctx, input)
-		return err
+		out, err := c.PutRecords(ctx, input)
+		if err != nil {
+			return err
+		}
+		if out.FailedRecordCount != nil && *out.FailedRecordCount > 0 {
+			return partialFailureError(*out.FailedRecordCount, out.Records)
+		}
+		return nil
 	})
+}
+
+// partialFailureError builds an error describing the rejected records in a
+// PutRecords response. It wraps [ErrPartialFailure] so callers can match the
+// class with errors.Is while still reading the per-record detail from the
+// message.
+func partialFailureError(failed int32, records []types.PutRecordsResultEntry) error {
+	var parts []string
+	for _, r := range records {
+		if r.ErrorCode == nil {
+			continue
+		}
+		msg := "<no message>"
+		if r.ErrorMessage != nil {
+			msg = *r.ErrorMessage
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", *r.ErrorCode, msg))
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("%w: %d failed", ErrPartialFailure, failed)
+	}
+	return fmt.Errorf("%w: %d failed: %s", ErrPartialFailure, failed, strings.Join(parts, "; "))
 }
 
 // PutRecordsEntry is a single record within a batch write. It mirrors the

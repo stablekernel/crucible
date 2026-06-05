@@ -14,11 +14,20 @@ package dynamo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	csink "github.com/stablekernel/crucible/sink"
 )
+
+// ErrUnprocessedItems reports that a BatchWriteItem call returned without a
+// request-level error but left one or more items unprocessed (DynamoDB returns
+// these via UnprocessedItems on the output, typically under throttling).
+// [BatchWriteChecked] returns an error wrapping this sentinel so a caller can
+// match the class with errors.Is and retry the unprocessed items.
+var ErrUnprocessedItems = errors.New("dynamo: BatchWriteItem left items unprocessed")
 
 // Client is the narrow DynamoDB surface this destination needs. It declares
 // only the write operations the package issues, so consumers wire the real
@@ -70,12 +79,37 @@ func TransactWrite(in *dynamodb.TransactWriteItemsInput) csink.Op[Client] {
 
 // BatchWrite returns an Op that issues a batch of put and delete requests. The
 // SDK reports per-item failures via UnprocessedItems on the output; this Op
-// returns only the request-level error, so a caller needing retry on
-// unprocessed items should compose a custom Op instead.
+// returns only the request-level error and ignores unprocessed items. Use
+// [BatchWriteChecked] when a left-behind item must surface as an error.
 func BatchWrite(in *dynamodb.BatchWriteItemInput) csink.Op[Client] {
 	return csink.OpFunc[Client](func(ctx context.Context, c Client) error {
 		_, err := c.BatchWriteItem(ctx, in)
 		return err
+	})
+}
+
+// BatchWriteChecked returns an Op that issues a batch of put and delete requests
+// and treats unprocessed items as a failure. DynamoDB returns HTTP 200 with a
+// populated UnprocessedItems map when it could not write every item (commonly
+// under throttling), so the request-level error is nil even though work was
+// dropped. The Op inspects the response and, when any item is unprocessed,
+// returns an error wrapping [ErrUnprocessedItems] reporting how many tables and
+// items were left behind. Pair it with sink.Reservoir or a retry middleware to
+// resubmit the unprocessed items.
+func BatchWriteChecked(in *dynamodb.BatchWriteItemInput) csink.Op[Client] {
+	return csink.OpFunc[Client](func(ctx context.Context, c Client) error {
+		out, err := c.BatchWriteItem(ctx, in)
+		if err != nil {
+			return err
+		}
+		var items int
+		for _, reqs := range out.UnprocessedItems {
+			items += len(reqs)
+		}
+		if items > 0 {
+			return fmt.Errorf("%w: %d item(s) across %d table(s)", ErrUnprocessedItems, items, len(out.UnprocessedItems))
+		}
+		return nil
 	})
 }
 
