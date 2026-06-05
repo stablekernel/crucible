@@ -21,29 +21,25 @@ func (c seqCursor) String() string { return strconv.FormatUint(uint64(c), 10) }
 // message adapts a jetstream.Msg onto [source.Message]. The vendor message is
 // reachable only through As; the neutral accessors expose the common surface.
 // PartitionKey is always "" because JetStream has no partitions, so the Hopper
-// shards by Key (the KeyHeader value, falling back to the subject).
+// shards by Key (the KeyHeader value, falling back to the subject). The header
+// slice is built lazily on the first [message.Headers] call and cached, so a
+// message whose headers a handler never reads pays no per-message header
+// allocation.
 type message struct {
 	msg     jetstream.Msg
 	headers source.Headers
+	built   bool // headers has been materialized
 	key     []byte
 	cursor  seqCursor
 }
 
-// newMessage wraps a jetstream.Msg, eagerly snapshotting its headers, key, and
-// stream sequence so the neutral view is a stable value independent of later
-// driver state. A metadata error (a non-JetStream message) leaves the cursor
-// zero rather than failing the read.
+// newMessage wraps a jetstream.Msg, snapshotting its key and stream sequence so
+// the neutral view is stable independent of later driver state. A metadata error
+// (a non-JetStream message) leaves the cursor zero rather than failing the read.
+// Headers are deferred to the first [message.Headers] call.
 func newMessage(m jetstream.Msg) *message {
-	hdr := m.Headers()
-	headers := make(source.Headers, 0, len(hdr))
-	for k, vs := range hdr {
-		for _, v := range vs {
-			headers = append(headers, source.Header{Key: k, Value: v})
-		}
-	}
-
 	key := []byte(m.Subject())
-	if v := hdr.Get(KeyHeader); v != "" {
+	if v := m.Headers().Get(KeyHeader); v != "" {
 		key = []byte(v)
 	}
 
@@ -52,7 +48,7 @@ func newMessage(m jetstream.Msg) *message {
 		cursor = seqCursor(md.Sequence.Stream)
 	}
 
-	return &message{msg: m, headers: headers, key: key, cursor: cursor}
+	return &message{msg: m, key: key, cursor: cursor}
 }
 
 // Key returns the routing key: the KeyHeader value when set, otherwise the
@@ -63,8 +59,23 @@ func (m *message) Key() []byte { return m.key }
 // Value returns the raw payload bytes.
 func (m *message) Value() []byte { return m.msg.Data() }
 
-// Headers returns the message metadata as a value-type slice.
-func (m *message) Headers() source.Headers { return m.headers }
+// Headers returns the message metadata as a value-type slice, materializing it
+// on first call and caching it so repeated reads are cheap. The order follows
+// the NATS header map iteration and is not significant; a handler keys by name.
+func (m *message) Headers() source.Headers {
+	if !m.built {
+		hdr := m.msg.Headers()
+		headers := make(source.Headers, 0, len(hdr))
+		for k, vs := range hdr {
+			for _, v := range vs {
+				headers = append(headers, source.Header{Key: k, Value: v})
+			}
+		}
+		m.headers = headers
+		m.built = true
+	}
+	return m.headers
+}
 
 // Subject returns the subject the message arrived on.
 func (m *message) Subject() string { return m.msg.Subject() }
