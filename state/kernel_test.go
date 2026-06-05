@@ -8,24 +8,10 @@ import (
 	"github.com/stablekernel/crucible/state"
 )
 
-// safeBuild recovers a panic from the not-yet-implemented Quench so a single
-// test can assert on a specific later step without aborting the whole run with
-// an un-recovered panic. When the kernel is implemented, recovered will be nil
-// and the returned machine is real.
-func safeBuild(t *testing.T) (m *state.Machine[DocState, DocEvent, *Document], recovered any) {
-	t.Helper()
-	defer func() { recovered = recover() }()
-	m = buildDocMachine()
-	return m, nil
-}
-
 // TestForgeQuench_BuildsMachine asserts the foundry build path
 // (Forge -> ... -> Quench) yields a usable, named machine.
 func TestForgeQuench_BuildsMachine(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Fatalf("Quench panicked (expected once implemented): %v", rec)
-	}
+	m := buildDocMachine()
 	if m == nil {
 		t.Fatal("Quench returned nil machine")
 	}
@@ -37,10 +23,7 @@ func TestForgeQuench_BuildsMachine(t *testing.T) {
 // TestCastFire_HappyPath asserts the core foundry step: Cast an instance and
 // Fire an event, advancing state and emitting effects with a success trace.
 func TestCastFire_HappyPath(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{Status: Draft, ReviewerID: strptr("rev-1")}
 	inst := m.Cast(doc)
 	res := inst.Fire(context.Background(), Submit)
@@ -61,10 +44,7 @@ func TestCastFire_HappyPath(t *testing.T) {
 // TestFire_TraceAlwaysNonNil asserts the invariant that Fire records a trace
 // even on a failing transition.
 func TestFire_TraceAlwaysNonNil(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	inst := m.Cast(&Document{Status: Draft})
 	// Approve is not a valid event from Draft.
 	res := inst.Fire(context.Background(), Approve)
@@ -81,10 +61,7 @@ func TestFire_TraceAlwaysNonNil(t *testing.T) {
 
 // TestFire_InvalidTransition asserts the typed InvalidTransitionError.
 func TestFire_InvalidTransition(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	inst := m.Cast(&Document{Status: Published})
 	res := inst.Fire(context.Background(), Submit)
 	var it *state.InvalidTransitionError
@@ -96,10 +73,7 @@ func TestFire_InvalidTransition(t *testing.T) {
 // TestFire_GuardFailed asserts the typed GuardFailedError when a guard returns
 // false (no reviewer on the document).
 func TestFire_GuardFailed(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	inst := m.Cast(&Document{Status: Submitted}) // no reviewer set on this entity
 	res := inst.Fire(context.Background(), Approve)
 	var gf *state.GuardFailedError
@@ -113,10 +87,7 @@ func TestFire_GuardFailed(t *testing.T) {
 
 // TestPlanPath asserts BFS path planning returns the shortest event sequence.
 func TestPlanPath(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{ReviewerID: strptr("rev-1")}
 	path, err := m.PlanPath(Draft, Published, doc)
 	if err != nil {
@@ -135,10 +106,7 @@ func TestPlanPath(t *testing.T) {
 
 // TestPlanPath_NoPath asserts the typed NoPathError when no sequence connects.
 func TestPlanPath_NoPath(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{}
 	_, err := m.PlanPath(Archived, Draft, doc)
 	var np *state.NoPathError
@@ -150,10 +118,7 @@ func TestPlanPath_NoPath(t *testing.T) {
 // TestFireSeq drives a sequence of events into one instance under
 // run-to-completion, threading intermediate state.
 func TestFireSeq(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{Status: Draft, ReviewerID: strptr("rev-1")}
 	inst := m.Cast(doc)
 	// Approve carries the hasReviewer guard, which reads the entity bound at

@@ -10,10 +10,7 @@ import (
 // TestVerify_FailFast asserts Verify returns *VerifyError with a single failure in
 // the default fail-fast mode when the entity does not satisfy the state.
 func TestVerify_FailFast(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	// A document in Approved state requires a reviewer; this one has none.
 	doc := &Document{}
 	err := m.Verify(Approved, doc)
@@ -29,10 +26,7 @@ func TestVerify_FailFast(t *testing.T) {
 // TestVerify_Aggregate asserts Aggregate collects all failing requirements
 // and that the error type is uniform (*VerifyError) across both modes.
 func TestVerify_Aggregate(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{}
 	err := m.Verify(Approved, doc, state.Aggregate())
 	var ae *state.VerifyError
@@ -47,10 +41,7 @@ func TestVerify_Aggregate(t *testing.T) {
 // TestVerify_Satisfied asserts Verify returns nil when the entity satisfies the
 // state's requirements.
 func TestVerify_Satisfied(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	doc := &Document{ReviewerID: strptr("rev-1")}
 	if err := m.Verify(Approved, doc); err != nil {
 		t.Fatalf("Verify err = %v, want nil", err)
