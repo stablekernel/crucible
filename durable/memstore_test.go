@@ -350,7 +350,11 @@ func TestMemStore_Load_IsolatedFromCallerMutation(t *testing.T) {
 	}
 }
 
-func TestMemStore_Checkpoint_RetainTail(t *testing.T) {
+// TestMemStore_Checkpoint_CompactsTail verifies a Checkpoint compacts the journal
+// through the checkpointed step, so Load returns only the post-checkpoint tail.
+// History retention is a store-level capability (NewMemStore WithHistory), not a
+// per-checkpoint flag.
+func TestMemStore_Checkpoint_CompactsTail(t *testing.T) {
 	ctx := context.Background()
 	st := durable.NewMemStore()
 	const id = durable.InstanceID("inst")
@@ -360,9 +364,7 @@ func TestMemStore_Checkpoint_RetainTail(t *testing.T) {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
-	// Retaining the tail must not change what Load returns (the post-checkpoint
-	// view is identical); it only preserves history internally for later reads.
-	if err := st.Checkpoint(ctx, id, marshaledSnapshot(t, "cp"), 1, durable.WithRetainTail()); err != nil {
+	if err := st.Checkpoint(ctx, id, marshaledSnapshot(t, "cp"), 1); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 	_, tail, err := st.Load(ctx, id)

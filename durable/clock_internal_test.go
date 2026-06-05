@@ -114,6 +114,47 @@ func TestClockReadings_ExtractsInOrder(t *testing.T) {
 	}
 }
 
+// TestRecordingClock_ConcurrentNowAndDrain exercises the documented timer-goroutine
+// pattern: a host drives the scheduler's clock reads from its own timer loop while
+// the durable Handle drains the recording buffer to close steps. The recording
+// clock's godoc promises concurrency safety for exactly this, so Now() (the timer
+// goroutine) and drain/markBuf/armReadingAt (the Handle) must not race the shared
+// buffer. Run under -race to catch a regression; the count assertion proves no
+// reading is lost or double-counted across the interleaving.
+func TestRecordingClock_ConcurrentNowAndDrain(t *testing.T) {
+	var buf []state.JournalEntry
+	c := newRecordingClock(state.NewFakeClock(clockEpoch), &buf)
+
+	const reads = 5000
+	var drained int
+	done := make(chan struct{})
+
+	// Timer goroutine: the scheduler reading the clock as it arms and ticks.
+	go func() {
+		for range reads {
+			c.Now()
+		}
+		close(done)
+	}()
+
+	// Handle goroutine (this one): close steps by draining, and exercise the
+	// mark/read-back pair absorbTimers uses, all under the same mutex Now() holds.
+	for {
+		before := c.markBuf()
+		_, _ = c.armReadingAt(before - 1)
+		drained += len(c.drain())
+		select {
+		case <-done:
+			drained += len(c.drain()) // final flush of anything appended after the last drain
+			if drained != reads {
+				t.Fatalf("drained %d readings, want %d (a lost or double-counted reading signals a buffer race)", drained, reads)
+			}
+			return
+		default:
+		}
+	}
+}
+
 // TestHasTimerEffect covers the schedule/cancel detection that gates Absorb.
 func TestHasTimerEffect(t *testing.T) {
 	if !hasTimerEffect([]state.Effect{state.ScheduleAfter{ID: "x"}}) {

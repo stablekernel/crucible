@@ -40,25 +40,16 @@ func resolveAppend(opts ...AppendOption) appendConfig {
 }
 
 // CheckpointOption configures a single Store.Checkpoint call. It is the additive
-// extension point for per-checkpoint policy a backend may layer on.
+// extension point for per-checkpoint policy a backend may layer on. No option is
+// defined yet: the seam reserves a stable signature so per-checkpoint policy can
+// arrive additively without breaking the Store interface. Time-travel retention,
+// which an earlier per-checkpoint flag covered, is now a store-level capability
+// (the HistoryStore seam, MemStore's WithHistory).
 type CheckpointOption func(*checkpointConfig)
 
-// checkpointConfig holds resolved CheckpointOption state for one Checkpoint.
-type checkpointConfig struct {
-	// retainTail requested keeping the pre-checkpoint Records instead of compacting
-	// them away. Time-travel retention is now a store-level capability (the
-	// HistoryStore seam, MemStore's WithHistory), so this per-checkpoint flag no
-	// longer changes what Load returns; it is preserved for API compatibility.
-	retainTail bool
-}
-
-// WithRetainTail requested that a Checkpoint keep the Records it would otherwise
-// compact away. Time-travel retention is now a store-level capability — construct a
-// MemStore WithHistory and read through StateAt — so this per-checkpoint option no
-// longer changes Load's view and is retained only for API compatibility.
-func WithRetainTail() CheckpointOption {
-	return func(c *checkpointConfig) { c.retainTail = true }
-}
+// checkpointConfig holds resolved CheckpointOption state for one Checkpoint. It is
+// presently empty; the type reserves a stable seam for additive options.
+type checkpointConfig struct{}
 
 func resolveCheckpoint(opts ...CheckpointOption) checkpointConfig {
 	var c checkpointConfig
