@@ -89,15 +89,25 @@ var generousIsolatingOrders = []PolyglotCase{
 	{Name: "frugal", Order: fooddelivery.Order{Subtotal: 3000, Tip: 1500, Priority: "standard"}},
 }
 
-// newModel and driveAuthorizedFn are indirection seams the harness routes its model
-// construction and order driving through, so a test can inject a failure to exercise the
-// error paths that the real CEL and WASM models — which build and drive cleanly — never
-// take. Production code always uses the real [fooddelivery.NewModel] and
-// [driveAuthorized]; only tests reassign them.
-var (
-	newModel          = fooddelivery.NewModel
-	driveAuthorizedFn = driveAuthorized
-)
+// polyglotDeps are the model-construction and order-driving seams the
+// equivalence harness routes through, so a test can inject a failure to exercise
+// the error paths that the real CEL and WASM models — which build and drive
+// cleanly — never take. They are carried on a value rather than package globals
+// so each test supplies its own, and no two runs share mutable state; that keeps
+// the harness safe to drive from parallel sub-tests. Production always uses
+// [productionDeps] (the real [fooddelivery.NewModel] and [driveAuthorized]).
+type polyglotDeps struct {
+	newModel       func(...fooddelivery.Option) (*state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], error)
+	driveAuthorize func(context.Context, *state.Machine[fooddelivery.Stage, fooddelivery.Signal, fooddelivery.Order], fooddelivery.Order) (orderOutcome, error)
+}
+
+// productionDeps returns the real seams the exported harness runs with.
+func productionDeps() polyglotDeps {
+	return polyglotDeps{
+		newModel:       fooddelivery.NewModel,
+		driveAuthorize: driveAuthorized,
+	}
+}
 
 // RunPolyglotEquivalence builds two order models that differ only in the engine
 // computing the generous-order guard — the default CEL model and a WebAssembly model
@@ -107,7 +117,13 @@ var (
 // throughout. It errors if the WASM module fails to compile or build, or if either
 // model fails to build or drive — nothing is swallowed.
 func RunPolyglotEquivalence(ctx context.Context, wasmBytes []byte) (PolyglotReport, error) {
-	celModel, err := newModel()
+	return runPolyglotEquivalence(ctx, wasmBytes, productionDeps())
+}
+
+// runPolyglotEquivalence is the harness core, parameterized over its seams so a
+// test injects fakes through deps without mutating any shared state.
+func runPolyglotEquivalence(ctx context.Context, wasmBytes []byte, deps polyglotDeps) (PolyglotReport, error) {
+	celModel, err := deps.newModel()
 	if err != nil {
 		return PolyglotReport{}, fmt.Errorf("dispatch: build CEL model: %w", err)
 	}
@@ -118,7 +134,7 @@ func RunPolyglotEquivalence(ctx context.Context, wasmBytes []byte) (PolyglotRepo
 	}
 	defer func() { _ = mod.Close(ctx) }()
 
-	wasmModel, err := newModel(fooddelivery.WithGenerousGuard(wasmGenerousGuard(mod)))
+	wasmModel, err := deps.newModel(fooddelivery.WithGenerousGuard(wasmGenerousGuard(mod)))
 	if err != nil {
 		return PolyglotReport{}, fmt.Errorf("dispatch: build wasm model: %w", err)
 	}
@@ -126,11 +142,11 @@ func RunPolyglotEquivalence(ctx context.Context, wasmBytes []byte) (PolyglotRepo
 	report := PolyglotReport{Cases: make([]PolyglotCase, 0, len(generousIsolatingOrders))}
 	sawAdmit, sawReject, allAgree := false, false, true
 	for _, tc := range generousIsolatingOrders {
-		celOutcome, err := driveAuthorizedFn(ctx, celModel, tc.Order)
+		celOutcome, err := deps.driveAuthorize(ctx, celModel, tc.Order)
 		if err != nil {
 			return PolyglotReport{}, fmt.Errorf("dispatch: drive CEL model for %q: %w", tc.Name, err)
 		}
-		wasmOutcome, err := driveAuthorizedFn(ctx, wasmModel, tc.Order)
+		wasmOutcome, err := deps.driveAuthorize(ctx, wasmModel, tc.Order)
 		if err != nil {
 			return PolyglotReport{}, fmt.Errorf("dispatch: drive wasm model for %q: %w", tc.Name, err)
 		}
