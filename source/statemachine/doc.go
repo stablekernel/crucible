@@ -42,10 +42,16 @@
 //
 // # Modes
 //
-// Two binding modes share the same outcomes:
+// Three binding modes share the same outcomes:
 //
 //   - Durable: [Drive] loads and saves each instance through a [Store],
-//     persisting the transition before acking. This is the exactly-once path.
+//     persisting the transition before acking. Redelivery is deduplicated by the
+//     persisted event id (exactly-once into the machine, at-least-once delivery).
+//   - Transactional: [DriveTx] runs the durable path inside a
+//     [source.Transactional] consume-process-produce transaction (Kafka EOS), so
+//     the records a transition emits and the consumed offset commit as one atomic
+//     unit. It is the exactly-once-into-a-sink path; use it only on a backend that
+//     satisfies [source.Transactional].
 //   - Stateless: [DriveFunc] fires each message against a caller-supplied
 //     function with no persistence, for sources that drive a transient or
 //     externally-owned machine.

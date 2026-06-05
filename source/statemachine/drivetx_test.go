@@ -150,6 +150,32 @@ func TestDriveTx_EmitFailureAbortsTransaction(t *testing.T) {
 	}
 }
 
+func TestDriveTx_SaveFailureAbortsTransaction(t *testing.T) {
+	t.Parallel()
+	m := buildTurnstile()
+	// A store that fires cleanly but fails to persist: Save runs inside the
+	// transaction, so its error must abort the transaction (nothing committed)
+	// and nak the message for redelivery.
+	store := &flakyStore{saveErr: errors.New("persist exploded")}
+
+	tx := &fakeTx{}
+	sub := &fakeTransactional{tx: tx, committed: true}
+	h := statemachine.DriveTx[turnstileState, turnstileEvent, *turnstile](
+		m, store, routeFunded, sub, statemachine.TxSinkFunc(emitOpenedToTopic),
+	)
+
+	res := h(context.Background(), msg("evt-1", "c1"))
+	if res.Action != source.ActionNak {
+		t.Fatalf("action = %v, want nak on save failure", res.Action)
+	}
+	if !errors.Is(res.Err, store.saveErr) {
+		t.Fatalf("nak err = %v, want wrapped save error", res.Err)
+	}
+	if got, want := sub.calls, []string{"begin", "abort"}; !equalCalls(got, want) {
+		t.Fatalf("call order = %v, want %v (abort on save failure)", got, want)
+	}
+}
+
 func TestDriveTx_RedeliveryIsSkip_NotTransactional(t *testing.T) {
 	t.Parallel()
 	m := buildTurnstile()
