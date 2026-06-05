@@ -466,7 +466,7 @@ func (s *ActorSystem[S, E, C]) deliver(ctx context.Context, id string, event any
 	}
 	ra.mailbox = append(ra.mailbox, envelope{event: event, sender: senderID})
 	s.mu.Unlock()
-	s.Step(ctx, id)
+	s.Tick(ctx, id)
 	return true
 }
 
@@ -476,15 +476,17 @@ func (s *ActorSystem[S, E, C]) DeliverByID(ctx context.Context, id string, event
 	return s.Deliver(ctx, ActorRef{ID: id}, event)
 }
 
-// Step drains the mailbox of the actor under id, firing each queued event through
+// Tick drains the mailbox of the actor under id, firing each queued event through
 // the actor in order. When the actor reaches its final state it is settled: the
 // parent's onDone event (carrying the child's output) is fired through the parent
 // and the resulting effects absorbed; nested-child effects the actor emits are
 // absorbed too. It returns the parent FireResults produced by completion routing,
-// in order (empty when the actor did not complete). Step is safe to call with an
-// empty mailbox (a no-op) and is how the deterministic driver advances an actor;
-// a production driver runs it from the actor's own goroutine.
-func (s *ActorSystem[S, E, C]) Step(ctx context.Context, id string) []FireResult[S] {
+// in order (empty when the actor did not complete). Tick is the ActorSystem's
+// advance verb — the host-driver counterpart of Scheduler.Tick and
+// ServiceRunner.Tick — safe to call with an empty mailbox (a no-op) and is how the
+// deterministic driver advances an actor; a production driver runs it from the
+// actor's own goroutine.
+func (s *ActorSystem[S, E, C]) Tick(ctx context.Context, id string) []FireResult[S] {
 	var out []FireResult[S]
 	for {
 		s.mu.Lock()

@@ -230,7 +230,7 @@ representative hot-path numbers.
     the start/stop effects, runs the bound `ServiceFn`, and re-fires each service's
     `onDone` (carrying the result) or `onError` (carrying the error) through the
     instance; `SettleDone` / `SettleError` settle a service by ID for a
-    deterministic test driver with no real IO, while `Run` resolves and executes a
+    deterministic test driver with no real IO, while `Tick` resolves and executes a
     bound service for production. `LastResult` / `LastError` let an onDone/onError
     action read the routed payload, and `StartEffects` arms the services of the
     initial state entered at `Cast`.
@@ -266,7 +266,8 @@ representative hot-path numbers.
     `NewActor`, and re-fires the parent's `onDone` (carrying the child's `output`) or
     `onError` when the child completes or fails. `Register` binds child behaviors;
     `Absorb` spawns/stops from effects; `Deliver` / `DeliverByID` route an event into
-    an actor's mailbox and `Step` drains it; `Ref` / `RefBySystemID` resolve refs;
+    an actor's mailbox and `Tick` drains it (the advance verb shared with
+    `Scheduler.Tick` and `ServiceRunner.Tick`); `Ref` / `RefBySystemID` resolve refs;
     `Stop` / `SettleError` tear down or fail an actor; stopping a parent stops its
     children recursively. `LastOutput` / `LastError` let an `onDone` / `onError`
     action read the routed payload. The driver is synchronous and deterministic, so

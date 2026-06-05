@@ -162,7 +162,7 @@ func (r *Rig) SettleRefund(ctx context.Context, amount int64) state.FireResult[S
 // (executing authorizeFn) and routes its outcome, rather than settling it with a
 // fixed token. It returns the resulting FireResult and whether a service ran.
 func (r *Rig) RunAuthorization(ctx context.Context) (state.FireResult[Stage], bool) {
-	fr, ok := r.run.Run(ctx, r.authorizeID())
+	fr, ok := r.run.Tick(ctx, r.authorizeID())
 	if ok {
 		r.absorb(ctx, fr.Effects)
 	}
@@ -173,7 +173,7 @@ func (r *Rig) RunAuthorization(ctx context.Context) (state.FireResult[Stage], bo
 // refundFn) and routes its outcome. It returns the resulting FireResult and whether a
 // service ran.
 func (r *Rig) RunRefund(ctx context.Context) (state.FireResult[Stage], bool) {
-	fr, ok := r.run.Run(ctx, r.refundID())
+	fr, ok := r.run.Tick(ctx, r.refundID())
 	if ok {
 		r.absorb(ctx, fr.Effects)
 	}

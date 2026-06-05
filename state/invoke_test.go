@@ -282,7 +282,7 @@ func TestInvoke_RunResolvesService(t *testing.T) {
 
 	run.Absorb(ctx, inst.Fire(ctx, "start").Effects)
 	id := state.InvokeID("loader", "loading", 0)
-	fr, ok := run.Run(ctx, id)
+	fr, ok := run.Tick(ctx, id)
 	if !ok {
 		t.Fatalf("Run reported no in-flight service %q", id)
 	}
