@@ -19,7 +19,6 @@ import (
 	"github.com/stablekernel/crucible/cluster"
 	"github.com/stablekernel/crucible/state"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/encoding"
 )
 
 const (
@@ -31,14 +30,17 @@ const (
 
 // jsonCodec is a gRPC content codec that encodes messages as JSON, so the
 // transport carries the same JSON the cluster WireEndpoint produces without a
-// protobuf schema.
+// protobuf schema. Both sides force this codec explicitly — the client with
+// grpc.ForceCodec on every Invoke and the server with grpc.ForceServerCodec in
+// NewServer — so the codec is never resolved through the global encoding registry.
+// The transport therefore does not RegisterCodec at import time: a process-wide
+// registration would be a hidden import side effect that could shadow another
+// JSON codec for unrelated gRPC clients in the same process.
 type jsonCodec struct{}
 
 func (jsonCodec) Marshal(v any) ([]byte, error)      { return json.Marshal(v) }
 func (jsonCodec) Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
 func (jsonCodec) Name() string                       { return jsonCodecName }
-
-func init() { encoding.RegisterCodec(jsonCodec{}) }
 
 // DeliverRequest carries a delivery to the actor named by Ref. Event is the
 // JSON-encoded event the owning node decodes into its event type.
