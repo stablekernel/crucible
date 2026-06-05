@@ -4,6 +4,7 @@ package sink
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -81,8 +82,9 @@ type reservoir struct {
 	flushLatency telemetry.Histogram
 	dropped      telemetry.Counter
 
-	mu  sync.Mutex
-	buf []any
+	mu     sync.Mutex
+	buf    []any
+	closed bool // set by Shutdown; Sink passes through afterward
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -121,8 +123,15 @@ func Reservoir(inner Outlet, opts ...ReservoirOption) Outlet {
 
 // Sink buffers payload, flushing synchronously if the buffer reaches the batch
 // size. An over-cap payload is dropped and counted, never blocking the caller.
+// After Shutdown the background loop is gone, so a payload would otherwise be
+// stranded in the buffer; once closed, Sink dispatches each payload synchronously
+// to inner instead of buffering it.
 func (r *reservoir) Sink(ctx context.Context, payload any) error {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return r.dispatch(ctx, []any{payload})
+	}
 	if r.maxBuf > 0 && len(r.buf) >= r.maxBuf {
 		r.mu.Unlock()
 		r.dropped.Add(ctx, 1)
@@ -158,6 +167,9 @@ func (r *reservoir) Shutdown(ctx context.Context) error {
 			r.cancel()
 		}
 		r.wg.Wait()
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
 	})
 	return r.Flush(ctx)
 }
@@ -183,11 +195,13 @@ func (r *reservoir) dispatch(ctx context.Context, batch []any) error {
 	if b, ok := r.inner.(BatchOutlet); ok {
 		err = b.SinkBatch(ctx, batch)
 	} else {
+		var errs []error
 		for _, p := range batch {
 			if e := r.inner.Sink(ctx, p); e != nil {
-				err = e
+				errs = append(errs, e)
 			}
 		}
+		err = errors.Join(errs...)
 	}
 	r.flushLatency.Record(ctx, float64(r.now().Sub(start).Milliseconds()))
 	return err
