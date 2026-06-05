@@ -18,7 +18,9 @@ func as(err error, target any) bool { return errors.As(err, target) }
 // The kernel keeps Fire pure: it never reads the clock, never performs IO, and
 // the only state it advances is the Instance.current field.
 
-// Fire runs the full transition pipeline for a single event.
+// Fire runs the full transition pipeline for a single event. To drive a sequence
+// of events into one instance use FireSeq; to fan one event across many instances
+// use the top-level FireEach.
 func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOption) FireResult[S] {
 	cfg := fireConfig{}
 	for _, o := range opts {
@@ -863,7 +865,9 @@ func projectTransition[S comparable, E comparable, C any](t *Transition[S, E, C]
 }
 
 // FireSeq drives a sequence of events into one instance, threading intermediate
-// state and merging the per-step traces into one ordered Trace.
+// state and merging the per-step traces into one ordered Trace. It is the
+// many-events form of Fire; to fan a single event across many instances use the
+// top-level FireEach.
 func (i *Instance[S, E, C]) FireSeq(ctx context.Context, events []E, opts ...FireOption) BatchResult[S] {
 	cfg := fireConfig{}
 	for _, o := range opts {
@@ -908,7 +912,9 @@ func mergeTrace(dst *Trace, step Trace) {
 }
 
 // FireEach fans one event across an explicit set of instances, preserving
-// per-instance attribution.
+// per-instance attribution. It is the many-instances counterpart to
+// Instance.Fire (one event, one instance) and Instance.FireSeq (many events, one
+// instance).
 func FireEach[S comparable, E comparable, C any](
 	ctx context.Context, instances []*Instance[S, E, C], event E, opts ...FireOption,
 ) []FireResult[S] {
