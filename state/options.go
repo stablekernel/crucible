@@ -46,10 +46,14 @@ func Strict() QuenchOption { return func(c *quenchConfig) { c.strict = true } }
 type InvokeOption func(*invokeConfig)
 
 type invokeConfig struct {
-	id       string
-	params   map[string]any
-	input    map[string]any
-	systemID string
+	id         string
+	params     map[string]any
+	input      map[string]any
+	systemID   string
+	onDone     any
+	onError    any
+	hasOnDone  bool
+	hasOnError bool
 }
 
 // WithInput sets the serializable input passed to an invoked service when it
@@ -78,6 +82,32 @@ func WithInvokeID(id string) InvokeOption {
 // InvokeActor; on a plain service Invoke it is ignored.
 func WithSystemID(id string) InvokeOption {
 	return func(c *invokeConfig) { c.systemID = id }
+}
+
+// WithInvokeOnDone sets the event the host re-fires through Fire when an invoked
+// service completes successfully (or, for InvokeActor, when the child machine
+// reaches its final state), routing the result through an ordinary transition
+// from the owning state. Omitting it leaves the invocation's OnDone at the zero
+// event. It mirrors WithSpawnOnDone for the declarative Invoke / InvokeActor
+// surface, so completion routing arrives as an additive option rather than a
+// positional parameter; the same shape lets fire-and-forget or onCancel routing
+// arrive later as further options without a signature change.
+func WithInvokeOnDone[E comparable](onDone E) InvokeOption {
+	return func(c *invokeConfig) {
+		c.onDone = onDone
+		c.hasOnDone = true
+	}
+}
+
+// WithInvokeOnError sets the event the host re-fires through Fire when an invoked
+// service fails (or, for InvokeActor, when the child machine fails), routing the
+// error through an ordinary transition from the owning state. Omitting it leaves
+// the invocation's OnError at the zero event. It mirrors WithSpawnOnError.
+func WithInvokeOnError[E comparable](onError E) InvokeOption {
+	return func(c *invokeConfig) {
+		c.onError = onError
+		c.hasOnError = true
+	}
 }
 
 // SpawnOption configures a Builder.Spawn declaration (the dynamic spawn built-in).

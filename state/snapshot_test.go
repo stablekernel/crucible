@@ -334,7 +334,7 @@ func TestResumeEffects_ReArmsPendingService(t *testing.T) {
 	m := state.Forge[string, string, *snapCtx]("svc").
 		Service("fetch", func(context.Context, state.ServiceCtx[*snapCtx]) (any, error) { return nil, nil }).
 		State("idle").
-		State("loading").Invoke("fetch", "ok", "fail").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
 		Initial("idle").
 		Transition("idle").On("start").GoTo("loading").
@@ -419,7 +419,7 @@ func snapChildMachine() *state.Machine[string, string, *snapChildCtx] {
 func snapParentMachine() *state.Machine[string, string, *snapCtx] {
 	return state.Forge[string, string, *snapCtx]("snapparent").
 		State("idle").
-		State("supervising").InvokeActor("snapchild", "childDone", "childErr").
+		State("supervising").InvokeActor("snapchild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("complete").
 		Initial("idle").
 		Transition("idle").On("start").GoTo("supervising").

@@ -875,16 +875,19 @@ func (b *Builder[S, E, C]) Requires(req Requirement[C]) *Builder[S, E, C] {
 }
 
 // Invoke declares an invoked service on the most-recent state (an
-// `invoke`). src names the service in the registry (bind it with Service); onDone
-// and onError name the events the host re-fires through Fire when the service
-// completes or fails, routed by ordinary transitions from this state. Configure
-// the input passed to the service and an explicit id with the variadic
-// InvokeOptions (WithInput, WithInvokeID); omitting WithInvokeID derives a stable
-// id via InvokeID. On entering this state the kernel emits a StartService effect;
-// on exiting it before the service completes, a StopService effect
+// `invoke`). src names the service in the registry (bind it with Service). The
+// completion outcomes are configured with the variadic InvokeOptions, mirroring
+// Spawn: WithInvokeOnDone / WithInvokeOnError name the events the host re-fires
+// through Fire when the service completes or fails, routed by ordinary
+// transitions from this state; WithInput sets the service input and WithInvokeID
+// pins an explicit id (omitting it derives a stable id via InvokeID). Keeping the
+// outcomes as options rather than positional parameters means new routing knobs
+// (fire-and-forget, onCancel) can arrive later as further options without a
+// signature change. On entering this state the kernel emits a StartService
+// effect; on exiting it before the service completes, a StopService effect
 // (auto-stop-on-exit). The kernel never runs the service — a host ServiceRunner
 // does, keeping Fire pure.
-func (b *Builder[S, E, C]) Invoke(src string, onDone, onError E, opts ...InvokeOption) *Builder[S, E, C] {
+func (b *Builder[S, E, C]) Invoke(src string, opts ...InvokeOption) *Builder[S, E, C] {
 	if b.curState == nil {
 		return b
 	}
@@ -896,25 +899,39 @@ func (b *Builder[S, E, C]) Invoke(src string, onDone, onError E, opts ...InvokeO
 		ID:      cfg.id,
 		Src:     Ref{Name: src, Params: cfg.params},
 		Input:   cfg.input,
-		OnDone:  onDone,
-		OnError: onError,
+		OnDone:  invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
+		OnError: invokeOutcome[E](cfg.onError, cfg.hasOnError),
 	})
 	return b
 }
 
+// invokeOutcome resolves a configured invoke outcome event to its typed E: the
+// asserted value when the option was set, else the zero event. The InvokeOption
+// type stays non-generic (it carries the event as any), so the assertion lands
+// here at the typed Invoke / InvokeActor call.
+func invokeOutcome[E comparable](v any, present bool) E {
+	if !present {
+		var zero E
+		return zero
+	}
+	return v.(E)
+}
+
 // InvokeActor declares a child-MACHINE actor invoked while the most-recent state
 // is active (invoke of a child machine). src names the child-machine
-// factory registered in the host's ActorSystem actor palette; onDone and onError
-// name the events the host re-fires through the PARENT's Fire when the child
-// reaches its final state (carrying its output) or fails (carrying the error),
-// routed by ordinary transitions from this state. Configure the input passed to
-// the child, an explicit id, and a system-scoped id with WithInput / WithInvokeID
-// / WithSystemID. On entering this state the kernel emits a SpawnActor effect; on
-// exiting it before the child completes, a StopActor effect (auto-stop-on-exit).
-// The kernel never runs the actor — a host ActorSystem does, keeping Fire pure.
-// Unlike Invoke (a host-run service), the src here is bound at the ActorSystem,
-// not the registry, so it is not subject to the registry's unbound-ref lint.
-func (b *Builder[S, E, C]) InvokeActor(src string, onDone, onError E, opts ...InvokeOption) *Builder[S, E, C] {
+// factory registered in the host's ActorSystem actor palette. The completion
+// outcomes are configured with the variadic InvokeOptions, mirroring Spawn:
+// WithInvokeOnDone / WithInvokeOnError name the events the host re-fires through
+// the PARENT's Fire when the child reaches its final state (carrying its output)
+// or fails (carrying the error), routed by ordinary transitions from this state.
+// Configure the input passed to the child, an explicit id, and a system-scoped id
+// with WithInput / WithInvokeID / WithSystemID. On entering this state the kernel
+// emits a SpawnActor effect; on exiting it before the child completes, a StopActor
+// effect (auto-stop-on-exit). The kernel never runs the actor — a host ActorSystem
+// does, keeping Fire pure. Unlike Invoke (a host-run service), the src here is
+// bound at the ActorSystem, not the registry, so it is not subject to the
+// registry's unbound-ref lint.
+func (b *Builder[S, E, C]) InvokeActor(src string, opts ...InvokeOption) *Builder[S, E, C] {
 	if b.curState == nil {
 		return b
 	}
@@ -926,8 +943,8 @@ func (b *Builder[S, E, C]) InvokeActor(src string, onDone, onError E, opts ...In
 		ID:       cfg.id,
 		Src:      Ref{Name: src, Params: cfg.params},
 		Input:    cfg.input,
-		OnDone:   onDone,
-		OnError:  onError,
+		OnDone:   invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
+		OnError:  invokeOutcome[E](cfg.onError, cfg.hasOnError),
 		Kind:     ActorKindMachine,
 		SystemID: cfg.systemID,
 	})

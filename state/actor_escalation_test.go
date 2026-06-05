@@ -186,7 +186,7 @@ func TestActorEscalation_ChildPanic_NoOnError_Escalates(t *testing.T) {
 func TestActorEscalation_WithOnError_HandledLocally(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
-		State("supervising").InvokeActor("child", "childDone", "childErr").
+		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
@@ -340,7 +340,7 @@ func TestActorRef_Opacity_ResolvedThroughSystem(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
 		State("supervising").
-		InvokeActor("child", "childDone", "childErr", state.WithSystemID("supervisor")).
+		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"), state.WithSystemID("supervisor")).
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
 		Transition("idle").On("start").GoTo("supervising").

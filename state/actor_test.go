@@ -57,7 +57,7 @@ func parentInvokeMachine(sys **state.ActorSystem[string, string, *trec]) *state.
 			return nil, nil
 		}).
 		State("idle").
-		State("supervising").InvokeActor("child", "childDone", "childErr").
+		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("complete").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
@@ -208,7 +208,7 @@ func TestActor_DeliverStepsActor(t *testing.T) {
 func parentInvokeMachineWith(_ *state.Machine[string, string, *childEntity]) *state.Machine[string, string, *trec] {
 	return state.Forge[string, string, *trec]("parent").
 		State("idle").
-		State("supervising").InvokeActor("child", "childDone", "childErr").
+		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("complete").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
@@ -258,7 +258,7 @@ func TestActor_StopParentStopsNestedChildren(t *testing.T) {
 	}
 	// Middle actor: on entering its initial state it invokes the grandchild.
 	middle := state.Forge[string, string, *childEntity]("middle").
-		State("run").InvokeActor("grand", "gDone", "gErr").
+		State("run").InvokeActor("grand", state.WithInvokeOnDone("gDone"), state.WithInvokeOnError("gErr")).
 		State("end").Final().
 		Initial("run").
 		Transition("run").On("stop").GoTo("end").
@@ -295,7 +295,7 @@ func TestActor_StopParentStopsNestedChildren(t *testing.T) {
 func TestActor_UnboundSrcRoutesOnError(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
-		State("supervising").InvokeActor("missing", "childDone", "childErr").
+		State("supervising").InvokeActor("missing", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
@@ -322,7 +322,7 @@ func TestActor_IRRoundTrip(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
 		State("supervising").
-		InvokeActor("child", "childDone", "childErr",
+		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"),
 			state.WithInvokeID("sup-actor"), state.WithSystemID("supervisor")).
 		State("complete").
 		Initial("idle").
@@ -392,7 +392,7 @@ func TestActor_RefBySystemID(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
 		State("supervising").
-		InvokeActor("child", "childDone", "childErr", state.WithSystemID("supervisor")).
+		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"), state.WithSystemID("supervisor")).
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
 		Transition("idle").On("start").GoTo("supervising").
@@ -419,7 +419,7 @@ func TestActor_RefBySystemID(t *testing.T) {
 func TestActor_SettleErrorRoutesOnError(t *testing.T) {
 	m := state.Forge[string, string, *trec]("parent").
 		State("idle").
-		State("supervising").InvokeActor("child", "childDone", "childErr").
+		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).

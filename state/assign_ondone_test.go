@@ -28,7 +28,7 @@ func TestAssign_ServiceOnDoneReadsResult(t *testing.T) {
 			return c
 		}).
 		State("idle").
-		State("loading").Invoke("fetch", "ok", "fail").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
 		State("errored").
 		Initial("idle").
@@ -83,7 +83,7 @@ func TestAssign_ActorOnDoneReadsResult(t *testing.T) {
 			return c
 		}).
 		Actor("spawnChild").
-		State("supervising").InvokeActor("spawnChild", "childDone", "childFail").
+		State("supervising").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childFail")).
 		State("complete").
 		State("failed").
 		Initial("supervising").

@@ -596,7 +596,7 @@ func buildModel(schema state.ContextSchema, generous state.GuardNode[Stage]) *st
 		// test, and the Rich (CEL) guard: a generous order, OR a big basket flagged
 		// for the fast lane.
 		State(Authorizing).
-		Invoke("authorize", Authorized, Declined).
+		Invoke("authorize", state.WithInvokeOnDone(Authorized), state.WithInvokeOnError(Declined)).
 		Transition(Authorizing).On(Authorized).
 		WhenExpr(state.Or(
 			generous,
@@ -618,7 +618,7 @@ func buildModel(schema state.ContextSchema, generous state.GuardNode[Stage]) *st
 		Initial(Cooking).
 		// Cooking supervises the kitchen actor; its plated output advances the spine.
 		SubState(Cooking).
-		InvokeActor("kitchen", PlatedUp, Declined).
+		InvokeActor("kitchen", state.WithInvokeOnDone(PlatedUp), state.WithInvokeOnError(Declined)).
 		On(PlatedUp).GoTo(AwaitingCourier).Assign("recordPrep").
 		// The courier is dispatched once the meal is plated; PickedUp moves to EnRoute.
 		SubState(AwaitingCourier).
@@ -626,7 +626,7 @@ func buildModel(schema state.ContextSchema, generous state.GuardNode[Stage]) *st
 		// EnRoute supervises the courier actor; its drop confirmation (DroppedOff) is
 		// handled cross-cuttingly by the Active compound, exiting the parallel state.
 		SubState(EnRoute).
-		InvokeActor("courier", DroppedOff, Declined).
+		InvokeActor("courier", state.WithInvokeOnDone(DroppedOff), state.WithInvokeOnError(Declined)).
 		EndRegion().
 		Region("Watchdog").
 		Initial(OnTime).
@@ -652,7 +652,7 @@ func buildModel(schema state.ContextSchema, generous state.GuardNode[Stage]) *st
 		// its onDone, folds the reversed amount into the context via the event before
 		// reaching the Canceled terminal.
 		State(Refunding).
-		Invoke("refund", Refunded, Declined).
+		Invoke("refund", state.WithInvokeOnDone(Refunded), state.WithInvokeOnError(Declined)).
 		Transition(Refunding).On(Refunded).GoTo(Canceled).Assign("recordRefund").
 		State(Canceled).Final().
 		// Rejected is the declined-authorization terminal.

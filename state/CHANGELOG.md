@@ -220,8 +220,10 @@ representative hot-path numbers.
     name through `Registry.Service` / `Builder.Service`, parallel to guards and
     actions. An unbound service ref fails `Quench` with the typed `*ErrUnboundRef`
     (`Kind: "service"`), consistent with unbound guards/actions. Authored via the
-    DSL `Invoke(src, onDone, onError, ...InvokeOption)` with `WithInput`,
-    `WithServiceParams`, and `WithInvokeID`.
+    DSL `Invoke(src, ...InvokeOption)` whose outcomes are options —
+    `WithInvokeOnDone` / `WithInvokeOnError` — alongside `WithInput`,
+    `WithServiceParams`, and `WithInvokeID`, so completion routing is additive
+    (matching `Spawn`) rather than positional.
   - **Host-driver harness.** A reusable, exported `ServiceRunner` driver consumes
     the start/stop effects, runs the bound `ServiceFn`, and re-fires each service's
     `onDone` (carrying the result) or `onError` (carrying the error) through the
@@ -248,8 +250,9 @@ representative hot-path numbers.
     registration, mirroring the `Cancel` built-in.
   - **Declarative actor invoke + runtime refs.** An `Invocation` gains a `Kind`
     (`ActorKindService` default vs `ActorKindMachine`) and a `SystemID`; the
-    `InvokeActor(src, onDone, onError, ...)` DSL (with `WithInput`, `WithInvokeID`,
-    `WithSystemID`) declares a child-machine actor whose `src` binds at the
+    `InvokeActor(src, ...InvokeOption)` DSL (with `WithInvokeOnDone`,
+    `WithInvokeOnError`, `WithInput`, `WithInvokeID`, `WithSystemID`) declares a
+    child-machine actor whose `src` binds at the
     `ActorSystem` actor palette, not the service registry. Dynamic `Spawn(src, id,
     ...)` takes `WithSpawnInput`, `WithSpawnSystemID`, `WithSpawnOnDone`,
     `WithSpawnOnError`. An `ActorRef` is an opaque runtime handle a machine stores
