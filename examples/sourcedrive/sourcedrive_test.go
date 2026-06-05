@@ -348,6 +348,33 @@ func waitForSettle(t *testing.T, ledger *memsource.Ledger, n int) {
 	}
 }
 
+// TestCurrentStateFn_ResumesFromRecordedStage proves CurrentStateFn derives the
+// instance's state from the entity rather than pinning every cast to pending: a
+// shipment carrying a stage resumes there, and an unset (or absent) stage starts
+// at pending. This is the resume/seek contract the bridge relies on when casting
+// an entity that already advanced.
+func TestCurrentStateFn_ResumesFromRecordedStage(t *testing.T) {
+	f := sourcedrive.NewFulfillment()
+
+	tests := []struct {
+		name  string
+		stage string
+		want  string
+	}{
+		{name: "unset stage starts at pending", stage: "", want: "pending"},
+		{name: "recorded shipped resumes shipped", stage: "shipped", want: "shipped"},
+		{name: "recorded delivered resumes delivered", stage: "delivered", want: "delivered"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := f.Machine.Cast(&sourcedrive.Shipment{Funds: true, Stage: tc.stage})
+			if got := inst.Current(); got != tc.want {
+				t.Fatalf("Current() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // failingInlet is a source.Inlet whose Subscribe always fails, to drive Run's
 // subscribe-error path.
 type failingInlet struct{ err error }
