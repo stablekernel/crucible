@@ -63,8 +63,9 @@ A complete statechart feature surface:
   form of an otherwise-internal self-transition.
 - **Delayed transitions**: `Transition(from).After(delay).On(event).GoTo(...)`,
   scheduled and auto-cancelled on exit by a host `Scheduler`.
-- **Invoked services**: state-scoped `Invoke(src, onDone, onError)` with
-  result/error routing, auto-stopped on exit, driven by a host `ServiceRunner`.
+- **Invoked services**: state-scoped
+  `Invoke(src, state.WithInvokeOnDone(onDoneEvent), state.WithInvokeOnError(onErrorEvent))`
+  with result/error routing, auto-stopped on exit, driven by a host `ServiceRunner`.
 - **Actor model**: child-machine actors, a host `ActorSystem`, mailboxes, and
   dynamic `Spawn` and `StopActor`, with **message passing** (`SendTo`,
   `SendParent`, `Respond`, and `ForwardTo`) and sender-tracked routing.
