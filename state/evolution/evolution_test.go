@@ -380,6 +380,81 @@ func TestDiff_NestedChildAdded_Additive(t *testing.T) {
 	}
 }
 
+// TestDiffMachines_AgreesWithDiff drives the Quenched-machine entry point and
+// asserts it classifies a breaking change identically to Diff over the same IRs.
+func TestDiffMachines_AgreesWithDiff(t *testing.T) {
+	oldM := state.Forge[string, string, any]("doc").
+		State("draft").
+		Transition("draft").On("submit").GoTo("review").
+		State("review").
+		Transition("review").On("approve").GoTo("done").
+		State("done").Final().
+		Initial("draft").
+		Quench()
+	// The updated machine drops the review->done transition: a breaking removal.
+	newM := state.Forge[string, string, any]("doc").
+		State("draft").
+		Transition("draft").On("submit").GoTo("review").
+		State("review").
+		State("done").Final().
+		Initial("draft").
+		Quench()
+
+	r, err := evolution.DiffMachines(oldM, newM)
+	if err != nil {
+		t.Fatalf("DiffMachines: %v", err)
+	}
+	if !r.Breaking() {
+		t.Fatalf("DiffMachines should report the removal as breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindTransitionRemoved) {
+		t.Fatalf("expected transition_removed, got:\n%s", r)
+	}
+}
+
+// TestDiffMachines_IdenticalIsEmpty asserts DiffMachines over the same definition
+// reports no change.
+func TestDiffMachines_IdenticalIsEmpty(t *testing.T) {
+	build := func() *state.Machine[string, string, any] {
+		return state.Forge[string, string, any]("doc").
+			State("draft").
+			Transition("draft").On("submit").GoTo("done").
+			State("done").Final().
+			Initial("draft").
+			Quench()
+	}
+	r, err := evolution.DiffMachines(build(), build())
+	if err != nil {
+		t.Fatalf("DiffMachines: %v", err)
+	}
+	if !r.Empty() {
+		t.Fatalf("identical machines should diff empty, got:\n%s", r)
+	}
+}
+
+// TestEvolutionErrorTypes_FormatAndUnwrap covers the Error and Unwrap methods of
+// SerializeError and DecodeError directly, since a Machine that fails to serialize
+// cannot be produced through the normal Forge/Quench path.
+func TestEvolutionErrorTypes_FormatAndUnwrap(t *testing.T) {
+	cause := errors.New("boom")
+
+	se := &evolution.SerializeError{Side: "old", Err: cause}
+	if !strings.Contains(se.Error(), "serialize old machine") {
+		t.Fatalf("SerializeError.Error() = %q", se.Error())
+	}
+	if !errors.Is(se, cause) {
+		t.Fatal("SerializeError should unwrap to its cause")
+	}
+
+	de := &evolution.DecodeError{Side: "new", Err: cause}
+	if !strings.Contains(de.Error(), "decode new machine") {
+		t.Fatalf("DecodeError.Error() = %q", de.Error())
+	}
+	if !errors.Is(de, cause) {
+		t.Fatal("DecodeError should unwrap to its cause")
+	}
+}
+
 func TestDiffJSON_RoundTrip(t *testing.T) {
 	old := docMachine()
 	updated := docMachine()

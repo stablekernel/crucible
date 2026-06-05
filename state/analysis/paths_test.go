@@ -71,6 +71,42 @@ func TestShortestPaths_CoversAllReachable(t *testing.T) {
 	}
 }
 
+// TestPath_StatesAndEvents asserts Path.States renders the ordered states visited
+// (initial first, Target last) and stays consistent with Path.Events: a path of n
+// steps yields n events and n+1 states.
+func TestPath_StatesAndEvents(t *testing.T) {
+	paths, err := analysis.ShortestPaths(feedbackMachine())
+	if err != nil {
+		t.Fatalf("ShortestPaths: %v", err)
+	}
+
+	// The empty path (initial state reaching itself) is just the initial state.
+	if got := paths["question"].States("question"); len(got) != 1 || got[0] != "question" {
+		t.Fatalf("States for the empty path = %v, want [question]", got)
+	}
+
+	// A two-step path to thanks via form: question -> form -> thanks.
+	simple, err := analysis.SimplePaths(feedbackMachine())
+	if err != nil {
+		t.Fatalf("SimplePaths: %v", err)
+	}
+	viaForm := simple["thanks"][1] // sorted shortest-first; [1] is the two-step route
+	states := viaForm.States("question")
+	wantStates := []string{"question", "form", "thanks"}
+	if len(states) != len(wantStates) {
+		t.Fatalf("States = %v, want %v", states, wantStates)
+	}
+	for i := range wantStates {
+		if states[i] != wantStates[i] {
+			t.Fatalf("States[%d] = %q, want %q (full %v)", i, states[i], wantStates[i], states)
+		}
+	}
+	// States is always one longer than Events (it includes the initial state).
+	if len(states) != len(viaForm.Events())+1 {
+		t.Fatalf("len(States)=%d, len(Events)=%d; want States == Events+1", len(states), len(viaForm.Events()))
+	}
+}
+
 // TestShortestPaths_MatchesPlanPath asserts that for each single target, the
 // shortest path's length matches the kernel's PlanPath length on the same guard-free
 // machine — ShortestPaths is the multi-target generalization of PlanPath.

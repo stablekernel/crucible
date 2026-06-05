@@ -23,10 +23,10 @@ import (
 // conformance harness draws from.
 
 // Step is one segment of a path: the event that fires from the segment's source
-// state, and the destination state it leads to. A path is read as: starting at the
-// initial state, fire Step[0].Event to reach Step[0].To, then Step[1].Event, and so
-// on. A path segment carries its event plus the resulting
-// `state`).
+// state and the destination state it leads to. A path is read as: starting at the
+// initial state, fire Step[0].Event to reach Step[0].To, then Step[1].Event to
+// reach Step[1].To, and so on. Each segment carries its source state (From), the
+// fired event (Event), and the state reached (To).
 type Step struct {
 	// Event is the string label of the event fired for this segment; "always" for an
 	// eventless transition traversed on the path.
