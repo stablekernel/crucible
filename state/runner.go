@@ -217,15 +217,16 @@ func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result a
 	return res, true
 }
 
-// Run resolves and runs the in-flight service id against the bound registry,
-// settling it with the ServiceFn's result or error. It is the production
-// convenience that couples resolve + run + settle: a host that arms services from
-// Absorb and wants the runner to execute them calls Run(ctx, id) (typically from
-// its own goroutine). It returns the routed FireResult and true, or false when id
-// is not in flight or no registry / ServiceFn resolves it (in which case the
-// service is settled as an error so the machine still routes onError rather than
-// hanging).
-func (r *ServiceRunner[S, E, C]) Run(ctx context.Context, id string) (FireResult[S], bool) {
+// Tick resolves and runs the in-flight service id against the bound registry,
+// settling it with the ServiceFn's result or error. It is the ServiceRunner's
+// advance verb — the host-driver counterpart of Scheduler.Tick and
+// ActorSystem.Tick — coupling resolve + run + settle: a host that arms services
+// from Absorb and wants the runner to execute them calls Tick(ctx, id) (typically
+// from its own goroutine). It returns the routed FireResult and true, or false
+// when id is not in flight or no registry / ServiceFn resolves it (in which case
+// the service is settled as an error so the machine still routes onError rather
+// than hanging).
+func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) (FireResult[S], bool) {
 	r.mu.Lock()
 	rs, ok := r.running[id]
 	r.mu.Unlock()
