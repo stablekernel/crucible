@@ -55,6 +55,43 @@ func TestStartActiveOrder_ExistingInstance(t *testing.T) {
 	}
 }
 
+// TestStartActiveOrder_SubmitError covers the submit-fire error branch: Start
+// succeeds, then the Submit step's Append fails, so startActiveOrder surfaces a
+// wrapped submit-order error rather than returning a half-started handle.
+func TestStartActiveOrder_SubmitError(t *testing.T) {
+	ctx := context.Background()
+	// No Appends allowed: the first recorded step (Submit) fails. Loads are open so
+	// Start's existence probe succeeds.
+	store := &failingStore{Store: durable.NewMemStore(), allowLoads: 5, allowAppends: 0}
+
+	_, _, err := startActiveOrder(ctx, store, durable.InstanceID("order-submit-fail"),
+		durableOptions(state.NewFakeClock(fixedClockStart)))
+	if err == nil {
+		t.Fatal("expected a submit error from the failing store, got nil")
+	}
+	if !strings.Contains(err.Error(), "submit order") {
+		t.Fatalf("error = %v, want a submit-order message", err)
+	}
+}
+
+// TestStartActiveOrder_RunServiceError covers the run-authorize-service error
+// branch: Start and the Submit step succeed, then the authorize service's Append
+// fails, so startActiveOrder surfaces a wrapped run-authorize-service error.
+func TestStartActiveOrder_RunServiceError(t *testing.T) {
+	ctx := context.Background()
+	// One Append allowed (Submit); the authorize service's record then fails.
+	store := &failingStore{Store: durable.NewMemStore(), allowLoads: 5, allowAppends: 1}
+
+	_, _, err := startActiveOrder(ctx, store, durable.InstanceID("order-service-fail"),
+		durableOptions(state.NewFakeClock(fixedClockStart)))
+	if err == nil {
+		t.Fatal("expected a run-authorize-service error from the failing store, got nil")
+	}
+	if !strings.Contains(err.Error(), "run authorize service") {
+		t.Fatalf("error = %v, want a run-authorize-service message", err)
+	}
+}
+
 // failingStore wraps a durable.Store and fails Load / History after a configured
 // number of successful Loads, so the harness's recovery and reconstruction error
 // branches are exercised without disturbing the live recording run (whose only Load
