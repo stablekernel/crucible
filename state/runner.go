@@ -222,26 +222,31 @@ func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result a
 // advance verb — the host-driver counterpart of Scheduler.Tick and
 // ActorSystem.Tick — coupling resolve + run + settle: a host that arms services
 // from Absorb and wants the runner to execute them calls Tick(ctx, id) (typically
-// from its own goroutine). It returns the routed FireResult and true, or false
-// when id is not in flight or no registry / ServiceFn resolves it (in which case
-// the service is settled as an error so the machine still routes onError rather
-// than hanging).
-func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) (FireResult[S], bool) {
+// from its own goroutine). It returns a one-element slice holding the routed
+// FireResult when the service settled, sharing the []FireResult[S] shape of
+// Scheduler.Tick and ActorSystem.Tick, or an empty slice when id is not in flight.
+// A missing registry / unresolved ServiceFn still settles the service as an error
+// (so the machine routes onError rather than hanging) and that routed result is
+// returned in the slice.
+func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) []FireResult[S] {
 	r.mu.Lock()
 	rs, ok := r.running[id]
 	r.mu.Unlock()
 	if !ok {
-		return FireResult[S]{}, false
+		return nil
 	}
 	fn := r.resolve(rs.src.Name)
 	if fn == nil {
-		return r.SettleError(ctx, id, &ErrUnboundRef{Kind: "service", Name: rs.src.Name})
+		res, _ := r.SettleError(ctx, id, &ErrUnboundRef{Kind: "service", Name: rs.src.Name})
+		return []FireResult[S]{res}
 	}
 	out, err := fn(ctx, ServiceCtx[C]{Entity: r.inst.entity, Params: rs.src.Params, Input: rs.input})
 	if err != nil {
-		return r.SettleError(ctx, id, err)
+		res, _ := r.SettleError(ctx, id, err)
+		return []FireResult[S]{res}
 	}
-	return r.SettleDone(ctx, id, out)
+	res, _ := r.SettleDone(ctx, id, out)
+	return []FireResult[S]{res}
 }
 
 // resolve returns the bound ServiceFn for name, or nil when no registry was wired

@@ -95,10 +95,11 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 
-	res, ok := h.svc.Tick(ctx, id)
-	if !ok {
+	results := h.svc.Tick(ctx, id)
+	if len(results) == 0 {
 		return state.FireResult[S]{}, false, nil
 	}
+	res := results[0]
 
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
 	// that arms a timer, starts another service, or spawns an actor. Absorb those

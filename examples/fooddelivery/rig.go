@@ -162,22 +162,26 @@ func (r *Rig) SettleRefund(ctx context.Context, amount int64) state.FireResult[S
 // (executing authorizeFn) and routes its outcome, rather than settling it with a
 // fixed token. It returns the resulting FireResult and whether a service ran.
 func (r *Rig) RunAuthorization(ctx context.Context) (state.FireResult[Stage], bool) {
-	fr, ok := r.run.Tick(ctx, r.authorizeID())
-	if ok {
-		r.absorb(ctx, fr.Effects)
+	results := r.run.Tick(ctx, r.authorizeID())
+	if len(results) == 0 {
+		return state.FireResult[Stage]{}, false
 	}
-	return fr, ok
+	fr := results[0]
+	r.absorb(ctx, fr.Effects)
+	return fr, true
 }
 
 // RunRefund runs the real refund service synchronously through the runner (executing
 // refundFn) and routes its outcome. It returns the resulting FireResult and whether a
 // service ran.
 func (r *Rig) RunRefund(ctx context.Context) (state.FireResult[Stage], bool) {
-	fr, ok := r.run.Tick(ctx, r.refundID())
-	if ok {
-		r.absorb(ctx, fr.Effects)
+	results := r.run.Tick(ctx, r.refundID())
+	if len(results) == 0 {
+		return state.FireResult[Stage]{}, false
 	}
-	return fr, ok
+	fr := results[0]
+	r.absorb(ctx, fr.Effects)
+	return fr, true
 }
 
 // RunKitchen steps the kitchen actor to its final state, so its completion re-fires

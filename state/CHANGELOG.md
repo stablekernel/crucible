@@ -453,6 +453,13 @@ representative hot-path numbers.
   option that makes `Verify` collect all failing requirements in one pass instead
   of failing fast is now `Aggregate()`. Replace `WithAggregate()` with
   `Aggregate()` at the call site.
+- **BREAKING: `ServiceRunner.Tick` now returns `[]FireResult[S]` instead of
+  `(FireResult[S], bool)`.** The three host drivers now share one advance-verb
+  shape: `Scheduler.Tick`, `ActorSystem.Tick`, and `ServiceRunner.Tick` all
+  return `[]FireResult[S]`. `ServiceRunner.Tick` returns a one-element slice when
+  the service settled and an empty slice when the id is not in flight. A caller
+  that checked the old `ok` bool now checks `len(results) > 0` and reads
+  `results[0]` for the routed result.
 - The determinism and ordering contract is now explicit and frozen: emission
   order is exit → transition → entry across the cascade, declaration order within
   a set, fixed parallel-region order, and the run-to-completion interleave for
