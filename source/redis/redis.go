@@ -128,6 +128,7 @@ type config struct {
 	block     time.Duration
 	count     int64
 	minIdle   time.Duration
+	now       func() time.Time
 }
 
 // Option configures an [Inlet] at construction. Options compose; later options
@@ -171,6 +172,18 @@ func WithCount(n int64) Option { return func(c *config) { c.count = n } }
 // larger [source.Result.Requeue] on a Nak raises it per entry. Zero leaves the
 // default.
 func WithMinIdle(d time.Duration) Option { return func(c *config) { c.minIdle = d } }
+
+// WithClock injects the clock the subscription reads when it stamps and checks
+// the per-entry requeue floor a [source.Result.Requeue] raises (see Settle and
+// NakRedeliver). It exists so a test can drive redelivery timing
+// deterministically; production leaves it at time.Now. A nil clock is ignored.
+func WithClock(now func() time.Time) Option {
+	return func(c *config) {
+		if now != nil {
+			c.now = now
+		}
+	}
+}
 
 // New builds an [Inlet] from opts. Exactly one of [WithAddr] or [WithClient]
 // must be supplied, and [WithGroup] and [WithConsumer] are required. When
@@ -236,6 +249,7 @@ func (in *Inlet) Subscribe(_ context.Context, cfg source.SubscribeConfig) (sourc
 		block:     in.cfg.block,
 		count:     in.cfg.count,
 		minIdle:   in.cfg.minIdle,
+		now:       in.cfg.now,
 		startID:   "0", // create the group at the stream origin by default
 		readFrom:  ">", // read new (never-delivered) entries by default
 	}, nil
@@ -295,6 +309,25 @@ type subscription struct {
 	pending  []source.Message // buffered, fetched-but-not-yet-yielded entries
 	inflight int              // entries delivered by Next, not yet settled
 	readFrom string           // ">" for new entries; an ID to drain the backlog
+
+	// requeueAfter records the earliest wall-clock time a nak'd entry may be
+	// reclaimed for redelivery, keyed by entry ID. A Nak whose
+	// [source.Result.Requeue] exceeds the configured min-idle raises that
+	// entry's floor; NakRedeliver skips an entry until its floor has passed.
+	// An entry is removed from the map when it is reclaimed or acked.
+	requeueAfter map[string]time.Time
+	// now is the clock NakRedeliver and Nak read, injected so a test can drive
+	// the per-entry requeue floor deterministically. Nil means time.Now.
+	now func() time.Time
+}
+
+// clock returns the subscription's injected clock, defaulting to time.Now. The
+// caller holds s.mu.
+func (s *subscription) clock() func() time.Time {
+	if s.now != nil {
+		return s.now
+	}
+	return time.Now
 }
 
 // ensureGroup creates the consumer group (with MKSTREAM) once, idempotently
@@ -427,8 +460,17 @@ func (s *subscription) Settle(ctx context.Context, m source.Message, r source.Re
 		return s.ack(ctx, entry.ID)
 	case source.ActionNak:
 		// Leave the entry in the PEL; a future pending scan (NakRedeliver) claims
-		// and redelivers it once it has been idle long enough. The requeue delay
-		// raises that idle floor when larger than the configured minimum.
+		// and redelivers it once it has been idle long enough. A requeue delay
+		// larger than the configured minimum raises this entry's redelivery floor
+		// so NakRedeliver holds it back until the delay has elapsed.
+		if r.Requeue > s.minIdle {
+			s.mu.Lock()
+			if s.requeueAfter == nil {
+				s.requeueAfter = make(map[string]time.Time)
+			}
+			s.requeueAfter[entry.ID] = s.clock()().Add(r.Requeue)
+			s.mu.Unlock()
+		}
 		return nil
 	case source.ActionTerm:
 		if err := s.deadLetter(ctx, m, entry, r); err != nil {
@@ -459,6 +501,9 @@ func (s *subscription) ack(ctx context.Context, id string) error {
 	if err := s.client.XAck(ctx, s.stream, s.group, id).Err(); err != nil {
 		return fmt.Errorf("redis: ack %s: %w", id, err)
 	}
+	s.mu.Lock()
+	delete(s.requeueAfter, id)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -520,9 +565,20 @@ func (s *subscription) NakRedeliver(ctx context.Context, minIdle time.Duration) 
 	if len(pend) == 0 {
 		return 0, nil
 	}
+	// Honor any per-entry requeue floor a Nak raised: an entry whose floor has
+	// not yet passed is held back from this redelivery cycle.
+	now := s.clock()()
 	ids := make([]string, 0, len(pend))
+	s.mu.Lock()
 	for _, p := range pend {
+		if until, held := s.requeueAfter[p.ID]; held && now.Before(until) {
+			continue
+		}
 		ids = append(ids, p.ID)
+	}
+	s.mu.Unlock()
+	if len(ids) == 0 {
+		return 0, nil
 	}
 	claimed, err := s.client.XClaim(ctx, &goredis.XClaimArgs{
 		Stream:   s.stream,
@@ -537,6 +593,7 @@ func (s *subscription) NakRedeliver(ctx context.Context, minIdle time.Duration) 
 	s.mu.Lock()
 	for _, e := range claimed {
 		s.pending = append(s.pending, newMessage(s.stream, e))
+		delete(s.requeueAfter, e.ID)
 	}
 	s.mu.Unlock()
 	return len(claimed), nil
@@ -597,6 +654,13 @@ func (s *subscription) SeekToEnd(_ context.Context) error {
 // next Next yields the replayed entries before resuming live delivery. The
 // entries are claimed to this consumer (they enter the PEL) so they settle
 // through the normal ack path. The caller passes a context for the range read.
+//
+// The closed check and the buffer write straddle the XRANGE call rather than
+// holding s.mu across the network round-trip (that would stall a concurrent
+// Settle). A Close that lands in that window is benign: reseek still buffers the
+// replayed entries, and the next Next drains them and then returns
+// [source.ErrDrained], exactly as a Close followed by a drain would. Seek and
+// Close are not expected to race in practice; the engine drives one fetch loop.
 func (s *subscription) reseek(ctx context.Context, fromID string) error {
 	s.mu.Lock()
 	if s.closed {
@@ -628,10 +692,11 @@ func (s *subscription) Lag(ctx context.Context) (int64, error) {
 	if err == nil {
 		for _, g := range groups {
 			if g.Name == s.group {
-				if g.Lag > 0 {
-					return g.Lag, nil
-				}
-				break
+				// XINFO GROUPS reports the group's lag directly, including zero
+				// when the group is caught up. Return it as-is: a guard that
+				// only trusted a positive lag would fall through to XLEN and
+				// report the full stream length for a fully-consumed group.
+				return g.Lag, nil
 			}
 		}
 	}
