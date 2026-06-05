@@ -77,8 +77,8 @@ func Guard[S comparable, C any](
 		return state.GuardNode[S]{}, fmt.Errorf("guard %q: build program: %w", name, err)
 	}
 
-	reg.BindGuard(name, celGuard[C]{program: program, schema: schema})
-
+	// Record the catalog entry before mutating the registry so a duplicate-name
+	// collision fails authoring without leaving a half-bound guard behind.
 	if cfg.catalog != nil {
 		astBytes, err := checkedASTBytes(ast)
 		if err != nil {
@@ -93,6 +93,7 @@ func Guard[S comparable, C any](
 		}
 	}
 
+	reg.BindGuard(name, celGuard[C]{program: program, schema: schema})
 	return richNode[S](name), nil
 }
 

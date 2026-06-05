@@ -232,6 +232,82 @@ func TestDiff_RemoveGuard_Additive(t *testing.T) {
 	}
 }
 
+// guardedBranchMachine: a single state "router" routing event "go" to one of two
+// targets depending on a guard. This is the canonical "same event, different
+// guard -> different target" pattern; the two branches share (From, On) but are
+// distinct transitions.
+func guardedBranchMachine() *state.IR[string, string, any] {
+	return &state.IR[string, string, any]{
+		Name:       "router",
+		Initial:    "router",
+		HasInitial: true,
+		States: []state.State[string, string, any]{
+			{Name: "router", Transitions: []state.Transition[string, string, any]{
+				{From: "router", On: "go", To: "fast", Guards: []state.Ref{{Name: "isPriority"}}},
+				{From: "router", On: "go", To: "slow", Guards: []state.Ref{{Name: "isStandard"}}},
+			}},
+			{Name: "fast", IsFinal: true},
+			{Name: "slow", IsFinal: true},
+		},
+	}
+}
+
+// TestDiff_GuardedBranches_RemovedBranchIsBreaking proves that removing one of two
+// guarded branches sharing (From, On) is reported as a breaking transition
+// removal. Keying transitions only by (From, On) would collapse the two branches
+// into one slot and silently hide the removal.
+func TestDiff_GuardedBranches_RemovedBranchIsBreaking(t *testing.T) {
+	old := guardedBranchMachine()
+	updated := guardedBranchMachine()
+	// Drop the isStandard -> slow branch entirely.
+	updated.States[0].Transitions = updated.States[0].Transitions[:1]
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("removing a guarded branch must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindTransitionRemoved) {
+		t.Fatalf("expected transition_removed for the dropped branch, got:\n%s", r)
+	}
+}
+
+// TestDiff_GuardedBranches_RetargetOneBranchIsBreaking proves that retargeting a
+// single guarded branch (leaving its sibling untouched) surfaces a breaking
+// retarget. The (From, On)-only key kept whichever branch the map saw last, so a
+// retarget of the other branch was invisible.
+func TestDiff_GuardedBranches_RetargetOneBranchIsBreaking(t *testing.T) {
+	old := guardedBranchMachine()
+	updated := guardedBranchMachine()
+	// Retarget the isStandard branch from slow to fast.
+	updated.States[0].Transitions[1].To = "fast"
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("retargeting a guarded branch must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindTransitionRetargeted) {
+		t.Fatalf("expected transition_retargeted for the changed branch, got:\n%s", r)
+	}
+}
+
+// TestDiff_GuardedBranches_AddBranchIsAdditive proves that adding a third guarded
+// branch on an existing (From, On) is additive, not a spurious breaking change.
+func TestDiff_GuardedBranches_AddBranchIsAdditive(t *testing.T) {
+	old := guardedBranchMachine()
+	updated := guardedBranchMachine()
+	updated.States = append(updated.States, state.State[string, string, any]{Name: "express", IsFinal: true})
+	updated.States[0].Transitions = append(updated.States[0].Transitions,
+		state.Transition[string, string, any]{From: "router", On: "go", To: "express", Guards: []state.Ref{{Name: "isExpress"}}})
+
+	r := evolution.Diff(old, updated)
+	if r.Breaking() {
+		t.Fatalf("adding a guarded branch must be additive, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindTransitionAdded) {
+		t.Fatalf("expected transition_added for the new branch, got:\n%s", r)
+	}
+}
+
 func TestDiff_EffectAndRemoval(t *testing.T) {
 	old := docMachine()
 	updated := docMachine()

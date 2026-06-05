@@ -156,8 +156,13 @@ func (r ScenarioResult[S]) Passed() bool {
 // RunAgainst fires the scenario's event sequence against a freshly Cast instance
 // of the machine and builds a ScenarioResult. The codec resolves each event name
 // to its typed value; an unresolved name is a fatal scenario error. The entity
-// is supplied by the caller (the kernel binds guards and actions to it) and the
-// starting state is taken from the scenario.
+// is supplied by the caller (the kernel binds guards and actions to it).
+//
+// The run starts from the typed startState the caller resolved. When the scenario
+// also declares a non-empty InitialState, it must match startState's rendered
+// form; a disagreement is reported as ErrInitialStateMismatch and the events are
+// not fired, so a serialized scenario can never silently replay from a different
+// state than it describes.
 func RunAgainst[S comparable, E comparable, C any](
 	m *state.Machine[S, E, C],
 	sc Scenario,
@@ -165,11 +170,22 @@ func RunAgainst[S comparable, E comparable, C any](
 	codec EventCodec[E],
 	startState S,
 ) ScenarioResult[S] {
+	res := ScenarioResult[S]{FinalState: startState}
+	tr := Trace{MachineID: m.Name(), FromState: sc.InitialState}
+
+	if sc.InitialState != "" {
+		if resolved := fmt.Sprint(startState); resolved != sc.InitialState {
+			res.Err = &ErrInitialStateMismatch{Declared: sc.InitialState, Resolved: resolved}
+			tr.ToState = resolved
+			res.Trace = tr
+			res.Assertions = evaluate(sc.Assertions, res)
+			return res
+		}
+	}
+
 	// Full trace is required so EffectsEmitted, GuardsEvaluated, and the cascade
 	// fields are populated for scenario assertion evaluation.
 	inst := m.Cast(entity, state.WithInitialState(startState), state.WithFullTrace[S]())
-	res := ScenarioResult[S]{FinalState: startState}
-	tr := Trace{MachineID: m.Name(), FromState: sc.InitialState}
 
 	for _, ev := range sc.Events {
 		typed, ok := codec.Resolve(ev.Event)

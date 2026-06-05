@@ -302,13 +302,56 @@ type transitionKey struct {
 	on   string
 }
 
+// diffTransitions compares the transitions of one state across two definitions.
+// Transitions are grouped by (From, On); within a group the old and new branches
+// are matched so that guarded sibling branches on the same event are diffed
+// independently rather than collapsed into a single map slot.
+//
+// When a group has exactly one branch on each side, the two are paired directly
+// regardless of guard signature, so adding or removing a guard on a lone
+// transition reads as a guard add/remove (a loosening/flagged-tightening) rather
+// than a transition add+remove. When either side has multiple branches, branches
+// are matched by guard signature: a branch whose guard set has no counterpart is
+// reported as added or removed, surfacing a breaking change that the old (From,
+// On)-only key silently hid.
 func (d *differ[S, E, C]) diffTransitions(statePath string, oldTr, newTr []state.Transition[S, E, C]) {
-	oldByKey := indexTransitions(oldTr)
-	newByKey := indexTransitions(newTr)
+	oldGroups := groupTransitions(oldTr)
+	newGroups := groupTransitions(newTr)
 
-	for key, ot := range oldByKey {
+	for key, oldBranches := range oldGroups {
 		tpath := statePath + "/" + key.on
-		nt, ok := newByKey[key]
+		newBranches := newGroups[key]
+		d.diffTransitionGroup(tpath, key, oldBranches, newBranches)
+	}
+	for key, newBranches := range newGroups {
+		if _, ok := oldGroups[key]; ok {
+			continue
+		}
+		tpath := statePath + "/" + key.on
+		d.diffTransitionGroup(tpath, key, nil, newBranches)
+	}
+}
+
+// diffTransitionGroup diffs the branches sharing one (From, On) key.
+func (d *differ[S, E, C]) diffTransitionGroup(
+	tpath string, key transitionKey, oldBranches, newBranches []state.Transition[S, E, C],
+) {
+	// Single branch on each side: pair directly so a guard added/removed on a lone
+	// transition is classified as a guard change, not an add+remove.
+	if len(oldBranches) == 1 && len(newBranches) == 1 {
+		d.diffTransition(tpath, oldBranches[0], newBranches[0])
+		return
+	}
+
+	// Multiple branches: match by guard signature so guarded siblings stay distinct.
+	newBySig := make(map[string]state.Transition[S, E, C], len(newBranches))
+	for _, nt := range newBranches {
+		newBySig[guardSignature(nt)] = nt
+	}
+	matched := make(map[string]bool, len(newBranches))
+	for _, ot := range oldBranches {
+		sig := guardSignature(ot)
+		nt, ok := newBySig[sig]
 		if !ok {
 			d.r.add(Change{
 				Kind:        KindTransitionRemoved,
@@ -318,19 +361,19 @@ func (d *differ[S, E, C]) diffTransitions(statePath string, oldTr, newTr []state
 			})
 			continue
 		}
+		matched[sig] = true
 		d.diffTransition(tpath, ot, nt)
 	}
-
-	for key := range newByKey {
-		if _, ok := oldByKey[key]; !ok {
-			tpath := statePath + "/" + key.on
-			d.r.add(Change{
-				Kind:        KindTransitionAdded,
-				Path:        tpath,
-				Description: fmt.Sprintf("new transition on %q from an existing state; existing Fire calls unaffected", key.on),
-				Breaking:    false,
-			})
+	for _, nt := range newBranches {
+		if matched[guardSignature(nt)] {
+			continue
 		}
+		d.r.add(Change{
+			Kind:        KindTransitionAdded,
+			Path:        tpath,
+			Description: fmt.Sprintf("new transition on %q from an existing state; existing Fire calls unaffected", key.on),
+			Breaking:    false,
+		})
 	}
 }
 
@@ -416,12 +459,33 @@ func guardRefs[S comparable, E comparable, C any](t state.Transition[S, E, C]) [
 	return refs
 }
 
-func indexTransitions[S comparable, E comparable, C any](trs []state.Transition[S, E, C]) map[transitionKey]state.Transition[S, E, C] {
-	m := make(map[transitionKey]state.Transition[S, E, C], len(trs))
+// groupTransitions buckets transitions by their (From, On) key, preserving every
+// guarded sibling branch in declaration order rather than collapsing them.
+func groupTransitions[S comparable, E comparable, C any](trs []state.Transition[S, E, C]) map[transitionKey][]state.Transition[S, E, C] {
+	m := make(map[transitionKey][]state.Transition[S, E, C], len(trs))
 	for _, t := range trs {
-		m[transitionKey{from: str(t.From), on: str(t.On)}] = t
+		key := transitionKey{from: str(t.From), on: str(t.On)}
+		m[key] = append(m[key], t)
 	}
 	return m
+}
+
+// guardSignature renders a transition's guard requirements as a stable string so
+// guarded sibling branches on the same (from, on) get distinct transition keys.
+// The signature folds the plain guard refs together with the composite guard's
+// named-ref and stateIn leaves, sorted, so it is order-independent and
+// deterministic across runs.
+func guardSignature[S comparable, E comparable, C any](t state.Transition[S, E, C]) string {
+	refs := guardRefs(t)
+	if len(refs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(refs))
+	for _, r := range refs {
+		names = append(names, r.Name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 func refNameSet(refs []state.Ref) map[string]struct{} {
