@@ -346,7 +346,12 @@ func (hp *Hopper) dispatchBatch(ctx context.Context, bh BatchHandler, buf []*del
 		hp.settle(ctx, span, d, r)
 	}
 
+	// Surface a count mismatch loudly rather than letting it pass. An under-count
+	// already terminated each unmatched message as poison above; an over-count
+	// (more results than messages) silently discards the extra results, so record
+	// the sentinel here too so the discard is visible in traces, not swallowed.
 	if len(results) != len(live) {
+		span.RecordError(ErrBatchResultCount)
 		span.SetStatus(telemetry.StatusError, "batch result count mismatch")
 	}
 }

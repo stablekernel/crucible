@@ -266,6 +266,41 @@ func TestDecodeEvent_WrongTypeIsPoison(t *testing.T) {
 	}
 }
 
+func TestDecodeEvent_RegistryErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	// A registry whose codec fails to decode: DecodeEvent returns the registry's
+	// (poison-classified) decode error rather than masking it.
+	registry := source.NewRegistry().SetDefault(source.CodecFunc(
+		func([]byte, source.Headers) (any, error) {
+			return nil, errors.New("codec exploded")
+		},
+	))
+	_, err := cdc.DecodeEvent(registry, changeMessage{value: []byte(`{"op":"c"}`)})
+	if err == nil {
+		t.Fatal("DecodeEvent error = nil, want registry decode error")
+	}
+	if !errors.Is(err, source.ErrPoison) {
+		t.Fatalf("DecodeEvent error = %v, want poison-classified decode error", err)
+	}
+}
+
+func TestRawJSON_As_UnmarshalErrorReported(t *testing.T) {
+	t.Parallel()
+
+	// A create carries an after-image; decoding it into an incompatible shape
+	// surfaces the json.Unmarshal error (wrapped), not ErrMissingImage.
+	ev := decode(t, []byte(`{"op":"c","after":{"id":1,"name":"ada"}}`))
+	var dst int // the after-image is an object; an int cannot hold it
+	err := ev.After.As(&dst)
+	if err == nil {
+		t.Fatal("RawJSON.As error = nil, want unmarshal error")
+	}
+	if errors.Is(err, cdc.ErrMissingImage) {
+		t.Fatalf("RawJSON.As error = %v, want unmarshal error not ErrMissingImage", err)
+	}
+}
+
 func TestSourceHeaders(t *testing.T) {
 	t.Parallel()
 

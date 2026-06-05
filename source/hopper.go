@@ -25,7 +25,10 @@ import (
 // A lane is a single goroutine that processes its queue strictly in arrival
 // order, so two messages with the same key are never reordered, while distinct
 // keys run in parallel up to [WithConcurrency]. This is the guarantee a
-// statechart instance needs: its events arrive in order.
+// statechart instance needs: its events arrive in order. The number of distinct
+// lanes (and their goroutines) is bounded by [WithMaxLanes]; keys beyond the
+// bound share a lane by hash, which serializes only the unrelated colliding keys
+// and never reorders a single key's messages.
 //
 // Backpressure. [WithMaxInFlight] bounds the messages delivered but not yet
 // settled; when the window is full the fetch loop blocks before pulling the next
@@ -44,6 +47,7 @@ type Hopper struct {
 	middleware  []Middleware
 	concurrency int
 	maxInFlight int
+	maxLanes    int
 	batch       batchConfig
 
 	received telemetry.Counter
@@ -76,6 +80,7 @@ func New(opts ...Option) *Hopper {
 		middleware:  append([]Middleware(nil), cfg.middleware...),
 		concurrency: cfg.concurrency,
 		maxInFlight: cfg.maxInFlight,
+		maxLanes:    cfg.maxLanes,
 		batch:       cfg.batch,
 		received:    m.Counter("source.received", telemetry.WithDescription("messages received from the subscription")),
 		acked:       m.Counter("source.acked", telemetry.WithDescription("messages acknowledged after successful handling")),
@@ -349,21 +354,38 @@ func (hp *Hopper) reportLag(ctx context.Context, sub Subscription) {
 }
 
 // laneKey selects the ordered lane for m: its PartitionKey when non-empty, else
-// a hash of its Key, else lane 0 (every keyless message shares one ordered
-// lane, preserving global order for them).
+// a hash of its Key, else lane 0 (every keyless message shares one ordered lane,
+// preserving global order for them). The hash is folded onto the bounded lane
+// set (see [WithMaxLanes]) so the number of lanes never exceeds maxLanes; a key
+// always maps to the same lane, so folding never reorders a key's messages.
 func (hp *Hopper) laneKey(m Message) uint64 {
-	if pk := m.PartitionKey(); pk != "" {
-		return hashBytes([]byte(pk))
+	var h uint64
+	switch {
+	case m.PartitionKey() != "":
+		// Hash the string directly, avoiding a []byte conversion per message.
+		h = hashString(m.PartitionKey())
+	case len(m.Key()) > 0:
+		h = hashBytes(m.Key())
+	default:
+		return 0
 	}
-	if k := m.Key(); len(k) > 0 {
-		return hashBytes(k)
+	if hp.maxLanes > 0 {
+		return h % uint64(hp.maxLanes)
 	}
-	return 0
+	return h
 }
 
 func hashBytes(b []byte) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write(b)
+	return h.Sum64()
+}
+
+// hashString hashes s without allocating a []byte copy, using the hash's
+// io.Writer-free string path.
+func hashString(s string) uint64 {
+	h := fnv.New64a()
+	_, _ = io.WriteString(h, s)
 	return h.Sum64()
 }
 

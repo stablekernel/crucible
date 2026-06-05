@@ -103,13 +103,26 @@ type OrderedDelivery interface {
 }
 
 // Batched is a [Subscription] that can yield and settle messages in batches,
-// amortizing per-message overhead. The [Hopper] uses it when present to fetch and
-// ack in groups; an unbatched subscription is driven one message at a time.
+// amortizing per-message overhead. The [Hopper]'s batch mode (see
+// [Hopper.RunBatch]) uses [Batched.NextBatch] to fetch whole batches from the
+// backend when this capability is present; an unbatched subscription is fetched
+// one message at a time.
+//
+// Settlement is a separate decision. A [BatchHandler] returns one [Result] per
+// message, so the Hopper settles each message by its own Result through
+// [Subscription.Settle] rather than collapsing a batch onto a single outcome —
+// a slow handler that fails the third message of five must not nak the other
+// four. [SettleBatch] is therefore a reserved seam the Hopper does not call: it
+// is the one-call settle path for an adapter or a caller that already knows a
+// whole batch shares one outcome (a uniform ack after a bulk commit), not a
+// substitute for per-message settlement.
 type Batched interface {
 	// NextBatch returns up to limit messages, blocking for at least one, or
 	// ctx.Err()/ErrDrained as [Subscription.Next] would.
 	NextBatch(ctx context.Context, limit int) ([]Message, error)
-	// SettleBatch applies r to every message in ms in one call.
+	// SettleBatch applies the single result r to every message in ms in one call.
+	// It is for a caller settling a uniform batch directly; the Hopper settles per
+	// message (one Result each) and does not call it.
 	SettleBatch(ctx context.Context, ms []Message, r Result) error
 }
 
@@ -175,13 +188,22 @@ type ProducedRecord struct {
 	Headers Headers
 }
 
-// Deduper is a [Subscription] (or an inlet seam) that suppresses re-delivery of
-// an already-processed message by an idempotency key. The no-op default is "no
-// deduplication"; the state-machine bridge supplies the machine's state version
-// as the key so redelivery is provably idempotent with no external store.
+// Deduper suppresses re-delivery of an already-processed message by an
+// idempotency key. It is a reserved seam, not a capability the [Hopper] consults
+// on its own: the Hopper never type-asserts a subscription to Deduper and never
+// calls [Deduper.Seen]. Deduplication is opt-in middleware — wire a Deduper into
+// the source/idempotency middleware with its WithDeduper option (it adapts a
+// Deduper to the middleware's store via FromDeduper) and add that middleware to
+// the Hopper, or call Seen yourself from a handler. The no-op default, with no
+// such middleware, is "no deduplication".
+//
+// Exactly-once into a statechart is provided separately by the source/statemachine
+// bridge's version idempotency (a redelivered, already-applied event id is
+// skipped against the persisted version); that path does not use this interface.
 type Deduper interface {
-	// Seen reports whether key has already been processed (and records it if not),
-	// so the Hopper can skip a duplicate by acking without re-running the handler.
+	// Seen reports whether key has already been processed, recording it if not, so
+	// a caller (the idempotency middleware, or a handler) can skip a duplicate by
+	// acking without re-running the work.
 	Seen(ctx context.Context, key string) (bool, error)
 }
 

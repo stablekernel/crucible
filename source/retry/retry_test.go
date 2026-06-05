@@ -214,7 +214,6 @@ func TestOptions_IgnoreInvalid(t *testing.T) {
 		retry.WithBackoff(0, time.Minute, 2.0, false),           // ignored (base<=0)
 		retry.WithBackoff(-1, time.Minute, 0.5, false),          // ignored (factor<1)
 		retry.WithBackoffFunc(nil),                              // ignored
-		retry.WithClock(nil),                                    // ignored
 		retry.WithJitterSource(nil),                             // ignored
 		retry.WithBackoff(time.Second, time.Minute, 2.0, false), // applies
 	)
@@ -228,12 +227,22 @@ func TestOptions_IgnoreInvalid(t *testing.T) {
 	}
 }
 
-func TestWithClock_Accepted(t *testing.T) {
+// TestWithJitterSource_DeterministicSchedule confirms the injected jitter source
+// makes the exponential schedule deterministic: a source returning a fixed
+// fraction scales the computed delay by exactly that fraction.
+func TestWithJitterSource_DeterministicSchedule(t *testing.T) {
 	t.Parallel()
-	clock := func() time.Time { return time.Unix(0, 0) }
-	mw := retry.Middleware(retry.WithClock(clock))
-	h := mw(func(_ context.Context, _ source.Message) source.Result { return source.Ack() })
-	if got := h(context.Background(), stubMsg{}); got.Action != source.ActionAck {
-		t.Fatalf("action = %v, want ack", got.Action)
+	mw := retry.Middleware(
+		retry.WithBackoff(time.Second, time.Minute, 2.0, true),
+		retry.WithJitterSource(func() float64 { return 0.5 }),
+	)
+	h := mw(func(_ context.Context, _ source.Message) source.Result { return source.Nak(errBoom) })
+	// Attempt 1: base*factor^0 = 1s, scaled by jitter 0.5 -> 500ms.
+	got := h(retry.WithAttempt(context.Background(), 1), stubMsg{})
+	if got.Action != source.ActionNak {
+		t.Fatalf("action = %v, want nak", got.Action)
+	}
+	if got.Requeue != 500*time.Millisecond {
+		t.Fatalf("delay = %v, want 500ms (1s scaled by 0.5 jitter)", got.Requeue)
 	}
 }
