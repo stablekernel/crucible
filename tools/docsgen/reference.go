@@ -30,8 +30,9 @@ type referencePackage struct {
 }
 
 // referencePackages enumerates the public API surface documented in the
-// Reference section, in sidebar order. state and state/expr are separate Go
-// modules; the rest are packages within the state module.
+// Reference section, in sidebar order. Each entry's mod is the Go module the
+// gomarkdoc CLI runs in and pkg is the package within it; the list spans the
+// state, sink, source, telemetry, durable, cluster, transport, and wasm modules.
 var referencePackages = []referencePackage{
 	{
 		mod: "state", pkg: ".", slug: "state", title: "state", order: 1,
@@ -128,6 +129,26 @@ var referencePackages = []referencePackage{
 	{
 		mod: "source/statemachine", pkg: ".", slug: "source-statemachine", title: "source/statemachine", order: 24,
 		desc: "The state-to-source bridge: an inbound message drives a transition and the ack is tied to the durable transition.",
+	},
+	{
+		mod: "telemetry", pkg: ".", slug: "telemetry", title: "telemetry", order: 25,
+		desc: "The vendor-neutral tracing and metrics interface every Crucible module observes through, with zero-alloc no-op defaults.",
+	},
+	{
+		mod: "durable", pkg: ".", slug: "durable", title: "durable", order: 26,
+		desc: "The host-side durable-execution runtime: record the nondeterministic seams of a running instance and replay them deterministically.",
+	},
+	{
+		mod: "cluster", pkg: ".", slug: "cluster", title: "cluster", order: 27,
+		desc: "The host-side distribution runtime: address and drive a child machine on another node, with supervision and live migration.",
+	},
+	{
+		mod: "transport", pkg: ".", slug: "transport", title: "transport", order: 28,
+		desc: "A gRPC network transport for the cluster runtime, carrying actor deliver and spawn operations between nodes.",
+	},
+	{
+		mod: "wasm", pkg: ".", slug: "wasm", title: "wasm", order: 29,
+		desc: "Run Crucible behaviors authored as WebAssembly modules over a serializable JSON ABI through the pure-Go wazero runtime.",
 	},
 }
 
