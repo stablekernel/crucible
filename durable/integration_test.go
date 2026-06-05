@@ -178,8 +178,8 @@ func pipelineMachine() *state.Machine[string, string, *pipelineCtx] {
 			return nil, nil
 		}).
 		State("idle").
-		State("fetching").Invoke("load", "loaded", "loadFail").
-		State("spawning").InvokeActor("worker", "workerDone", "workerFail").
+		State("fetching").Invoke("load", state.WithInvokeOnDone("loaded"), state.WithInvokeOnError("loadFail")).
+		State("spawning").InvokeActor("worker", state.WithInvokeOnDone("workerDone"), state.WithInvokeOnError("workerFail")).
 		State("ready").
 		State("notifying").
 		State("done").Final().

@@ -68,7 +68,7 @@ func supervisorMachine() *state.Machine[string, string, actorCtx] {
 			return c
 		}).
 		Actor("spawnChild").
-		State("supervising").InvokeActor("spawnChild", "childDone", "childFail").
+		State("supervising").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childFail")).
 		State("complete").Final().
 		State("failed").Final().
 		Initial("supervising").
@@ -256,7 +256,7 @@ func messengerMachine() *state.Machine[string, string, actorCtx] {
 			return c
 		}).
 		Actor("spawnPinger").
-		State("listening").InvokeActor("spawnPinger", "pingerDone", "pingerFail").
+		State("listening").InvokeActor("spawnPinger", state.WithInvokeOnDone("pingerDone"), state.WithInvokeOnError("pingerFail")).
 		State("heard").
 		State("failed").Final().
 		Initial("listening").
@@ -334,8 +334,8 @@ func twoActorMachine() *state.Machine[string, string, actorCtx] {
 		}).
 		Actor("childA").
 		Actor("childB").
-		State("first").InvokeActor("childA", "aDone", "aFail").
-		State("second").InvokeActor("childB", "bDone", "bFail").
+		State("first").InvokeActor("childA", state.WithInvokeOnDone("aDone"), state.WithInvokeOnError("aFail")).
+		State("second").InvokeActor("childB", state.WithInvokeOnDone("bDone"), state.WithInvokeOnError("bFail")).
 		State("done").Final().
 		State("failed").Final().
 		Initial("first").
