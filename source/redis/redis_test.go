@@ -116,6 +116,23 @@ func (f *fakeClient) XClaim(ctx context.Context, a *goredis.XClaimArgs) *goredis
 		cmd.SetErr(f.claimErr)
 		return cmd
 	}
+	// Honor the requested IDs: XClaim only reassigns the entries it is asked for,
+	// so a test that holds an entry back (its requeue floor not yet passed) sees
+	// it excluded from the claim arguments and so from the returned set.
+	if len(a.Messages) > 0 {
+		want := make(map[string]bool, len(a.Messages))
+		for _, id := range a.Messages {
+			want[id] = true
+		}
+		out := make([]goredis.XMessage, 0, len(f.claimOut))
+		for _, e := range f.claimOut {
+			if want[e.ID] {
+				out = append(out, e)
+			}
+		}
+		cmd.SetVal(out)
+		return cmd
+	}
 	cmd.SetVal(f.claimOut)
 	return cmd
 }
@@ -620,6 +637,66 @@ func TestNakRedeliver_ClaimErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestNak_RequeueRaisesPerEntryFloor(t *testing.T) {
+	t.Parallel()
+	// A controllable clock lets the test advance time deterministically across
+	// the per-entry requeue floor a Nak with a large Requeue raises.
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+
+	c := &fakeClient{
+		readBatches: [][]goredis.XMessage{{entry("1-0", map[string]any{ValueField: "a"})}},
+		pendingOut:  []goredis.XPendingExt{{ID: "1-0", RetryCount: 1}},
+		claimOut:    []goredis.XMessage{entry("1-0", map[string]any{ValueField: "a"})},
+	}
+	// minIdle small so only the per-entry Requeue floor gates redelivery.
+	sub, _ := newSub(t, c, WithMinIdle(time.Millisecond), WithClock(clock))
+
+	m, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	// Nak with a Requeue (10s) far larger than minIdle: the entry's floor is now+10s.
+	if err := sub.Settle(context.Background(), m, source.NakAfter(10*time.Second, errors.New("retry"))); err != nil {
+		t.Fatalf("Settle(nak) error = %v", err)
+	}
+
+	// Before the floor passes, NakRedeliver must hold the entry back.
+	if n, err := sub.NakRedeliver(context.Background(), 0); err != nil || n != 0 {
+		t.Fatalf("NakRedeliver() before floor = %d,%v want 0,nil", n, err)
+	}
+
+	// Advance past the floor: the entry is now eligible and is reclaimed.
+	now = now.Add(11 * time.Second)
+	n, err := sub.NakRedeliver(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("NakRedeliver() after floor error = %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("NakRedeliver() after floor = %d, want 1", n)
+	}
+}
+
+func TestNak_NoRequeueLeavesFloorUnraised(t *testing.T) {
+	t.Parallel()
+	// A plain Nak (no Requeue, or one below minIdle) raises no floor, so the
+	// entry redelivers on the next scan governed by minIdle alone.
+	c := &fakeClient{
+		readBatches: [][]goredis.XMessage{{entry("1-0", map[string]any{ValueField: "a"})}},
+		pendingOut:  []goredis.XPendingExt{{ID: "1-0", RetryCount: 1}},
+		claimOut:    []goredis.XMessage{entry("1-0", map[string]any{ValueField: "a"})},
+	}
+	sub, _ := newSub(t, c, WithMinIdle(time.Millisecond))
+	m, _ := sub.Next(context.Background())
+	if err := sub.Settle(context.Background(), m, source.Nak(errors.New("retry"))); err != nil {
+		t.Fatalf("Settle(nak) error = %v", err)
+	}
+	n, err := sub.NakRedeliver(context.Background(), 0)
+	if err != nil || n != 1 {
+		t.Fatalf("NakRedeliver() = %d,%v want 1,nil", n, err)
+	}
+}
+
 // --- capabilities: seek (replay by entry ID) --------------------------------
 
 func TestSeek_BuffersBacklog(t *testing.T) {
@@ -722,6 +799,24 @@ func TestLag_PrefersGroupLag(t *testing.T) {
 	}
 	if got != 12 {
 		t.Errorf("Lag() = %d, want 12 (group lag)", got)
+	}
+}
+
+func TestLag_GroupCaughtUpReportsZero(t *testing.T) {
+	t.Parallel()
+	// A caught-up group reports Lag 0 from XINFO GROUPS. The reporter must return
+	// that zero, not fall through to XLEN and report the full stream length.
+	c := &fakeClient{
+		groups: []goredis.XInfoGroup{{Name: "workers", Lag: 0}},
+		xlen:   999,
+	}
+	sub, _ := newSub(t, c)
+	got, err := sub.Lag(context.Background())
+	if err != nil {
+		t.Fatalf("Lag() error = %v", err)
+	}
+	if got != 0 {
+		t.Errorf("Lag() = %d, want 0 (group caught up)", got)
 	}
 }
 

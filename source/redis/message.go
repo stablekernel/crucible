@@ -32,30 +32,29 @@ func (c idCursor) String() string { return string(c) }
 
 // message adapts a go-redis XMessage onto [source.Message]. The vendor entry is
 // reachable only through As; the neutral accessors expose the common surface.
-// The fields are snapshotted at construction so the neutral view is a stable
-// value independent of later driver state.
+// The entry is a value copy taken from go-redis, so the neutral view is stable
+// independent of later driver state. The header slice is built lazily on the
+// first [message.Headers] call and cached, so a message whose headers a handler
+// never reads pays no per-message header allocation.
 type message struct {
 	entry   goredis.XMessage
 	stream  string
 	headers source.Headers
+	built   bool // headers has been materialized
 	key     []byte
 	value   []byte
 }
 
 // newMessage wraps a go-redis XMessage from stream, projecting its fields onto
 // the neutral surface: the [ValueField] field (when present) becomes the raw
-// value, the [KeyHeader] field (when present) becomes the routing key, and every
-// field is exposed as a header. The key falls back to the stream name so the
-// Hopper always has a deterministic shard key on a backend with no partitions.
+// value and the [KeyHeader] field (when present) becomes the routing key. The
+// key falls back to the stream name so the Hopper always has a deterministic
+// shard key on a backend with no partitions. Headers are deferred to the first
+// [message.Headers] call.
 func newMessage(stream string, entry goredis.XMessage) *message {
-	headers := make(source.Headers, 0, len(entry.Values))
 	var value []byte
-	for k, v := range entry.Values {
-		s := toString(v)
-		headers = append(headers, source.Header{Key: k, Value: s})
-		if k == ValueField {
-			value = []byte(s)
-		}
+	if v, ok := entry.Values[ValueField]; ok {
+		value = []byte(toString(v))
 	}
 
 	key := []byte(stream)
@@ -66,11 +65,10 @@ func newMessage(stream string, entry goredis.XMessage) *message {
 	}
 
 	return &message{
-		entry:   entry,
-		stream:  stream,
-		headers: headers,
-		key:     key,
-		value:   value,
+		entry:  entry,
+		stream: stream,
+		key:    key,
+		value:  value,
 	}
 }
 
@@ -99,8 +97,20 @@ func (m *message) Key() []byte { return m.key }
 // nil. The full set of entry fields remains available through [message.Headers].
 func (m *message) Value() []byte { return m.value }
 
-// Headers returns the entry's fields as a value-type slice.
-func (m *message) Headers() source.Headers { return m.headers }
+// Headers returns the entry's fields as a value-type slice, materializing it on
+// first call and caching it so repeated reads are cheap. The order follows
+// go-redis's map iteration and is not significant; a handler keys by header name.
+func (m *message) Headers() source.Headers {
+	if !m.built {
+		headers := make(source.Headers, 0, len(m.entry.Values))
+		for k, v := range m.entry.Values {
+			headers = append(headers, source.Header{Key: k, Value: toString(v)})
+		}
+		m.headers = headers
+		m.built = true
+	}
+	return m.headers
+}
 
 // Subject returns the stream the entry arrived on.
 func (m *message) Subject() string { return m.stream }
