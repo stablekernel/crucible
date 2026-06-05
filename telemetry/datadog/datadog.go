@@ -123,13 +123,22 @@ func (s *span) SetStatus(code telemetry.StatusCode, msg string) {
 	if s.ended {
 		return
 	}
-	if code == telemetry.StatusError && s.err == nil {
-		// SetStatus(Error) without a recorded error still marks the span errored;
-		// synthesize an error carrying the status message.
-		if msg == "" {
-			msg = "error"
+	switch code {
+	case telemetry.StatusError:
+		if s.err == nil {
+			// SetStatus(Error) without a recorded error still marks the span errored;
+			// synthesize an error carrying the status message.
+			if msg == "" {
+				msg = "error"
+			}
+			s.err = statusError(msg)
 		}
-		s.err = statusError(msg)
+	case telemetry.StatusOK:
+		// An explicit OK overrides any previously recorded error so the span
+		// finishes clean. The error event was already appended by RecordError;
+		// clearing s.err only prevents End from finishing the span with
+		// tracer.WithError, which is what determines the error flag in Datadog.
+		s.err = nil
 	}
 }
 

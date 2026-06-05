@@ -112,18 +112,21 @@ func (t *Tracer) Start(ctx context.Context, name string, attrs ...telemetry.Attr
 	logAttrs = append(logAttrs, attrArgs(attrs)...)
 	t.cfg.logger.LogAttrs(ctx, sl.LevelDebug, "span.start", sl.Group("span", logAttrs...))
 
+	spanCtx := context.WithValue(ctx, spanIDKey{}, id)
 	s := &span{
 		cfg:   t.cfg,
+		ctx:   spanCtx,
 		name:  name,
 		id:    id,
 		start: t.cfg.now(),
 	}
-	return context.WithValue(ctx, spanIDKey{}, id), s
+	return spanCtx, s
 }
 
 // span is a telemetry.Span backed by slog.
 type span struct {
 	cfg       config
+	ctx       context.Context
 	name      string
 	id        uint64
 	start     time.Time
@@ -137,14 +140,14 @@ func (s *span) SetAttributes(attrs ...telemetry.Attr) {
 		return
 	}
 	args := append([]any{sl.String("name", s.name), sl.Uint64("id", s.id)}, attrArgs(attrs)...)
-	s.cfg.logger.LogAttrs(context.Background(), sl.LevelDebug, "span.attributes", sl.Group("span", args...))
+	s.cfg.logger.LogAttrs(s.ctx, sl.LevelDebug, "span.attributes", sl.Group("span", args...))
 }
 
 func (s *span) RecordError(err error) {
 	if s.ended || err == nil {
 		return
 	}
-	s.cfg.logger.LogAttrs(context.Background(), sl.LevelError, "span.error",
+	s.cfg.logger.LogAttrs(s.ctx, sl.LevelError, "span.error",
 		sl.Group("span",
 			sl.String("name", s.name),
 			sl.Uint64("id", s.id),
@@ -175,7 +178,7 @@ func (s *span) End() {
 	if s.statusMsg != "" {
 		args = append(args, sl.String("status_msg", s.statusMsg))
 	}
-	s.cfg.logger.LogAttrs(context.Background(), sl.LevelDebug, "span.end", sl.Group("span", args...))
+	s.cfg.logger.LogAttrs(s.ctx, sl.LevelDebug, "span.end", sl.Group("span", args...))
 }
 
 // Meter is a telemetry.Meter backed by slog.
@@ -183,8 +186,16 @@ type Meter struct {
 	logger *sl.Logger
 }
 
-// NewMeter returns a slog-backed Meter.
-func NewMeter(opts ...Option) *Meter { return &Meter{logger: resolve(opts...).logger} }
+// NewMeter returns a slog-backed Meter. Only WithLogger is meaningful for a
+// Meter; clock and ID options are accepted and ignored so callers can share an
+// option slice with NewTracer without error.
+func NewMeter(opts ...Option) *Meter {
+	c := config{logger: sl.New(sl.DiscardHandler)}
+	for _, opt := range opts {
+		opt(&c)
+	}
+	return &Meter{logger: c.logger}
+}
 
 // Counter returns a counter instrument that logs a "metric" record per Add.
 func (m *Meter) Counter(name string, opts ...telemetry.InstrumentOption) telemetry.Counter {

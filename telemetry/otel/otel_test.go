@@ -3,11 +3,14 @@ package otel_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
+	noopmeter "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -16,6 +19,25 @@ import (
 	"github.com/stablekernel/crucible/telemetry"
 	oteladapter "github.com/stablekernel/crucible/telemetry/otel"
 )
+
+// errMeterImpl embeds the OTel noop.Meter (which satisfies metric.Meter via
+// embedded.Meter) and overrides the three instrument constructors to return
+// errors, exercising the adapter's no-op fallback branches.
+type errMeterImpl struct {
+	noopmeter.Meter
+}
+
+func (errMeterImpl) Int64Counter(string, ...otelmetric.Int64CounterOption) (otelmetric.Int64Counter, error) {
+	return nil, fmt.Errorf("counter error")
+}
+
+func (errMeterImpl) Float64Histogram(string, ...otelmetric.Float64HistogramOption) (otelmetric.Float64Histogram, error) {
+	return nil, fmt.Errorf("histogram error")
+}
+
+func (errMeterImpl) Float64Gauge(string, ...otelmetric.Float64GaugeOption) (otelmetric.Float64Gauge, error) {
+	return nil, fmt.Errorf("gauge error")
+}
 
 // newTracer returns an adapter tracer plus the SpanRecorder capturing its spans.
 func newTracer() (*oteladapter.Tracer, *tracetest.SpanRecorder) {
@@ -50,7 +72,8 @@ func findAttr(set attribute.Set, key string) (attribute.Value, bool) {
 func TestTracer_SpanLifecycle(t *testing.T) {
 	tr, rec := newTracer()
 
-	ctx, span := tr.Start(context.Background(), "sink.Sink",
+	ctx, span := tr.Start(
+		context.Background(), "sink.Sink",
 		telemetry.String("payload.type", "Order"),
 		telemetry.Int64("count", 3),
 		telemetry.Bool("flush", true),
@@ -139,7 +162,8 @@ func TestTracer_Parentage(t *testing.T) {
 // TestTracer_AttrKinds exercises the duration/time/uint64/any conversions.
 func TestTracer_AttrKinds(t *testing.T) {
 	tr, rec := newTracer()
-	_, span := tr.Start(context.Background(), "op",
+	_, span := tr.Start(
+		context.Background(), "op",
 		telemetry.Duration("elapsed", 1500*time.Millisecond),
 		telemetry.Uint64("u", 42),
 		telemetry.Time("at", time.Unix(0, 0).UTC()),
@@ -222,5 +246,43 @@ func TestSpan_NoErrorOnNil(t *testing.T) {
 
 	if len(rec.Ended()[0].Events()) != 0 {
 		t.Error("RecordError(nil) should record no event")
+	}
+}
+
+// TestMeter_InstrumentErrorFallback asserts that when the OTel SDK returns an
+// error building an instrument the adapter falls back to a no-op — the method
+// never panics and the returned instrument is usable.
+func TestMeter_InstrumentErrorFallback(t *testing.T) {
+	mt := oteladapter.NewMeter(errMeterImpl{})
+
+	// All three constructors must succeed (no panic) and the returned instruments
+	// must be callable without panicking.
+	counter := mt.Counter("c")
+	histo := mt.Histogram("h")
+	gauge := mt.Gauge("g")
+
+	counter.Add(context.Background(), 1, telemetry.String("k", "v"))
+	histo.Record(context.Background(), 1.5)
+	gauge.Record(context.Background(), 42.0)
+}
+
+// TestConvertAttr_KindAnyStringify asserts that KindAny values are stringified
+// via slog.Value.String rather than falling through to a dead fmt.Sprintf branch.
+func TestConvertAttr_KindAnyStringify(t *testing.T) {
+	tr, rec := newTracer()
+	type custom struct{ Label string }
+	_, span := tr.Start(
+		context.Background(), "op",
+		telemetry.Any("obj", custom{Label: "hello"}),
+	)
+	span.End()
+
+	attrs := attribute.NewSet(rec.Ended()[0].Attributes()...)
+	v, ok := findAttr(attrs, "obj")
+	if !ok {
+		t.Fatal("obj attribute missing")
+	}
+	if v.AsString() == "" {
+		t.Errorf("expected non-empty stringification of Any value, got %q", v.AsString())
 	}
 }

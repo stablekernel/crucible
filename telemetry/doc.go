@@ -92,14 +92,18 @@
 //     deps) that emits spans and metrics as structured logs. Shipped here; it
 //     proves the seam end to end. Because Attr is slog.Attr, this adapter is
 //     conversion-free: attributes pass straight to the slog handler.
-//   - telemetry/otel, telemetry/datadog — deferred. Each would live in its own
-//     sub-module with its own go.mod that requires the vendor SDK, implement the
-//     same interfaces (Span.SetStatus -> otel status / dd error flag,
-//     ResolveInstrument -> instrument unit/description), and be wired by a
-//     consumer via WithTracer/WithMeter exactly like the slog adapter. They convert
-//     each attribute with a switch over Attr.Value.Kind (the slog.Value kind),
-//     reading the typed accessor for each scalar kind and Value.Any only for the
-//     KindAny escape hatch.
+//   - telemetry/otel — shipped. Lives in its own sub-module with its own go.mod
+//     that requires the OpenTelemetry SDK. Bridges Tracer/Meter onto an
+//     OpenTelemetry trace.Tracer and metric.Meter; Span.SetStatus maps to
+//     codes.Ok/Error/Unset; WithUnit/WithDescription are honored via the
+//     OpenTelemetry instrument options. Attributes are converted with a switch
+//     over Attr.Value.Kind.
+//   - telemetry/datadog — shipped. Lives in its own sub-module with its own
+//     go.mod that requires dd-trace-go / datadog-go. Bridges Tracer onto
+//     dd-trace-go spans and Meter onto DogStatsD; Span.SetStatus(StatusError)
+//     marks the span errored. Attributes are converted with a switch over
+//     Attr.Value.Kind, reading the typed accessor for each scalar kind and
+//     Value.Any only for the KindAny escape hatch.
 //
 // # Naming convention
 //
