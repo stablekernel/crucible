@@ -31,8 +31,8 @@ func kitchenBehavior() state.ActorBehavior {
 A state declares an actor invocation with `InvokeActor`, naming the signals fired when the actor completes or fails:
 
 ```go
-b.SubState(Cooking).InvokeActor("kitchen", PlatedUp, Declined)
-b.SubState(EnRoute).InvokeActor("courier", DroppedOff, Declined)
+b.SubState(Cooking).InvokeActor("kitchen", state.WithInvokeOnDone(PlatedUp), state.WithInvokeOnError(Declined))
+b.SubState(EnRoute).InvokeActor("courier", state.WithInvokeOnDone(DroppedOff), state.WithInvokeOnError(Declined))
 ```
 
 On entering `Cooking`, the kernel emits a spawn effect; the `ActorSystem` builds the actor and the host drives it. Address a running actor with its derived id and deliver events to it:

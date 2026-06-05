@@ -10,7 +10,7 @@ sidebar:
 
 A **service** is asynchronous work scoped to a state: authorize a payment, run a cancellation saga, call an external API. Unlike an effect (fire-and-forget data the host dispatches), a service has a lifecycle: it starts when the state is entered, and its completion feeds back into the machine as an event.
 
-Declare an invocation with `Invoke`, naming the service plus its `onDone` and `onError` events. The service is a context-aware function that may block and return a value or an error:
+Declare an invocation with `Invoke`, naming the service and routing its outcomes with `WithInvokeOnDone` / `WithInvokeOnError`. The service is a context-aware function that may block and return a value or an error:
 
 ```go
 type ServiceFn[C any] func(ctx context.Context, in state.ServiceCtx[C]) (any, error)
@@ -18,7 +18,7 @@ type ServiceFn[C any] func(ctx context.Context, in state.ServiceCtx[C]) (any, er
 reg.Service("authorize", authorizeFn)
 
 b.State(Authorizing).
-    Invoke("authorize", Authorized, Declined).
+    Invoke("authorize", state.WithInvokeOnDone(Authorized), state.WithInvokeOnError(Declined)).
     Transition(Authorizing).On(Authorized).GoTo(Active).Assign("recordHold").
     Transition(Authorizing).On(Declined).GoTo(Rejected).Assign("recordDecline")
 ```

@@ -68,7 +68,7 @@ func commParentMachine(childID string) *state.Machine[string, string, *trec] {
 			return nil, nil
 		}).
 		State("idle").
-		State("running").InvokeActor("relay", "relayDone", "relayErr").
+		State("running").InvokeActor("relay", state.WithInvokeOnDone("relayDone"), state.WithInvokeOnError("relayErr")).
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
 		Transition("idle").On("begin").GoTo("running").

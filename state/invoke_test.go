@@ -33,7 +33,7 @@ func invokeMachine(run **state.ServiceRunner[string, string, *trec]) *state.Mach
 			return nil, nil
 		}).
 		State("idle").
-		State("loading").Invoke("fetch", "ok", "fail").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
 		State("errored").
 		Initial("idle").
@@ -180,7 +180,7 @@ func TestInvoke_UnboundServiceQuench(t *testing.T) {
 
 	state.Forge[string, string, *trec]("unbound").
 		State("idle").
-		State("loading").Invoke("missing", "ok", "fail").
+		State("loading").Invoke("missing", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
@@ -196,7 +196,7 @@ func TestInvoke_RoundTrip(t *testing.T) {
 	m := state.Forge[string, string, *trec]("rt").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) { return nil, nil }).
 		State("idle").
-		State("loading").Invoke("fetch", "ok", "fail",
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail"),
 		state.WithInvokeID("svc-1"),
 		state.WithServiceParams(map[string]any{"url": "/x"}),
 		state.WithInput(map[string]any{"page": float64(2)})).
@@ -300,7 +300,7 @@ func TestInvoke_StartEffectsInitialState(t *testing.T) {
 	var run *state.ServiceRunner[string, string, *trec]
 	m := state.Forge[string, string, *trec]("boot").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) { return "p", nil }).
-		State("loading").Invoke("fetch", "ok", "fail").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
 		State("errored").
 		Initial("loading").

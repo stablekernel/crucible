@@ -143,7 +143,7 @@ func regionInvokeMachine() *state.Machine[string, string, *trec] {
 		Region("work").
 		Initial("wIdle").
 		SubState("wIdle").
-		SubState("wLoading").Invoke("fetch", "ok", "fail").
+		SubState("wLoading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		SubState("wReady").
 		SubState("wErrored").
 		EndRegion().
@@ -255,7 +255,7 @@ func regionActorMachine() *state.Machine[string, string, *trec] {
 		Region("work").
 		Initial("wIdle").
 		SubState("wIdle").
-		SubState("wSuper").InvokeActor("child", "childDone", "childErr").
+		SubState("wSuper").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		SubState("wDone").
 		EndRegion().
 		Region("side").

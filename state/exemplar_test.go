@@ -281,7 +281,7 @@ func buildConnMachine() *state.Machine[Conn, ConnEvent, Link] {
 		// Connecting invokes the dial service. On dial success it fires Dialed; on
 		// failure it falls back to Backoff to wait out a retry delay.
 		State(Connecting).
-		Invoke("dial", Dialed, DialFailed).
+		Invoke("dial", state.WithInvokeOnDone(Dialed), state.WithInvokeOnError(DialFailed)).
 		Transition(Connecting).On(DialFailed).GoTo(Backoff).
 		// Backoff waits out a connect-timeout delay, then the delayed Retry edge
 		// re-enters Connecting (re-arming the dial). This is the retry/backoff loop.
