@@ -6,123 +6,123 @@ import (
 	"time"
 )
 
-// ErrInvalidTransition is returned when no transition matched (current, event),
+// InvalidTransitionError is returned when no transition matched (current, event),
 // or all matching transitions had failing guards. From names the state the event
 // was fired in, Event the rejected event, and Reason the specific cause (no
 // declared transition, a final-state exit, an undeclared current state, ...). To
 // names the intended target when the rejected transition had one (a targeted
 // transition whose guards all failed); it is empty for an unmatched event with no
 // candidate target.
-type ErrInvalidTransition struct {
+type InvalidTransitionError struct {
 	From   string
 	To     string
 	Event  string
 	Reason string
 }
 
-func (e *ErrInvalidTransition) Error() string {
+func (e *InvalidTransitionError) Error() string {
 	if e.To != "" {
 		return fmt.Sprintf("crucible/state: invalid transition from %q to %q on %q: %s", e.From, e.To, e.Event, e.Reason)
 	}
 	return fmt.Sprintf("crucible/state: invalid transition from %q on %q: %s", e.From, e.Event, e.Reason)
 }
 
-// ErrGuardFailed is returned when a named guard returned false.
-type ErrGuardFailed struct {
+// GuardFailedError is returned when a named guard returned false.
+type GuardFailedError struct {
 	GuardName string
 	Reason    string
 }
 
-func (e *ErrGuardFailed) Error() string {
+func (e *GuardFailedError) Error() string {
 	return fmt.Sprintf("crucible/state: guard %q failed: %s", e.GuardName, e.Reason)
 }
 
-// ErrGuardPanic is returned when a guard panicked and was recovered.
-type ErrGuardPanic struct {
+// GuardPanicError is returned when a guard panicked and was recovered.
+type GuardPanicError struct {
 	GuardName string
 	Recovered any
 }
 
-func (e *ErrGuardPanic) Error() string {
+func (e *GuardPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: guard %q panicked: %v", e.GuardName, e.Recovered)
 }
 
-// ErrAssignPanic is returned when an assign reducer panicked and was recovered,
+// AssignPanicError is returned when an assign reducer panicked and was recovered,
 // or when an assign ref did not resolve at fire time. An assign is a total reducer,
 // so a panic is a programmer error the kernel surfaces as a typed failure that
 // stops the commit rather than leaving context partly folded.
-type ErrAssignPanic struct {
+type AssignPanicError struct {
 	AssignName string
 	Recovered  any
 }
 
-func (e *ErrAssignPanic) Error() string {
+func (e *AssignPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: assign %q panicked: %v", e.AssignName, e.Recovered)
 }
 
-// ErrPolicyDenied is returned when a policy returned Deny.
-type ErrPolicyDenied struct {
+// PolicyDeniedError is returned when a policy returned Deny.
+type PolicyDeniedError struct {
 	PolicyName string
 	Reason     string
 }
 
-func (e *ErrPolicyDenied) Error() string {
+func (e *PolicyDeniedError) Error() string {
 	return fmt.Sprintf("crucible/state: policy %q denied: %s", e.PolicyName, e.Reason)
 }
 
-// ErrUndeclaredState is returned when a state value was never declared.
-type ErrUndeclaredState struct {
+// UndeclaredStateError is returned when a state value was never declared.
+type UndeclaredStateError struct {
 	State string
 }
 
-func (e *ErrUndeclaredState) Error() string {
+func (e *UndeclaredStateError) Error() string {
 	return fmt.Sprintf("crucible/state: undeclared state %q", e.State)
 }
 
-// ErrUnboundRef is returned when a guard/action/effect ref in the IR did not
+// UnboundRefError is returned when a guard/action/effect ref in the IR did not
 // resolve against the registry (raised at Quench / Provide).
-type ErrUnboundRef struct {
+type UnboundRefError struct {
 	Kind string // "guard" | "action" | "assign" | "service"
 	Name string
 }
 
-func (e *ErrUnboundRef) Error() string {
+func (e *UnboundRefError) Error() string {
 	return fmt.Sprintf("crucible/state: unbound %s ref %q", e.Kind, e.Name)
 }
 
-// ErrActionFailed wraps a bound action that returned an error during emission.
-type ErrActionFailed struct {
+// ActionFailedError wraps a bound action that returned an error during emission.
+type ActionFailedError struct {
 	TransitionName string
 	ActionName     string
 	Cause          error
 }
 
-func (e *ErrActionFailed) Error() string {
+func (e *ActionFailedError) Error() string {
 	return fmt.Sprintf("crucible/state: action %q on transition %q failed: %v", e.ActionName, e.TransitionName, e.Cause)
 }
 
-func (e *ErrActionFailed) Unwrap() error { return e.Cause }
+func (e *ActionFailedError) Unwrap() error { return e.Cause }
 
-// ErrMicrostepOverflow is returned when a single Fire macrostep does not reach a
+// MicrostepOverflowError is returned when a single Fire macrostep does not reach a
 // stable configuration within the run-to-completion step budget. It indicates a
 // cycle of raised internal events or eventless ("always") transitions that never
 // settles.
-type ErrMicrostepOverflow struct {
+type MicrostepOverflowError struct {
 	Limit int
 	State string
 }
 
-func (e *ErrMicrostepOverflow) Error() string {
+func (e *MicrostepOverflowError) Error() string {
 	return fmt.Sprintf("crucible/state: run-to-completion did not stabilize within %d microsteps (at %q): a raise/eventless cycle", e.Limit, e.State)
 }
 
-// ErrNoPath is returned by PlanPath when no event sequence connects from->to.
-type ErrNoPath struct {
+// NoPathError is returned by PlanPath when no event sequence connects from->to.
+type NoPathError struct {
 	From string
 	To   string
 }
 
-func (e *ErrNoPath) Error() string {
+func (e *NoPathError) Error() string {
 	return fmt.Sprintf("crucible/state: no path from %q to %q", e.From, e.To)
 }
 
@@ -141,39 +141,39 @@ func (e *WaitTimeoutError) Error() string {
 	return fmt.Sprintf("crucible/state: WaitFor on machine %q timed out after %s in state %q", e.Machine, e.Timeout, e.Last)
 }
 
-// ErrNoInitialState is returned/panicked by Cast when neither a CurrentStateFn
+// NoInitialStateError is returned/panicked by Cast when neither a CurrentStateFn
 // is declared on the machine nor an explicit initial state is supplied via
 // WithInitialState — there is no way to derive the instance's starting state.
 // This is a programmer error, consistent with Quench's panic-on-misuse posture.
-type ErrNoInitialState struct {
+type NoInitialStateError struct {
 	Machine string
 }
 
-func (e *ErrNoInitialState) Error() string {
+func (e *NoInitialStateError) Error() string {
 	return fmt.Sprintf("crucible/state: cannot Cast machine %q: no CurrentStateFn declared and no WithInitialState supplied", e.Machine)
 }
 
-// ErrUnknownBuiltin is returned when a ref names a kernel built-in action the
+// UnknownBuiltinError is returned when a ref names a kernel built-in action the
 // kernel does not recognize. It is a defensive programmer-error signal: the DSL
 // and lint only ever produce known built-in names, so this surfaces only a
 // hand-constructed or corrupted ref.
-type ErrUnknownBuiltin struct {
+type UnknownBuiltinError struct {
 	Name string
 }
 
-func (e *ErrUnknownBuiltin) Error() string {
+func (e *UnknownBuiltinError) Error() string {
 	return fmt.Sprintf("crucible/state: unknown built-in action %q", e.Name)
 }
 
-// ErrUnboundActor is returned by an ActorSystem when a SpawnActor's Src does not
+// UnboundActorError is returned by an ActorSystem when a SpawnActor's Src does not
 // resolve against the system's actor palette — no child-machine factory was
 // registered under that name. The actor is settled as an error so the parent
 // still routes its onError rather than hanging.
-type ErrUnboundActor struct {
+type UnboundActorError struct {
 	Name string
 }
 
-func (e *ErrUnboundActor) Error() string {
+func (e *UnboundActorError) Error() string {
 	return fmt.Sprintf("crucible/state: unbound actor ref %q", e.Name)
 }
 
@@ -218,14 +218,14 @@ func (e *SnapshotVersionError) Error() string {
 		e.Kind, e.Machine, e.Got, e.Want, e.Reason)
 }
 
-// MultiRegionErr aggregates the errors raised by more than one orthogonal
+// MultiRegionError aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.
-type MultiRegionErr struct {
+type MultiRegionError struct {
 	Errors []error
 }
 
-func (e *MultiRegionErr) Error() string {
+func (e *MultiRegionError) Error() string {
 	msgs := make([]string, 0, len(e.Errors))
 	for _, err := range e.Errors {
 		msgs = append(msgs, err.Error())
@@ -234,7 +234,7 @@ func (e *MultiRegionErr) Error() string {
 }
 
 // Unwrap exposes the per-region errors for errors.As / errors.Is traversal.
-func (e *MultiRegionErr) Unwrap() []error { return e.Errors }
+func (e *MultiRegionError) Unwrap() []error { return e.Errors }
 
 // VerifyError aggregates one or more failing requirements found by Verify.
 type VerifyError struct {
@@ -249,33 +249,33 @@ func (e *VerifyError) Error() string {
 	return fmt.Sprintf("crucible/state: verify failed: %s", strings.Join(names, ", "))
 }
 
-// ErrUnsupportedSchema is returned by LoadFromJSON when an IR document declares a
+// UnsupportedSchemaError is returned by LoadFromJSON when an IR document declares a
 // schema major version newer than the loader supports. The reject-higher-major
 // policy is the reserved compatibility seam: a higher minor (same major) loads,
 // preserving unknown fields for forward-compat, but a higher major signals a wire
 // form this build cannot safely interpret and is refused rather than guessed at.
-type ErrUnsupportedSchema struct {
+type UnsupportedSchemaError struct {
 	// Got is the schemaVersion declared in the document.
 	Got string
 	// Supported is the loader's own schema version.
 	Supported string
 }
 
-func (e *ErrUnsupportedSchema) Error() string {
+func (e *UnsupportedSchemaError) Error() string {
 	return fmt.Sprintf("crucible/state: unsupported schema version %q (loader supports %q)", e.Got, e.Supported)
 }
 
-// ErrUnknownEffectKind is returned by EffectRegistry.Dispatchable when an effect
+// UnknownEffectKindError is returned by EffectRegistry.Dispatchable when an effect
 // carries a kind the registry does not recognize. It realizes the reject half of
 // the closed-enum extension policy for effect kinds: an unknown kind is preserved
 // on load (as an UnknownEffect) so a foreign effect round-trips losslessly, but
 // it is refused at dispatch rather than silently applied — the host must register
 // the kind (RegisterEffect) or drop the effect deliberately.
-type ErrUnknownEffectKind struct {
+type UnknownEffectKindError struct {
 	// Kind is the unrecognized effect discriminant.
 	Kind string
 }
 
-func (e *ErrUnknownEffectKind) Error() string {
+func (e *UnknownEffectKindError) Error() string {
 	return fmt.Sprintf("crucible/state: unknown effect kind %q (not registered for dispatch)", e.Kind)
 }

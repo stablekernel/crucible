@@ -176,7 +176,7 @@ func evalActorBuiltinAction(a Ref) (Effect, error) {
 		id, _ := a.Params[stopActorIDParam].(string)
 		return StopActor{ID: id}, nil
 	default:
-		return nil, &ErrUnknownBuiltin{Name: a.Name}
+		return nil, &UnknownBuiltinError{Name: a.Name}
 	}
 }
 

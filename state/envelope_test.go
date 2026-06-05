@@ -222,9 +222,9 @@ func TestLoadFromJSON_RejectHigherMajor(t *testing.T) {
 				t.Fatalf("LoadFromJSON(%q) err = %v, want nil", ver, err)
 			}
 			if tc.wantError {
-				var ue *state.ErrUnsupportedSchema
+				var ue *state.UnsupportedSchemaError
 				if !errors.As(err, &ue) {
-					t.Fatalf("err = %v, want *ErrUnsupportedSchema", err)
+					t.Fatalf("err = %v, want *UnsupportedSchemaError", err)
 				}
 			}
 		})

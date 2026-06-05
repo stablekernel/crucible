@@ -176,9 +176,9 @@ func TestEffectRegistry_UnknownKind_RejectedOnDispatch(t *testing.T) {
 	if derr := reg.Dispatchable(eff); derr == nil {
 		t.Fatal("Dispatchable(unknown) = nil, want typed rejection")
 	} else {
-		var ue *ErrUnknownEffectKind
+		var ue *UnknownEffectKindError
 		if !errors.As(derr, &ue) {
-			t.Fatalf("Dispatchable error = %T, want *ErrUnknownEffectKind", derr)
+			t.Fatalf("Dispatchable error = %T, want *UnknownEffectKindError", derr)
 		}
 		if ue.Kind != "vendor.future" {
 			t.Fatalf("rejected kind = %q", ue.Kind)

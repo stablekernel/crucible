@@ -207,7 +207,7 @@ func (d *differ[S, E, C]) diffStates(prefix string, oldStates, newStates []state
 			d.r.add(Change{
 				Kind:        KindStateRemoved,
 				Path:        path,
-				Description: fmt.Sprintf("state %q removed; entities persisted in it hit ErrInvalidTransition (a rename appears as remove+add)", name),
+				Description: fmt.Sprintf("state %q removed; entities persisted in it hit InvalidTransitionError (a rename appears as remove+add)", name),
 				Breaking:    true,
 			})
 			continue
@@ -313,7 +313,7 @@ func (d *differ[S, E, C]) diffTransitions(statePath string, oldTr, newTr []state
 			d.r.add(Change{
 				Kind:        KindTransitionRemoved,
 				Path:        tpath,
-				Description: fmt.Sprintf("transition on %q removed; paths relying on it become ErrNoPath", key.on),
+				Description: fmt.Sprintf("transition on %q removed; paths relying on it become NoPathError", key.on),
 				Breaking:    true,
 			})
 			continue

@@ -128,9 +128,9 @@ func TestFinal_RejectsOutgoing(t *testing.T) {
 	m := buildJobMachine()
 	inst := m.Cast(&Job{Status: JobDone})
 	res := inst.Fire(context.Background(), Cancel)
-	var it *state.ErrInvalidTransition
+	var it *state.InvalidTransitionError
 	if !errors.As(res.Err, &it) {
-		t.Fatalf("err = %v, want *ErrInvalidTransition", res.Err)
+		t.Fatalf("err = %v, want *InvalidTransitionError", res.Err)
 	}
 }
 
@@ -275,7 +275,7 @@ func TestHSM_JobRoundTrip(t *testing.T) {
 }
 
 // TestParallel_MultiRegionErr asserts that when two regions both match an event
-// but fail their guards, the result is a MultiRegionErr unwrapping each region's
+// but fail their guards, the result is a MultiRegionError unwrapping each region's
 // typed error.
 func TestParallel_MultiRegionErr(t *testing.T) {
 	type s = int
@@ -316,16 +316,16 @@ func TestParallel_MultiRegionErr(t *testing.T) {
 	inst := m.Cast(nil)
 	inst.Fire(context.Background(), on)
 	res := inst.Fire(context.Background(), step)
-	var multi *state.MultiRegionErr
+	var multi *state.MultiRegionError
 	if !errors.As(res.Err, &multi) {
-		t.Fatalf("err = %v, want *MultiRegionErr", res.Err)
+		t.Fatalf("err = %v, want *MultiRegionError", res.Err)
 	}
 	if len(multi.Errors) != 2 {
-		t.Fatalf("MultiRegionErr.Errors = %d, want 2", len(multi.Errors))
+		t.Fatalf("MultiRegionError.Errors = %d, want 2", len(multi.Errors))
 	}
-	var gf *state.ErrGuardFailed
+	var gf *state.GuardFailedError
 	if !errors.As(res.Err, &gf) {
-		t.Fatalf("MultiRegionErr does not unwrap to *ErrGuardFailed: %v", res.Err)
+		t.Fatalf("MultiRegionError does not unwrap to *GuardFailedError: %v", res.Err)
 	}
 }
 

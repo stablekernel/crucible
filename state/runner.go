@@ -237,7 +237,7 @@ func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) []FireResu
 	}
 	fn := r.resolve(rs.src.Name)
 	if fn == nil {
-		res, _ := r.SettleError(ctx, id, &ErrUnboundRef{Kind: "service", Name: rs.src.Name})
+		res, _ := r.SettleError(ctx, id, &UnboundRefError{Kind: "service", Name: rs.src.Name})
 		return []FireResult[S]{res}
 	}
 	out, err := fn(ctx, ServiceCtx[C]{Entity: r.inst.entity, Params: rs.src.Params, Input: rs.input})

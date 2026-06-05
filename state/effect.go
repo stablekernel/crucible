@@ -141,7 +141,7 @@ func (e *EffectEnvelope) UnmarshalJSON(data []byte) error {
 // unknown effect survives a load -> save cycle byte-for-byte (forward-compat,
 // per the closed-enum extension policy). It implements KindedEffect, so it can be
 // re-marshaled, but it is never dispatchable — EffectRegistry.Dispatchable
-// rejects it with a typed *ErrUnknownEffectKind. The kernel never produces an
+// rejects it with a typed *UnknownEffectKindError. The kernel never produces an
 // UnknownEffect; only deserialization of a foreign envelope yields one.
 type UnknownEffect struct {
 	// EffectKind is the unrecognized discriminant, preserved verbatim.
@@ -252,7 +252,7 @@ func (r *EffectRegistry) Unmarshal(env EffectEnvelope) (Effect, error) {
 // means the effect carries a kind the registry recognizes (or is not kinded at
 // all — a bare domain effect the kernel never gated). An UnknownEffect, or any
 // KindedEffect whose kind the registry does not know, is rejected with a typed
-// *ErrUnknownEffectKind, completing the preserve-on-load, reject-on-dispatch
+// *UnknownEffectKindError, completing the preserve-on-load, reject-on-dispatch
 // policy: a foreign effect is never silently applied.
 func (r *EffectRegistry) Dispatchable(eff Effect) error {
 	ke, ok := eff.(KindedEffect)
@@ -262,7 +262,7 @@ func (r *EffectRegistry) Dispatchable(eff Effect) error {
 		return nil
 	}
 	if _, known := r.factories[ke.Kind()]; !known {
-		return &ErrUnknownEffectKind{Kind: ke.Kind()}
+		return &UnknownEffectKindError{Kind: ke.Kind()}
 	}
 	return nil
 }

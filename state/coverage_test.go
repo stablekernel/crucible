@@ -16,17 +16,17 @@ func TestErrorMessages(t *testing.T) {
 		err  error
 		want string
 	}{
-		{&state.ErrInvalidTransition{From: "Draft", Event: "Submit", Reason: "no match"}, "invalid transition"},
-		{&state.ErrInvalidTransition{From: "Draft", To: "Approved", Event: "Approve", Reason: "guards failed"}, "from \"Draft\" to \"Approved\""},
-		{&state.ErrGuardFailed{GuardName: "hasReviewer", Reason: "nil"}, "guard \"hasReviewer\" failed"},
-		{&state.ErrGuardPanic{GuardName: "g", Recovered: "boom"}, "panicked"},
-		{&state.ErrPolicyDenied{PolicyName: "p", Reason: "denied"}, "policy \"p\" denied"},
-		{&state.ErrUndeclaredState{State: "Ghost"}, "undeclared state \"Ghost\""},
-		{&state.ErrUnboundRef{Kind: "guard", Name: "g"}, "unbound guard ref \"g\""},
-		{&state.ErrActionFailed{ActionName: "a", TransitionName: "t", Cause: errors.New("x")}, "action \"a\""},
-		{&state.ErrNoPath{From: "A", To: "B"}, "no path from \"A\" to \"B\""},
-		{&state.ErrNoInitialState{Machine: "m"}, "no CurrentStateFn"},
-		{&state.MultiRegionErr{Errors: []error{errors.New("r1"), errors.New("r2")}}, "2 regions errored"},
+		{&state.InvalidTransitionError{From: "Draft", Event: "Submit", Reason: "no match"}, "invalid transition"},
+		{&state.InvalidTransitionError{From: "Draft", To: "Approved", Event: "Approve", Reason: "guards failed"}, "from \"Draft\" to \"Approved\""},
+		{&state.GuardFailedError{GuardName: "hasReviewer", Reason: "nil"}, "guard \"hasReviewer\" failed"},
+		{&state.GuardPanicError{GuardName: "g", Recovered: "boom"}, "panicked"},
+		{&state.PolicyDeniedError{PolicyName: "p", Reason: "denied"}, "policy \"p\" denied"},
+		{&state.UndeclaredStateError{State: "Ghost"}, "undeclared state \"Ghost\""},
+		{&state.UnboundRefError{Kind: "guard", Name: "g"}, "unbound guard ref \"g\""},
+		{&state.ActionFailedError{ActionName: "a", TransitionName: "t", Cause: errors.New("x")}, "action \"a\""},
+		{&state.NoPathError{From: "A", To: "B"}, "no path from \"A\" to \"B\""},
+		{&state.NoInitialStateError{Machine: "m"}, "no CurrentStateFn"},
+		{&state.MultiRegionError{Errors: []error{errors.New("r1"), errors.New("r2")}}, "2 regions errored"},
 		{&state.VerifyError{Failures: []state.RequirementFailure{{Name: "req"}}}, "verify failed"},
 	}
 	for _, c := range cases {
@@ -64,20 +64,20 @@ func TestOutcomeString(t *testing.T) {
 // errors.As/Unwrap.
 func TestErrActionFailed_Unwrap(t *testing.T) {
 	cause := errors.New("root")
-	err := error(&state.ErrActionFailed{ActionName: "a", Cause: cause})
+	err := error(&state.ActionFailedError{ActionName: "a", Cause: cause})
 	if !errors.Is(err, cause) {
-		t.Fatal("ErrActionFailed should unwrap to its cause")
+		t.Fatal("ActionFailedError should unwrap to its cause")
 	}
 }
 
 // TestMultiRegionErr_Unwrap asserts a typed region error is reachable through
 // the aggregate via errors.As.
 func TestMultiRegionErr_Unwrap(t *testing.T) {
-	inner := &state.ErrGuardFailed{GuardName: "g", Reason: "no"}
-	agg := error(&state.MultiRegionErr{Errors: []error{inner}})
-	var gf *state.ErrGuardFailed
+	inner := &state.GuardFailedError{GuardName: "g", Reason: "no"}
+	agg := error(&state.MultiRegionError{Errors: []error{inner}})
+	var gf *state.GuardFailedError
 	if !errors.As(agg, &gf) {
-		t.Fatal("MultiRegionErr should expose region errors to errors.As")
+		t.Fatal("MultiRegionError should expose region errors to errors.As")
 	}
 }
 
@@ -157,9 +157,9 @@ func TestQuenchError_Message(t *testing.T) {
 func TestVerify_UndeclaredState(t *testing.T) {
 	m := buildDocMachine()
 	err := m.Verify(DocState(99), &Document{})
-	var us *state.ErrUndeclaredState
+	var us *state.UndeclaredStateError
 	if !errors.As(err, &us) {
-		t.Fatalf("err = %v, want *ErrUndeclaredState", err)
+		t.Fatalf("err = %v, want *UndeclaredStateError", err)
 	}
 }
 

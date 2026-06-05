@@ -608,7 +608,7 @@ func (r *Registry[C]) Reducer(name string, fn AssignFn[C], opts ...DescribeOptio
 
 // Service registers a named invoked-service implementation. An invoke's Src ref
 // binds to it at Provide/Quench time exactly like a guard or action ref; an
-// unbound service ref fails Quench with the typed *ErrUnboundRef (Kind
+// unbound service ref fails Quench with the typed *UnboundRefError (Kind
 // "service"). The runner resolves and runs it when the owning state is entered.
 // An optional Describe option adds palette metadata; registering without one
 // still works and yields a minimal palette descriptor.
@@ -790,7 +790,7 @@ func (b *Builder[S, E, C]) Reducer(name string, fn AssignFn[C], opts ...Describe
 
 // Service registers a named invoked-service implementation into the builder's
 // palette, bound by an invoke's Src ref. An unbound service ref fails Quench with
-// the typed *ErrUnboundRef, mirroring guards and actions. An optional Describe
+// the typed *UnboundRefError, mirroring guards and actions. An optional Describe
 // option attaches palette metadata.
 func (b *Builder[S, E, C]) Service(name string, fn ServiceFn[C], opts ...DescribeOption) *Builder[S, E, C] {
 	b.reg.Service(name, fn, opts...)
@@ -1537,7 +1537,7 @@ func (m *Machine[S, E, C]) stateByName(name S) (*State[S, E, C], bool) {
 // given entity. The instance's starting state is derived from the entity via
 // the machine's CurrentStateFn; if no CurrentStateFn was declared, an explicit
 // initial state must be supplied via WithInitialState. When both are present,
-// WithInitialState wins. With neither, Cast panics with *ErrNoInitialState — a
+// WithInitialState wins. With neither, Cast panics with *NoInitialStateError — a
 // programmer error, consistent with Quench's panic-on-misuse posture.
 //
 // The entity value is held on the Instance and supplied to guards and actions
@@ -1555,7 +1555,7 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	case m.currentStateFn != nil:
 		current = m.currentStateFn(entity)
 	default:
-		panic(&ErrNoInitialState{Machine: m.name})
+		panic(&NoInitialStateError{Machine: m.name})
 	}
 
 	clock := cfg.clock

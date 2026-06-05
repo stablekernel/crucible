@@ -199,9 +199,9 @@ func TestCompositeGuard_FailureReportsLeaf(t *testing.T) {
 	if enabled {
 		t.Fatalf("expected guard failure")
 	}
-	var gf *state.ErrGuardFailed
+	var gf *state.GuardFailedError
 	if !errors.As(res.Err, &gf) {
-		t.Fatalf("want *ErrGuardFailed, got %T: %v", res.Err, res.Err)
+		t.Fatalf("want *GuardFailedError, got %T: %v", res.Err, res.Err)
 	}
 	if !strings.Contains(gf.GuardName, "b") {
 		t.Fatalf("failure should name leaf b, got %q", gf.GuardName)
@@ -222,9 +222,9 @@ func TestCompositeGuard_PanicSurfacesTyped(t *testing.T) {
 		Quench()
 	inst := m.Cast(gctx{}, state.WithInitialState("from"))
 	res := inst.Fire(context.Background(), "go")
-	var gp *state.ErrGuardPanic
+	var gp *state.GuardPanicError
 	if !errors.As(res.Err, &gp) {
-		t.Fatalf("want *ErrGuardPanic, got %T: %v", res.Err, res.Err)
+		t.Fatalf("want *GuardPanicError, got %T: %v", res.Err, res.Err)
 	}
 }
 
@@ -437,9 +437,9 @@ func TestGuardExpr_UnboundLeafPanicsAtQuench(t *testing.T) {
 		if r == nil {
 			t.Fatalf("expected Quench panic for unbound composite leaf")
 		}
-		var ub *state.ErrUnboundRef
+		var ub *state.UnboundRefError
 		if !errors.As(r.(error), &ub) {
-			t.Fatalf("want *ErrUnboundRef, got %T: %v", r, r)
+			t.Fatalf("want *UnboundRefError, got %T: %v", r, r)
 		}
 	}()
 	state.Forge[string, string, gctx]("u").

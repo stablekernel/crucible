@@ -358,7 +358,7 @@ type guardEval struct {
 // instance's live active configuration, with the same short-circuit semantics
 // short-circuits: And stops at the first false, Or stops at the first true, Not
 // inverts. A leaf guard that panics or fails to bind stops evaluation and
-// surfaces the typed error (ErrGuardPanic), exactly like a plain transition
+// surfaces the typed error (GuardPanicError), exactly like a plain transition
 // guard. The stateIn built-in reads the active spine, so it is correct for
 // atomic, compound, and parallel configurations.
 func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) guardEval {
@@ -451,7 +451,7 @@ func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) 
 		return guardEval{ok: true}
 
 	default:
-		return guardEval{err: &ErrGuardPanic{GuardName: string(g.Op), Recovered: "unknown guard op"}}
+		return guardEval{err: &GuardPanicError{GuardName: string(g.Op), Recovered: "unknown guard op"}}
 	}
 }
 

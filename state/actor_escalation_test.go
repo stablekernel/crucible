@@ -409,8 +409,8 @@ func TestActorEscalation_UnboundSrc_NoOnError_Escalates(t *testing.T) {
 	if esc == nil {
 		t.Fatal("unbound-src spawn failure was swallowed; LastEscalation = nil")
 	}
-	var unbound *state.ErrUnboundActor
+	var unbound *state.UnboundActorError
 	if !errors.As(esc, &unbound) {
-		t.Fatalf("escalation cause is not *ErrUnboundActor: %v", esc)
+		t.Fatalf("escalation cause is not *UnboundActorError: %v", esc)
 	}
 }

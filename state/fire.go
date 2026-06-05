@@ -256,7 +256,7 @@ func absorbMicrosteps(dst *Trace, sub Trace) {
 // microstepOverflow returns the macrostep result annotated with the typed
 // run-to-completion overflow error.
 func microstepOverflow[S comparable](res FireResult[S], state S) FireResult[S] {
-	res.Err = &ErrMicrostepOverflow{Limit: maxMicrosteps, State: fmtState(state)}
+	res.Err = &MicrostepOverflowError{Limit: maxMicrosteps, State: fmtState(state)}
 	res.Trace.Outcome = OutcomeInvalidTransition
 	res.NewState = state
 	return res
@@ -265,7 +265,7 @@ func microstepOverflow[S comparable](res FireResult[S], state S) FireResult[S] {
 // isNoTransition reports whether err is the "no transition declared" outcome —
 // the benign result of a raised event the current configuration does not handle.
 func isNoTransition(err error) bool {
-	var it *ErrInvalidTransition
+	var it *InvalidTransitionError
 	if as(err, &it) {
 		return it.Reason == "no transition declared for this state and event"
 	}
@@ -296,7 +296,7 @@ func (i *Instance[S, E, C]) fireOnce(ctx context.Context, event E) FireResult[S]
 
 	if _, ok := m.stateByName(from); !ok {
 		if _, ok := m.resolveNode(from); !ok {
-			err := &ErrInvalidTransition{
+			err := &InvalidTransitionError{
 				From:   fmtState(from),
 				Event:  fmt.Sprint(event),
 				Reason: "current state is not declared",
@@ -316,7 +316,7 @@ func (i *Instance[S, E, C]) fireOnce(ctx context.Context, event E) FireResult[S]
 	// A transition out of a final leaf is rejected (runtime guard mirroring the
 	// builder lint, for machines loaded from JSON).
 	if n, ok := m.resolveNode(from); ok && n.state.IsFinal {
-		err := &ErrInvalidTransition{
+		err := &InvalidTransitionError{
 			From:   fmtState(from),
 			Event:  fmt.Sprint(event),
 			Reason: "state is final",
@@ -368,7 +368,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 				if !ok {
 					passed = false
 					sawGuardFail = true
-					lastGuardErr = &ErrGuardFailed{GuardName: g.Name, Reason: "predicate returned false"}
+					lastGuardErr = &GuardFailedError{GuardName: g.Name, Reason: "predicate returned false"}
 					break
 				}
 			}
@@ -385,7 +385,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 				if !res.ok {
 					passed = false
 					sawGuardFail = true
-					lastGuardErr = &ErrGuardFailed{
+					lastGuardErr = &GuardFailedError{
 						GuardName: joinLeafs(res.failedLeafs),
 						Reason:    "composite guard failed",
 					}
@@ -401,12 +401,12 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 	if sawGuardFail {
 		tr.Outcome = OutcomeGuardFailed
 		if lastGuardErr == nil {
-			lastGuardErr = &ErrGuardFailed{Reason: "all candidate transitions failed their guards"}
+			lastGuardErr = &GuardFailedError{Reason: "all candidate transitions failed their guards"}
 		}
 		return FireResult[S]{NewState: from, Trace: tr, Err: lastGuardErr}
 	}
 
-	err := &ErrInvalidTransition{
+	err := &InvalidTransitionError{
 		From:   fmtState(from),
 		Event:  fmt.Sprint(event),
 		Reason: "no transition declared for this state and event",
@@ -492,7 +492,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{
+				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     errName, Cause: err,
 				},
@@ -503,7 +503,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{
+				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     aName, Cause: aErr,
 				},
@@ -568,7 +568,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
 		next, aName, aErr := i.applyAssigns(n.state.OnExitAssign, cur, eventData, &tr)
@@ -576,7 +576,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
+				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
 		cur = next
@@ -625,7 +625,7 @@ func (i *Instance[S, E, C]) commit(
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
 			NewState: i.current, Effects: effects, Trace: tr,
-			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 		}
 	}
 	tnext, taName, taErr := i.applyAssigns(t.Assigns, cur, eventData, &tr)
@@ -633,7 +633,7 @@ func (i *Instance[S, E, C]) commit(
 		tr.Outcome = OutcomeAssignFailed
 		return FireResult[S]{
 			NewState: i.current, Effects: effects, Trace: tr,
-			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: taName, Cause: taErr},
+			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: taName, Cause: taErr},
 		}
 	}
 	cur = tnext
@@ -652,7 +652,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: errName, Cause: err},
+				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
 		next, aName, aErr := i.applyAssigns(n.state.OnEntryAssign, cur, eventData, &tr)
@@ -660,7 +660,7 @@ func (i *Instance[S, E, C]) commit(
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
+				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
 		cur = next
@@ -687,7 +687,7 @@ func (i *Instance[S, E, C]) commit(
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
 			NewState: i.current, Effects: effects, Trace: tr,
-			Err: &ErrActionFailed{TransitionName: transName(from, to), ActionName: dname, Cause: derr},
+			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: dname, Cause: derr},
 		}
 	}
 
@@ -764,17 +764,17 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	return effects, "", nil
 }
 
-// evalGuard resolves and runs a guard ref, recovering panics into ErrGuardPanic.
+// evalGuard resolves and runs a guard ref, recovering panics into GuardPanicError.
 func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 	fn, found := m.guards[g.Name]
 	if !found {
 		// Unbound refs are caught at Quench; defensively treat as a guard panic.
-		return false, &ErrGuardPanic{GuardName: g.Name, Recovered: "unbound guard at fire time"}
+		return false, &GuardPanicError{GuardName: g.Name, Recovered: "unbound guard at fire time"}
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
-			err = &ErrGuardPanic{GuardName: g.Name, Recovered: r}
+			err = &GuardPanicError{GuardName: g.Name, Recovered: r}
 		}
 	}()
 	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
@@ -812,17 +812,17 @@ func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *T
 }
 
 // evalAssign resolves and runs an assign ref, folding the prior context into the
-// next. A reducer panic is recovered into a typed ErrAssignPanic so a faulty
+// next. A reducer panic is recovered into a typed AssignPanicError so a faulty
 // reducer fails the commit deterministically rather than corrupting context.
 func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err error) {
 	fn, found := m.assigns[a.Name]
 	if !found {
-		return cur, &ErrAssignPanic{AssignName: a.Name, Recovered: "unbound assign at fire time"}
+		return cur, &AssignPanicError{AssignName: a.Name, Recovered: "unbound assign at fire time"}
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			next = cur
-			err = &ErrAssignPanic{AssignName: a.Name, Recovered: r}
+			err = &AssignPanicError{AssignName: a.Name, Recovered: r}
 		}
 	}()
 	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params}), nil

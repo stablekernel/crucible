@@ -20,7 +20,7 @@ const (
 // exact errors.As-able value.
 type diagnostic struct {
 	Diagnostic
-	unboundRef *ErrUnboundRef
+	unboundRef *UnboundRefError
 }
 
 // quenchError wraps a non-ref lint finding so Quench panics with an error value
@@ -132,7 +132,7 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		b.checkRefs(&diags, "assign", sd.state.OnExitAssign, sd.state.OwnedBy, 0)
 
 		// Validate every invoked service's Src ref against the service registry,
-		// surfacing an unbound service as the same typed *ErrUnboundRef the DSL and
+		// surfacing an unbound service as the same typed *UnboundRefError the DSL and
 		// IR paths raise for guards and actions. Child-MACHINE actor invocations
 		// (ActorKindMachine) are exempt: their Src binds at the host ActorSystem's
 		// actor palette, not the service registry, and an unbound actor src is
@@ -323,7 +323,7 @@ type refSrc struct {
 	line int
 }
 
-// checkRefs appends an ErrUnboundRef diagnostic for every ref that does not
+// checkRefs appends an UnboundRefError diagnostic for every ref that does not
 // resolve in the builder's registry. The trailing src is optional.
 func (b *Builder[S, E, C]) checkRefs(diags *[]diagnostic, kind string, refs []Ref, _ string, _ int, src ...refSrc) {
 	var file string
@@ -346,7 +346,7 @@ func (b *Builder[S, E, C]) checkRefs(diags *[]diagnostic, kind string, refs []Re
 			_, ok = b.reg.assigns[r.Name]
 		}
 		if !ok {
-			ub := &ErrUnboundRef{Kind: kind, Name: r.Name}
+			ub := &UnboundRefError{Kind: kind, Name: r.Name}
 			*diags = append(*diags, diagnostic{
 				Diagnostic: Diagnostic{
 					Severity: diagError,

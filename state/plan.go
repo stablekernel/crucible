@@ -4,7 +4,7 @@ package state
 // `from` state to the `to` state, found by breadth-first search over the static
 // transition graph. Guards are honored against the supplied entity, so the
 // returned path is one the entity can actually traverse. The entity is never
-// mutated. ErrNoPath is returned when no sequence connects from->to.
+// mutated. NoPathError is returned when no sequence connects from->to.
 func (m *Machine[S, E, C]) PlanPath(from, to S, entity C, opts ...PlanOption) ([]E, error) {
 	cfg := planConfig{}
 	for _, o := range opts {
@@ -60,7 +60,7 @@ func (m *Machine[S, E, C]) PlanPath(from, to S, entity C, opts ...PlanOption) ([
 		}
 	}
 
-	return nil, &ErrNoPath{From: fmtState(from), To: fmtState(to)}
+	return nil, &NoPathError{From: fmtState(from), To: fmtState(to)}
 }
 
 // guardsPass reports whether every guard on a transition passes for the entity.

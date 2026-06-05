@@ -37,7 +37,7 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// Src is the named reference (plus serializable params) to the host-provided
 	// service implementation, bound from the service registry at Provide/Quench
 	// time exactly like a guard or action ref. An unbound Src fails Quench with
-	// the typed *ErrUnboundRef (Kind "service").
+	// the typed *UnboundRefError (Kind "service").
 	Src Ref `json:"src"`
 	// Input is the serializable input passed to the service when it starts,
 	// surfaced on the StartService effect as input. It is data only;

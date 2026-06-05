@@ -171,7 +171,7 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 // The binding is wired into the same name path Guard uses, so a guard registered
 // this way is indistinguishable to the kernel from a Go-func guard — it resolves
 // by name at Provide/Quench, evaluates synchronously inside the pure Fire step, and
-// surfaces a panic as the same typed ErrGuardPanic. The binding's EvalGuard is
+// surfaces a panic as the same typed GuardPanicError. The binding's EvalGuard is
 // adapted to a GuardFn over the in-process context view so the fire-time fast path
 // (which reads r.guards) finds it; the binding is also recorded on the parallel
 // binding seam so a future out-of-process transport can swap it under the same name.

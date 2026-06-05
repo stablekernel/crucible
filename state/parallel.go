@@ -98,7 +98,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
 				NewState: i.current, Effects: effects, Trace: tr,
-				Err: &ErrActionFailed{TransitionName: "onDone:" + fmtState(parallel), ActionName: dname, Cause: derr},
+				Err: &ActionFailedError{TransitionName: "onDone:" + fmtState(parallel), ActionName: dname, Cause: derr},
 			}
 		}
 		tr.Outcome = OutcomeSuccess
@@ -108,7 +108,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr, Err: regionErrs[0]}
 	default:
 		tr.Outcome = regionErrOutcome(regionErrs[0])
-		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr, Err: &MultiRegionErr{Errors: regionErrs}}
+		return FireResult[S]{NewState: i.current, Effects: effects, Trace: tr, Err: &MultiRegionError{Errors: regionErrs}}
 	}
 }
 
@@ -116,7 +116,7 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 // mirroring the main commit path: assign reducer failures use
 // OutcomeAssignFailed while guard failures use OutcomeGuardFailed.
 func regionErrOutcome(err error) Outcome {
-	var ap *ErrAssignPanic
+	var ap *AssignPanicError
 	if errors.As(err, &ap) {
 		return OutcomeAssignFailed
 	}
@@ -152,7 +152,7 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 				if !okg {
 					pass = false
-					err = &ErrGuardFailed{GuardName: g.Name, Reason: "predicate returned false"}
+					err = &GuardFailedError{GuardName: g.Name, Reason: "predicate returned false"}
 					break
 				}
 			}
@@ -163,7 +163,7 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 				if !res.ok {
 					pass = false
-					err = &ErrGuardFailed{GuardName: joinLeafs(res.failedLeafs), Reason: "composite guard failed"}
+					err = &GuardFailedError{GuardName: joinLeafs(res.failedLeafs), Reason: "composite guard failed"}
 				}
 			}
 			if pass {
@@ -346,7 +346,7 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 		}
 	}
 
-	err := &ErrInvalidTransition{
+	err := &InvalidTransitionError{
 		From:   fmtState(from),
 		Event:  fmt.Sprint(event),
 		Reason: "no transition declared for this state and event",
