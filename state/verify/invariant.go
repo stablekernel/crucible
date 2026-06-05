@@ -98,7 +98,7 @@ func NeverActive(s string) Invariant {
 
 // configGraph is the configuration-product view of a machine's IR: the structural
 // information needed to enumerate every reachable configuration of active leaves.
-// It is built from the same serialized public IR readTopology flattens, so a
+// It is built from the same serialized public IR Verify loads once, so a
 // code-built and a JSON-loaded machine explore identically.
 type configGraph struct {
 	// initial is the machine's initial state name; hasInitial guards the empty case.

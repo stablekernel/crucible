@@ -33,7 +33,7 @@ import (
 
 // searchGraph is the constrained-search view of a machine's IR: the structural
 // edges plus, for each node, the active-configuration members its entry brings
-// online. It is built from the same serialized public IR readTopology flattens,
+// online. It is built from the same serialized public IR Verify loads once,
 // so a code-built and a JSON-loaded machine search identically.
 type searchGraph struct {
 	// initial is the machine's initial state name; hasInitial guards the empty case.

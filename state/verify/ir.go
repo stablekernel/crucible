@@ -21,19 +21,8 @@ type topology struct {
 	parent map[string]string
 }
 
-// readTopology flattens the machine's IR into a topology. A machine whose IR
-// cannot be read yields the zero topology rather than panicking, matching
-// Verify's no-panic contract.
-func readTopology[S comparable, E comparable, C any](m *state.Machine[S, E, C]) topology {
-	ir, ok := loadIR(m)
-	if !ok {
-		return topology{parent: map[string]string{}}
-	}
-	return topologyFromIR(ir)
-}
-
-// topologyFromIR builds a topology from an already-loaded IR, so a caller that has
-// round-tripped the machine once can reuse it instead of re-serializing.
+// topologyFromIR builds a topology from an already-loaded IR. Verify loads the IR
+// once and passes it here rather than letting each builder re-serialize.
 func topologyFromIR[S comparable, E comparable, C any](ir *state.IR[S, E, C]) topology {
 	t := topology{parent: map[string]string{}}
 	for i := range ir.States {
@@ -57,16 +46,6 @@ func collectStates[S comparable, E comparable, C any](s *state.State[S, E, C], p
 			collectStates(&s.Regions[ri].States[i], name, t)
 		}
 	}
-}
-
-// initialName returns the machine's initial state name, or "" when the machine
-// declares no initial state.
-func initialName[S comparable, E comparable, C any](m *state.Machine[S, E, C]) string {
-	ir, ok := loadIR(m)
-	if !ok {
-		return ""
-	}
-	return initialNameFromIR(ir)
 }
 
 // initialNameFromIR returns the initial state name from an already-loaded IR.
