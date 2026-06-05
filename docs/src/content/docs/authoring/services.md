@@ -1,11 +1,11 @@
 ---
 title: Services
-description: Invoke async work on a state and route its completion back as an onDone event.
+description: Invoke async work on a state and route its completion back through the WithInvokeOnDone option.
 sidebar:
   order: 6
 ---
 
-<!-- IMAGE-SLOT: invoked-service (sky-squid dispatching a glowing courier-orb to an external system, a return thread carrying the onDone signal home) 16:9 -->
+<!-- IMAGE-SLOT: invoked-service (sky-squid dispatching a glowing courier-orb to an external system, a return thread carrying the completion signal home) 16:9 -->
 ![Services](../../../assets/invoked-service.png)
 
 A **service** is asynchronous work scoped to a state: authorize a payment, run a cancellation saga, call an external API. Unlike an effect (fire-and-forget data the host dispatches), a service has a lifecycle: it starts when the state is entered, and its completion feeds back into the machine as an event.
