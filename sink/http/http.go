@@ -12,12 +12,12 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	gohttp "net/http"
-	"strings"
 
 	csink "github.com/stablekernel/crucible/sink"
 )
@@ -35,7 +35,7 @@ type Doer interface {
 // A non-2xx status code is returned as an error that includes the status text.
 func Post(url, contentType string, body []byte) csink.Op[Doer] {
 	return csink.OpFunc[Doer](func(ctx context.Context, doer Doer) error {
-		req, err := gohttp.NewRequestWithContext(ctx, gohttp.MethodPost, url, strings.NewReader(string(body)))
+		req, err := gohttp.NewRequestWithContext(ctx, gohttp.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("http sink: build request: %w", err)
 		}

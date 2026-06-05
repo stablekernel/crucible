@@ -50,20 +50,26 @@ func NewManifold(opts ...Option) *Manifold {
 }
 
 // Attach adds outlets to the Manifold and returns it for chaining. It is safe
-// for concurrent use.
+// for concurrent use. Attach replaces the outlet slice with a freshly allocated
+// one (copy-on-write) rather than appending in place, so a concurrent Sink that
+// is iterating an earlier snapshot never observes a mutated backing array.
 func (m *Manifold) Attach(outlets ...Outlet) *Manifold {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.outlets = append(m.outlets, outlets...)
+	next := make([]Outlet, 0, len(m.outlets)+len(outlets))
+	next = append(next, m.outlets...)
+	next = append(next, outlets...)
+	m.outlets = next
 	return m
 }
 
-// snapshot returns a stable view of the attached outlets for one operation, so a
-// concurrent Attach never mutates the slice mid-fan-out.
+// snapshot returns the current outlet slice for one operation. Because Attach
+// is copy-on-write the returned slice is never mutated in place, so callers may
+// read it without copying; the RLock only guards reading the slice header.
 func (m *Manifold) snapshot() []Outlet {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]Outlet(nil), m.outlets...)
+	return m.outlets
 }
 
 // Sink fans payload out to every attached outlet, fire-and-forget. It starts a

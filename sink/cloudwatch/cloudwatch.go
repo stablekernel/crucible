@@ -42,10 +42,19 @@ func PutLogEvents(input *cloudwatchlogs.PutLogEventsInput) csink.Op[Client] {
 // group and stream. The event timestamp is set to the current time in
 // milliseconds since the Unix epoch, as required by the CloudWatch Logs API.
 // Callers that need to control the timestamp, sequence token, or multiple
-// events in one request should use [PutLogEvents] instead.
+// events in one request should use [PutLogEventAt] or [PutLogEvents] instead.
 func PutLogEvent(logGroup, logStream, message string) csink.Op[Client] {
+	return PutLogEventAt(logGroup, logStream, message, time.Now())
+}
+
+// PutLogEventAt returns an Op that sends a single log event stamped with the
+// supplied time. It is the deterministic, clock-injectable form of
+// [PutLogEvent]: tests pass a fixed time and assert the emitted timestamp
+// without depending on the wall clock. The time is converted to milliseconds
+// since the Unix epoch, as required by the CloudWatch Logs API.
+func PutLogEventAt(logGroup, logStream, message string, at time.Time) csink.Op[Client] {
 	return csink.OpFunc[Client](func(ctx context.Context, c Client) error {
-		ts := time.Now().UnixMilli()
+		ts := at.UnixMilli()
 		_, err := c.PutLogEvents(ctx, &cloudwatchlogs.PutLogEventsInput{
 			LogGroupName:  &logGroup,
 			LogStreamName: &logStream,

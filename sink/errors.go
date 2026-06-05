@@ -18,7 +18,9 @@ type Phase string
 
 const (
 	// PhaseTransform marks a failure turning a payload into a destination
-	// operation (a registry transformer returning an error-bearing op).
+	// operation. Registry transformers cannot themselves return an error, so the
+	// built-in Emitter never emits this phase today; it is reserved for outlets
+	// whose payload-to-operation step can fail and want to classify it.
 	PhaseTransform Phase = "transform"
 	// PhaseApply marks a failure applying the operation to the destination
 	// client (the write itself).
