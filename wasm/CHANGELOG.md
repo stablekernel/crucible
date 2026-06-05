@@ -5,6 +5,31 @@ All notable changes to `crucible/wasm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`CompileOption` / `WithRuntimeConfig`.** `Compile` takes a variadic
+  `...CompileOption` so configuration arrives additively without breaking the
+  signature. `WithRuntimeConfig` overrides the wazero RuntimeConfig the module is
+  built with.
+
+### Fixed
+
+- **Runaway-guest timeout.** The runtime is built with
+  `WithCloseOnContextDone(true)`, so a guest that never returns is interrupted when
+  the `Eval` context is canceled or hits its deadline, returning an error instead of
+  blocking the host. Pass a per-call timeout context for untrusted guests.
+- **Defensive ABI result indexing.** `Eval` guards the `alloc` and `eval` result
+  slices before indexing, so a misbehaving guest that returns no result fails the
+  call with an error rather than panicking the host.
+
+### Documentation
+
+- **ABI / allocator note.** The README no longer implies a general-purpose
+  allocator: `alloc` returns a writable region of at least `size` bytes, which the
+  reference guest backs with a fixed buffer. Added a timeout/cancellation section.
+
 ## [0.1.0]
 
 The first release of the WebAssembly behavior runtime for the `crucible/state`

@@ -39,11 +39,50 @@ type Module struct {
 	mu sync.Mutex
 }
 
+// CompileOption configures Compile. New capabilities arrive as additional options,
+// so the signature never breaks. No option changes the default behavior; each is
+// additive.
+type CompileOption func(*compileConfig)
+
+// compileConfig holds resolved CompileOption state for one Compile.
+type compileConfig struct {
+	runtimeConfig wazero.RuntimeConfig
+}
+
+// WithRuntimeConfig overrides the wazero RuntimeConfig the module is built with,
+// for hosts that need to tune compilation (interpreter vs compiler), memory
+// limits, or other wazero knobs. The default already closes a running guest when
+// the call context is done, so a caller that supplies its own config should retain
+// WithCloseOnContextDone(true) to keep timeout/cancellation working.
+func WithRuntimeConfig(cfg wazero.RuntimeConfig) CompileOption {
+	return func(c *compileConfig) {
+		if cfg != nil {
+			c.runtimeConfig = cfg
+		}
+	}
+}
+
 // Compile instantiates a behavior module from its WebAssembly bytes and resolves
 // its ABI exports. The bytes are a wasip1 module (a Go //go:wasmexport guest, or any
 // language's equivalent); WASI preview 1 is provided for the Go runtime's needs.
-func Compile(ctx context.Context, wasmBytes []byte) (*Module, error) {
-	rt := wazero.NewRuntime(ctx)
+//
+// The runtime is built with WithCloseOnContextDone(true), so a guest that runs away
+// (an infinite loop, a pathological input) is interrupted when the context passed to
+// Eval / Compile is canceled or hits its deadline: the call returns an error rather
+// than blocking the host indefinitely. Pass a per-call timeout context to bound a
+// guest's execution.
+func Compile(ctx context.Context, wasmBytes []byte, opts ...CompileOption) (*Module, error) {
+	cfg := compileConfig{
+		// Interrupt a running guest when the call context is done, so a runaway guest
+		// cannot block the host forever; a caller bounds execution with a timeout or
+		// cancelable context.
+		runtimeConfig: wazero.NewRuntimeConfig().WithCloseOnContextDone(true),
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	rt := wazero.NewRuntimeWithConfig(ctx, cfg.runtimeConfig)
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	// Instantiate as a reactor: run the module's _initialize (if present) but not
@@ -76,6 +115,12 @@ func (m *Module) Eval(ctx context.Context, request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wasm: alloc: %w", err)
 	}
+	// A conforming alloc returns one result (the pointer). A misbehaving guest may
+	// return none; index defensively so a malformed guest fails the call rather than
+	// panicking the host.
+	if len(allocRes) == 0 {
+		return nil, fmt.Errorf("wasm: alloc returned no result")
+	}
 	inPtr := uint32(allocRes[0])
 	if !m.mod.Memory().Write(inPtr, request) {
 		return nil, fmt.Errorf("wasm: writing %d-byte request at %d is out of range", len(request), inPtr)
@@ -84,6 +129,11 @@ func (m *Module) Eval(ctx context.Context, request []byte) ([]byte, error) {
 	evalRes, err := m.eval.Call(ctx, uint64(inPtr), uint64(len(request)))
 	if err != nil {
 		return nil, fmt.Errorf("wasm: eval: %w", err)
+	}
+	// A conforming eval returns one packed result. A misbehaving guest may return
+	// none; guard so a malformed guest fails the call rather than panicking the host.
+	if len(evalRes) == 0 {
+		return nil, fmt.Errorf("wasm: eval returned no result")
 	}
 	packed := evalRes[0]
 	outPtr, outLen := uint32(packed>>32), uint32(packed)

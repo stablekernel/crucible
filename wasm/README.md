@@ -54,16 +54,31 @@ A guest module exports two functions over its linear memory:
 
 | Export | Signature | Purpose |
 | --- | --- | --- |
-| `alloc` | `(size u32) u32` | reserve `size` bytes, return the pointer the host writes the request into |
+| `alloc` | `(size u32) u32` | return a pointer to a writable region of at least `size` bytes for the host to write the request into |
 | `eval`  | `(ptr u32, size u32) u64` | read the JSON request at `[ptr, ptr+size)`, evaluate, write the JSON response, return packed `(outPtr<<32 \| outLen)` |
 
 For a guard the request is `{"context": <ctx-json>}` and the response `{"ok": <bool>}`.
 Because the payloads are JSON, the same module works for any host language. A `Module`
 serializes concurrent `Eval` calls behind a mutex (one linear memory per instance).
 
+`alloc` need not be a general-purpose allocator. The reference guest backs it with a
+fixed input buffer at a stable address and simply returns that address, sizing the
+buffer large enough for expected requests; a guest is free to implement a real
+growing allocator instead. The host writes exactly `size` bytes there and reads the
+response back from the pointer `eval` returns. The host bounds-checks the response
+region against linear memory and rejects an out-of-range pointer/length rather than
+reading out of bounds.
+
 A guest can be written in any WASM-targeting language; the test suite compiles a tiny
 Go `//go:wasmexport` guest with the standard toolchain (`GOOS=wasip1 GOARCH=wasm`,
 `-buildmode=c-shared`), no TinyGo and no committed binary.
+
+## Timeout and cancellation
+
+The runtime is built so a guest that runs away (an infinite loop, a pathological
+input) does not block the host forever: pass a context with a deadline or cancel to
+`Eval`, and the call is interrupted and returns an error when the context is done.
+Bound each evaluation with a per-call timeout context for untrusted guests.
 
 ## Performance
 
