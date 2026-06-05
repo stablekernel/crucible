@@ -250,8 +250,8 @@ func NewAggregator(client Client, opts ...AggregatorOption) csink.Outlet {
 // directly; any other payload is resolved through the registry installed with
 // WithRegistry, and an unregistered type returns sink.ErrUnregistered. The
 // first Sink starts the background flush loop when an interval is configured.
-func (a *Aggregator) Sink(_ context.Context, payload any) error {
-	m, ok := a.metricFor(payload)
+func (a *Aggregator) Sink(ctx context.Context, payload any) error {
+	m, ok := a.metricFor(ctx, payload)
 	if !ok {
 		return csink.ErrUnregistered
 	}
@@ -263,7 +263,9 @@ func (a *Aggregator) Sink(_ context.Context, payload any) error {
 }
 
 // metricFor resolves payload to a Metric, either directly or via the registry.
-func (a *Aggregator) metricFor(payload any) (Metric, bool) {
+// The caller's context is threaded into the registry transformer so deadline
+// and trace propagation survive the resolution step.
+func (a *Aggregator) metricFor(ctx context.Context, payload any) (Metric, bool) {
 	if m, ok := payload.(Metric); ok {
 		return m, true
 	}
@@ -274,7 +276,7 @@ func (a *Aggregator) metricFor(payload any) (Metric, bool) {
 	if !ok {
 		return Metric{}, false
 	}
-	return transform(context.Background(), payload), true
+	return transform(ctx, payload), true
 }
 
 // Flush swaps the live window for a fresh one and emits the captured window to

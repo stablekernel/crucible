@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	csink "github.com/stablekernel/crucible/sink"
@@ -106,14 +107,18 @@ func marshalMetrics(metrics []Metric) string {
 		b.WriteString(m.Name)
 		if len(m.Labels) > 0 {
 			b.WriteByte('{')
-			first := true
-			// Iterate in a stable order for deterministic output.
-			for k, v := range m.Labels {
-				if !first {
+			// Sort the label keys so the serialized output is deterministic
+			// regardless of map iteration order.
+			keys := make([]string, 0, len(m.Labels))
+			for k := range m.Labels {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for i, k := range keys {
+				if i > 0 {
 					b.WriteByte(',')
 				}
-				fmt.Fprintf(&b, `%s="%s"`, k, v)
-				first = false
+				fmt.Fprintf(&b, `%s="%s"`, k, m.Labels[k])
 			}
 			b.WriteByte('}')
 		}
