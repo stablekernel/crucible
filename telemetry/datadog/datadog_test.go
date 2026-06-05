@@ -8,6 +8,7 @@ import (
 
 	"github.com/DataDog/datadog-go/v5/statsd"
 	"github.com/DataDog/dd-trace-go/v2/ddtrace/mocktracer"
+	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
 
 	"github.com/stablekernel/crucible/telemetry"
 	ddadapter "github.com/stablekernel/crucible/telemetry/datadog"
@@ -123,6 +124,74 @@ func TestTracer_StatusErrorWithoutRecordedError(t *testing.T) {
 	s := mt.FinishedSpans()[0]
 	if s.Tag("error.message") != "outlet failed" {
 		t.Errorf("error.message = %v, want 'outlet failed'", s.Tag("error.message"))
+	}
+}
+
+// TestTracer_StatusOKClearsPriorError asserts that SetStatus(StatusOK) after a
+// RecordError clears the recorded error so the span finishes without the
+// Datadog error flag.
+func TestTracer_StatusOKClearsPriorError(t *testing.T) {
+	mt := mocktracer.Start()
+	defer mt.Stop()
+
+	tr := ddadapter.NewTracer()
+	_, span := tr.Start(context.Background(), "op")
+	span.RecordError(errors.New("transient"))
+	// Caller decides the operation ultimately succeeded.
+	span.SetStatus(telemetry.StatusOK, "recovered")
+	span.End()
+
+	s := mt.FinishedSpans()[0]
+	if s.Tag("error.message") != nil {
+		t.Errorf("expected no error tag after StatusOK, got %v", s.Tag("error.message"))
+	}
+}
+
+// TestTracer_WithSpanStarter asserts the injected spanStarter is called and its
+// span is used instead of the default global tracer.
+func TestTracer_WithSpanStarter(t *testing.T) {
+	mt := mocktracer.Start()
+	defer mt.Stop()
+
+	called := false
+	starter := func(ctx context.Context, name string, opts ...tracer.StartSpanOption) (*tracer.Span, context.Context) {
+		called = true
+		return tracer.StartSpanFromContext(ctx, name, opts...)
+	}
+	tr := ddadapter.NewTracer(ddadapter.WithSpanStarter(starter))
+	_, span := tr.Start(context.Background(), "op")
+	span.End()
+
+	if !called {
+		t.Error("WithSpanStarter: custom starter was not called")
+	}
+	if len(mt.FinishedSpans()) != 1 {
+		t.Fatalf("got %d finished spans, want 1", len(mt.FinishedSpans()))
+	}
+}
+
+// TestAttrValue_Kinds exercises attrValue for duration, time, uint64, and any
+// kinds so tag conversion is covered end to end via the span path. mocktracer
+// normalizes many value types (duration → string, time → string, uint64 →
+// float64), so assertions check that each tag is present and non-nil.
+func TestAttrValue_Kinds(t *testing.T) {
+	mt := mocktracer.Start()
+	defer mt.Stop()
+
+	tr := ddadapter.NewTracer()
+	_, span := tr.Start(context.Background(), "op",
+		telemetry.Duration("elapsed", 1500*time.Millisecond),
+		telemetry.Time("at", time.Unix(0, 0).UTC()),
+		telemetry.Any("obj", struct{ X int }{1}),
+		telemetry.Uint64("u", 42),
+	)
+	span.End()
+
+	s := mt.FinishedSpans()[0]
+	for _, key := range []string{"elapsed", "at", "obj", "u"} {
+		if s.Tag(key) == nil {
+			t.Errorf("tag %q missing from span", key)
+		}
 	}
 }
 

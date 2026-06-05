@@ -32,7 +32,6 @@ package otel
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -194,11 +193,11 @@ func convertAttr(a telemetry.Attr) attribute.KeyValue {
 	}
 }
 
+// stringify renders v as a string for the default/KindAny case.
+// slog.Value.String resolves LogValuers and formats the value via fmt.Sprintf
+// for all kinds, so it is always a complete representation.
 func stringify(v slog.Value) string {
-	if s := v.String(); s != "" {
-		return s
-	}
-	return fmt.Sprintf("%v", v.Any())
+	return v.String()
 }
 
 // Compile-time assertions that the adapter types satisfy the telemetry
