@@ -83,6 +83,10 @@ func driveOn[K comparable, E comparable, C any](
 		}
 
 		eventID := cfg.eventID(m)
+		// Signal when the message carries no event id: dedup is impossible, so a
+		// redelivery would re-fire. Surfacing it on the span makes the silent loss
+		// of exactly-once visible in traces (supply WithEventID to fix it).
+		span.SetAttributes(telemetry.Bool("statemachine.exactly_once", eventID != ""))
 		if ok && eventID != "" && rec.LastEventID == eventID {
 			// Exactly-once into the machine: this id was already folded into the
 			// persisted version, so re-firing would double-apply. Ack and discard.

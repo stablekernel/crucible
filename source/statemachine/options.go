@@ -43,6 +43,12 @@ func (discardSink) Emit(context.Context, any) error { return nil }
 // "message-id" header ([DefaultEventIDHeader]) and falls back to the message
 // [source.Cursor] string; override it with [WithEventID] to read a different
 // header or derive an id from the decoded value.
+//
+// An empty id disables dedup for that message: with no id to compare against the
+// persisted LastEventID, a redelivery re-fires the transition. The bindings
+// surface this on their span (the "statemachine.exactly_once" attribute is false)
+// so a message stream that yields no id is visible in traces rather than silently
+// losing the guarantee. Return a non-empty stable id to keep exactly-once.
 type EventID func(m source.Message) string
 
 // DefaultEventIDHeader is the header [DefaultEventID] reads a message's

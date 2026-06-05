@@ -118,6 +118,10 @@ func DriveTx[K comparable, E comparable, C any](
 		}
 
 		eventID := cfg.eventID(m)
+		// Signal when the message carries no event id: without one the version
+		// dedup that covers a broker abort after Save cannot fire, so a redelivery
+		// would re-fire. Surface it on the span so the lost guarantee is visible.
+		span.SetAttributes(telemetry.Bool("statemachine.exactly_once", eventID != ""))
 		if loaded && eventID != "" && rec.LastEventID == eventID {
 			// Already folded into the persisted version: ack as a no-op. This is a
 			// plain offset advance, not a transactional produce, so it is settled by

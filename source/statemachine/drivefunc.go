@@ -29,9 +29,11 @@ type FireFunc[K comparable, E comparable] func(ctx context.Context, key K, event
 // where there is no durable [Store] to commit against.
 //
 // The emit hand-off, state-aware rejection, and the ack outcome match [Drive],
-// minus the load/save and minus version idempotency (a stateless binding has no
-// persisted version to dedup against, so redelivery re-fires; supply a [Deduper]
-// or use [Drive] for exactly-once):
+// minus the load/save and minus version idempotency: a stateless binding has no
+// persisted version to dedup against, so a redelivery re-fires. For idempotent
+// redelivery either use [Drive], whose persisted version skips an already-applied
+// event id, or add the source/idempotency middleware to the Hopper to suppress
+// duplicates before they reach this handler.
 //
 //   - Route/decode failure → [source.Term] (poison).
 //   - Fire rejected as illegal for the current state → [source.Reject]
