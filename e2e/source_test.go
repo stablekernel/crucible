@@ -23,9 +23,22 @@ import (
 // through the Store seam without any core importing another.
 
 // shipment is the entity a fulfillment instance advances. Funds gates the pay
-// transition so a guard rejection (invalid-for-state) is reachable.
+// transition so a guard rejection (invalid-for-state) is reachable. Stage
+// records the lifecycle state reached; CurrentStateFn reads it so a shipment
+// cast from an in-flight value resumes at its real state, not at pending.
 type shipment struct {
-	Funds bool `json:"funds"`
+	Funds bool   `json:"funds"`
+	Stage string `json:"stage"`
+}
+
+// currentStage derives a shipment's current state for CurrentStateFn. A nil
+// entity (a fresh cast with no record) or an empty Stage starts at pending;
+// otherwise the recorded stage is honored so resume lands on the real state.
+func currentStage(s *shipment) string {
+	if s == nil || s.Stage == "" {
+		return "pending"
+	}
+	return s.Stage
 }
 
 // shipEvent is the decoded inbound command carried in each message's JSON body.
@@ -51,7 +64,7 @@ func fulfillmentMachine() *state.Machine[string, string, *shipment] {
 		State("shipped").
 		State("delivered").
 		Initial("pending").
-		CurrentStateFn(func(*shipment) string { return "pending" }).
+		CurrentStateFn(currentStage).
 		Transition("pending").On("pay").GoTo("shipped").When("funded").
 		Transition("shipped").On("deliver").GoTo("delivered").
 		Quench(state.Strict())

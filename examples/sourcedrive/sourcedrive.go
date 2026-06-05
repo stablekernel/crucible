@@ -14,9 +14,23 @@ import (
 
 // Shipment is the entity each fulfillment instance carries. Funds gates the pay
 // transition, so an unfunded pay is a state-aware rejection rather than a
-// transient error.
+// transient error. Stage records the lifecycle state the shipment has reached;
+// CurrentStateFn reads it so a shipment cast from a record already in flight
+// resumes at its real state instead of restarting at pending.
 type Shipment struct {
-	Funds bool `json:"funds"`
+	Funds bool   `json:"funds"`
+	Stage string `json:"stage"`
+}
+
+// currentStage derives a shipment's current lifecycle state for CurrentStateFn.
+// A nil entity (a fresh cast with no record yet) or an empty Stage means the
+// instance has not advanced, so it starts at pending; otherwise the recorded
+// stage is honored so resume and seek land on the real state.
+func currentStage(s *Shipment) string {
+	if s == nil || s.Stage == "" {
+		return "pending"
+	}
+	return s.Stage
 }
 
 // Command is the JSON body of an inbound message: the event to fire against the
@@ -59,7 +73,7 @@ func NewFulfillment() *Fulfillment {
 		State("shipped").
 		State("delivered").
 		Initial("pending").
-		CurrentStateFn(func(*Shipment) string { return "pending" }).
+		CurrentStateFn(currentStage).
 		Transition("pending").On("pay").GoTo("shipped").When("funded").
 		Transition("shipped").On("deliver").GoTo("delivered").
 		Quench(state.Strict())
