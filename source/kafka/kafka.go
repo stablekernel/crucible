@@ -69,6 +69,12 @@ var ErrNoSeedBrokers = errors.New("source/kafka: no seed brokers configured")
 // [WithDLQTopic]. Match it with errors.Is.
 var ErrNoDLQTopic = errors.New("source/kafka: term requested but no dead-letter topic configured")
 
+// errTransactionalSingleSubscribe reports a second [Inlet.Subscribe] on a
+// transactional inlet. The exactly-once session backing a transactional inlet
+// fences a single consumer, so only one subscription per transactional inlet is
+// valid; open a fresh inlet for a second consumer. Match it with errors.Is.
+var errTransactionalSingleSubscribe = errors.New("source/kafka: a transactional inlet allows only one Subscribe")
+
 // config holds an [Inlet]'s resolved settings before a client is built. Every
 // field has a zero-value default; the only requirement is at least one seed
 // broker (or an injected client).
@@ -337,6 +343,14 @@ func (in *Inlet) transactOpts(sc source.SubscribeConfig) []kgo.Opt {
 func (in *Inlet) Subscribe(_ context.Context, cfg source.SubscribeConfig) (source.Subscription, error) {
 	if len(cfg.Topics) == 0 {
 		return nil, fmt.Errorf("source/kafka: subscribe: %w", errors.New("at least one topic required"))
+	}
+
+	// A transactional inlet is backed by a single GroupTransactSession that can
+	// fence exactly one consumer; a second Subscribe cannot share it, and a
+	// second subscription would silently come up without a transact session
+	// (Begin would report not-transactional). Reject it loudly instead.
+	if in.cfg.transact && in.transactSess != nil {
+		return nil, fmt.Errorf("source/kafka: %w", errTransactionalSingleSubscribe)
 	}
 
 	sub := &subscription{

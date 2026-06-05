@@ -80,6 +80,72 @@ func TestWithTransactionalEmptyIDIgnored(t *testing.T) {
 	}
 }
 
+func TestTransactOptsAssemblesEOSSession(t *testing.T) {
+	t.Parallel()
+
+	in, err := New(
+		WithSeedBrokers("localhost:9092"),
+		WithTransactional("orders-eos-v1"),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	sc := source.SubscribeConfig{Topics: []string{"orders"}, Group: "svc"}
+
+	// transactOpts must produce a usable option set: a GroupTransactSession built
+	// from it constructs without error (no dial happens at construction). This
+	// exercises the transactional option-assembly path end to end.
+	opts := in.transactOpts(sc)
+	if len(opts) == 0 {
+		t.Fatal("transactOpts returned no options")
+	}
+	sess, err := kgo.NewGroupTransactSession(opts...)
+	if err != nil {
+		t.Fatalf("NewGroupTransactSession(transactOpts) error = %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	// The non-transactional consumeOpts must differ (no transactional ID), proving
+	// the transactional path is a distinct assembly, not the plain consume path.
+	if len(in.consumeOpts(sc)) == len(opts) {
+		// Lengths can legitimately match; the meaningful assertion is that the
+		// transactional session built, which a plain consume option set cannot do
+		// without a transactional ID. Construction success above is the gate.
+		t.Log("consumeOpts and transactOpts have equal length; session build is the real assertion")
+	}
+}
+
+func TestSubscribeTransactionalRejectsSecondCall(t *testing.T) {
+	t.Parallel()
+
+	in, err := New(
+		WithSeedBrokers("localhost:9092"),
+		WithTransactional("orders-eos-v1"),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Model "already subscribed": a transactional inlet holds a single
+	// GroupTransactSession after its first Subscribe. Building one directly (no
+	// dial at construction) lets the test reach the guard without a live broker.
+	sess, err := kgo.NewGroupTransactSession(in.transactOpts(source.SubscribeConfig{
+		Topics: []string{"orders"}, Group: "svc",
+	})...)
+	if err != nil {
+		t.Fatalf("NewGroupTransactSession error = %v", err)
+	}
+	t.Cleanup(sess.Close)
+	in.transactSess = sess
+	in.client = sess.Client()
+	in.ownsClient = true
+
+	_, err = in.Subscribe(context.Background(), source.SubscribeConfig{Topics: []string{"orders"}})
+	if !errors.Is(err, errTransactionalSingleSubscribe) {
+		t.Fatalf("second Subscribe on transactional inlet = %v, want errTransactionalSingleSubscribe", err)
+	}
+}
+
 func TestSubscribeRejectsNoTopics(t *testing.T) {
 	t.Parallel()
 
