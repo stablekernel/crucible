@@ -13,6 +13,7 @@ replace (
 	github.com/stablekernel/crucible/state/expr => ../state/expr
 	github.com/stablekernel/crucible/telemetry => ../telemetry
 	github.com/stablekernel/crucible/transport => ../transport
+	github.com/stablekernel/crucible/wasm => ../wasm
 )
 
 require (
@@ -26,6 +27,7 @@ require (
 	github.com/stablekernel/crucible/state/expr v0.0.0-00010101000000-000000000000
 	github.com/stablekernel/crucible/telemetry v0.0.0
 	github.com/stablekernel/crucible/transport v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/wasm v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.81.1
 )
 
@@ -34,10 +36,11 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/google/cel-go v0.28.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/net v0.51.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
