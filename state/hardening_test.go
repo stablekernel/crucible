@@ -33,10 +33,7 @@ func TestImportGraph_StdlibOnly(t *testing.T) {
 // TestFireEach_FansAcrossInstances asserts FireEach drives one event across an
 // explicit set of instances, preserving per-instance attribution.
 func TestFireEach_FansAcrossInstances(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	a := m.Cast(&Document{Status: Draft})
 	b := m.Cast(&Document{Status: Draft})
 	results := state.FireEach(context.Background(), []*state.Instance[DocState, DocEvent, *Document]{a, b}, Submit)
@@ -56,10 +53,7 @@ func TestFireEach_FansAcrossInstances(t *testing.T) {
 // TestFireEach_StopsAtFirstError asserts the default fail-fast batch semantics:
 // firing an event invalid for the instances stops at the first error.
 func TestFireEach_StopsAtFirstError(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	a := m.Cast(&Document{Status: Published}) // Submit is invalid from Published
 	b := m.Cast(&Document{Status: Draft})
 	results := state.FireEach(context.Background(), []*state.Instance[DocState, DocEvent, *Document]{a, b}, Submit)
@@ -73,10 +67,7 @@ func TestFireEach_StopsAtFirstError(t *testing.T) {
 
 // TestFireEach_CollectAll asserts CollectAll runs every instance.
 func TestFireEach_CollectAll(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	a := m.Cast(&Document{Status: Published})
 	b := m.Cast(&Document{Status: Draft})
 	results := state.FireEach(
@@ -94,10 +85,7 @@ func TestFireEach_CollectAll(t *testing.T) {
 // byte-for-byte: ToJSON -> LoadFromJSON -> Provide -> Quench -> ToJSON yields
 // identical bytes (structure preserved losslessly).
 func TestRoundTrip_ByteIdentity(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	b1, err := m.ToJSON()
 	if err != nil {
 		t.Fatalf("ToJSON: %v", err)
@@ -119,10 +107,7 @@ func TestRoundTrip_ByteIdentity(t *testing.T) {
 // TestHistory_RecordsEveryFire asserts an instance accumulates a trace per Fire
 // when unbounded history retention is enabled.
 func TestHistory_RecordsEveryFire(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	inst := m.Cast(&Document{Status: Draft}, state.WithUnboundedHistory[DocState]())
 	inst.Fire(context.Background(), Submit)
 	inst.Fire(context.Background(), Archive) // Submitted->Archive is a valid transition

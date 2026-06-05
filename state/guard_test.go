@@ -464,6 +464,71 @@ func TestGuardExpr_MalformedAndPanicsAtQuench(t *testing.T) {
 		Quench()
 }
 
+// TestEventlessGuard_PanicDoesNotEnableTransition asserts the eventless safety
+// property guardsPass guarantees: a guard that panics on an Always (eventless)
+// transition is treated as not-passing, so the run-to-completion loop never
+// silently auto-fires the transition. The instance settles in the event-target
+// state and never advances through the guarded eventless edge. A swallowed panic
+// that enabled the transition would corrupt the macrostep, so the property is a
+// correctness invariant, not cosmetics.
+//
+// This is distinct from an event-triggered guard panic (covered by
+// TestCompositeGuard_PanicSurfacesTyped), which surfaces a typed
+// *GuardPanicError; the eventless selector is deliberately quieter — it must not
+// turn a faulty guard into an unguarded auto-transition.
+func TestEventlessGuard_PanicDoesNotEnableTransition(t *testing.T) {
+	tests := []struct {
+		name  string
+		guard func(*state.Builder[string, string, gctx]) *state.Builder[string, string, gctx]
+	}{
+		{
+			name: "plain guard ref panics",
+			guard: func(b *state.Builder[string, string, gctx]) *state.Builder[string, string, gctx] {
+				return b.When("boom")
+			},
+		},
+		{
+			name: "composite guard expr panics",
+			guard: func(b *state.Builder[string, string, gctx]) *state.Builder[string, string, gctx] {
+				return b.WhenExpr(state.Not(state.Guard[string]("boom")))
+			},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.guard(
+				state.Forge[string, string, gctx]("eventless-guard").
+					Guard("boom", func(state.GuardCtx[gctx]) bool { panic("kaboom") }).
+					State("from").
+					Transition("from").On("go").GoTo("mid").
+					State("mid").
+					Always().GoTo("done"),
+			).
+				State("done").
+				Initial("from").
+				Quench()
+
+			inst := m.Cast(gctx{}, state.WithInitialState("from"))
+			res := inst.Fire(context.Background(), "go")
+
+			// The panicking eventless guard is not-passing: the auto-transition to
+			// "done" never fires, so the macrostep settles in the event-target.
+			if got := inst.Current(); got != "mid" {
+				t.Fatalf("current = %q, want mid (eventless edge must not auto-fire)", got)
+			}
+			// The swallowed panic does not poison the macrostep: the triggering
+			// event settled cleanly.
+			if res.Err != nil {
+				t.Fatalf("Fire err = %v, want nil (eventless guard panic is swallowed, not surfaced)", res.Err)
+			}
+			if res.Trace.Outcome != state.OutcomeSuccess {
+				t.Fatalf("outcome = %v, want OutcomeSuccess", res.Trace.Outcome)
+			}
+		})
+	}
+}
+
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {

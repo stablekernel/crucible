@@ -22,10 +22,7 @@ func docRegistry() *state.Registry[*Document] {
 // machine Forged in code and the same machine after ToJSON -> LoadFromJSON ->
 // Provide -> Quench behave identically.
 func TestRoundTrip_Identity(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 
 	jsonBytes, err := m.ToJSON()
 	if err != nil {
@@ -61,10 +58,7 @@ func TestRoundTrip_Identity(t *testing.T) {
 // TestProvide_UnboundRef asserts Provide fails with *UnboundRefError when a ref
 // name in the IR has no registry binding.
 func TestProvide_UnboundRef(t *testing.T) {
-	m, rec := safeBuild(t)
-	if rec != nil {
-		t.Skipf("build not implemented yet: %v", rec)
-	}
+	m := buildDocMachine()
 	jsonBytes, err := m.ToJSON()
 	if err != nil {
 		t.Fatalf("ToJSON err = %v", err)
