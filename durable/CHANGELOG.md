@@ -16,7 +16,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   clock's documentation promises.
 - **FileStore directory durability.** Atomic checkpoint writes now fsync the
   parent directory after the rename, so the rename itself survives a crash and the
-  documented crash-durability holds, not only the file's bytes.
+  documented crash-durability holds, not only the file's bytes. The directory sync
+  is split by build tag (`filestore_dirsync_other.go` for POSIX, a no-op
+  `filestore_dirsync_windows.go` for Windows) because Windows does not permit
+  opening a directory handle for sync — the file rename plus the file's own fsync
+  are sufficient for Windows crash durability.
 - **Actor replay error.** A recorded actor done-data payload that fails to decode
   is now surfaced as a replay error instead of being silently dropped, so a
   corrupt journal fails loudly rather than re-firing the parent with nil data.
