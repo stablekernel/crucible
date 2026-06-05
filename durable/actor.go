@@ -242,7 +242,11 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 	}
 	var res state.FireResult[S]
 	if mp.HasData {
-		res = inst.Fire(ctx, event, state.WithEventData(replayActorData(mp)))
+		data, derr := replayActorData(mp)
+		if derr != nil {
+			return fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.CorrelationID, derr)
+		}
+		res = inst.Fire(ctx, event, state.WithEventData(data))
 	} else {
 		res = inst.Fire(ctx, event)
 	}
@@ -255,18 +259,21 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 // replayActorData reconstructs the actor outcome a settling fire carried into the
 // parent transition's Assign: the reconstructed error for an onError fire, the
 // JSON-decoded done-data for an onDone fire, or nil when the actor completed with no
-// output.
-func replayActorData(mp actorMessagePayload) any {
+// output. A done-data payload that fails to decode is surfaced as an error rather
+// than silently dropped, so a corrupt journal fails replay loudly instead of
+// re-firing the parent with nil data it never saw on the live path.
+func replayActorData(mp actorMessagePayload) (any, error) {
 	if mp.Error != nil {
-		return errors.New(*mp.Error)
+		return errors.New(*mp.Error), nil
 	}
 	if len(mp.Data) > 0 {
 		var data any
-		if err := json.Unmarshal(mp.Data, &data); err == nil {
-			return data
+		if err := json.Unmarshal(mp.Data, &data); err != nil {
+			return nil, fmt.Errorf("unmarshaling actor done-data: %w", err)
 		}
+		return data, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // actorEntries returns the recorded actor transitions carried by a single Record,

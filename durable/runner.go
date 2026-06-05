@@ -82,7 +82,7 @@ type Handle[S comparable, E comparable, C any] struct {
 	nextStep int
 
 	sched    *state.Scheduler[S, E, C]
-	clockBuf *[]state.JournalEntry   // recording-clock accumulator, flushed per step
+	recClock *recordingClock         // owns the clock-read accumulator and its mutex
 	timers   map[string]pendingTimer // armed `after` timers with absolute deadlines, persisted per checkpoint
 
 	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
@@ -94,14 +94,14 @@ type Handle[S comparable, E comparable, C any] struct {
 
 // drainClock returns and clears the clock readings accumulated since the last
 // drain, so each recorded step carries exactly the readings consumed during it.
+// The drain is taken under the recording clock's mutex, so closing a step's
+// Record is safe against a Now() the scheduler's timer goroutine issues
+// concurrently (the documented "Tick from its own timer loop" pattern).
 func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
-	if h.clockBuf == nil || len(*h.clockBuf) == 0 {
+	if h.recClock == nil {
 		return nil
 	}
-	out := make([]state.JournalEntry, len(*h.clockBuf))
-	copy(out, *h.clockBuf)
-	*h.clockBuf = (*h.clockBuf)[:0]
-	return out
+	return h.recClock.drain()
 }
 
 // absorbDrivers feeds a transition's effects into every wired host driver so the
@@ -137,15 +137,17 @@ func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, effects []state.Eff
 //
 // The kernel Scheduler.Absorb reads the recording clock exactly once — that
 // reading is the `now` it computes every deadline against — and the reading lands
-// in clockBuf. The Handle captures it by noting clockBuf's length before the
-// Absorb and reading the entry the Absorb appended, so the durable table mirrors
-// the scheduler's deadlines with no extra clock read (an extra read would corrupt
-// the recorded sequence). When clockBuf is unavailable the Handle falls back to a
-// direct clock read, keeping the table correct off the recording path.
+// in the recording clock's buffer. The Handle captures it by noting the buffer's
+// length (markBuf) before the Absorb and reading the entry the Absorb appended
+// (armReadingAt), both under the clock mutex, so the durable table mirrors the
+// scheduler's deadlines with no extra clock read (an extra read would corrupt the
+// recorded sequence) and stays correct against a concurrent timer-goroutine
+// Now(). When no recording clock is wired the Handle falls back to a direct clock
+// read, keeping the table correct off the recording path.
 func (h *Handle[S, E, C]) absorbTimers(ctx context.Context, effects []state.Effect) {
 	before := -1
-	if h.clockBuf != nil {
-		before = len(*h.clockBuf)
+	if h.recClock != nil {
+		before = h.recClock.markBuf()
 	}
 	h.sched.Absorb(ctx, effects)
 	now := h.armNow(before)
@@ -163,13 +165,15 @@ func (h *Handle[S, E, C]) absorbTimers(ctx context.Context, effects []state.Effe
 }
 
 // armNow returns the clock instant the just-completed Scheduler.Absorb computed its
-// deadlines against: the clock read the Absorb appended to clockBuf at index
-// before, captured so the Handle's timer table mirrors the scheduler without a
-// second clock read. It falls back to a fresh clock read only when no recording
-// buffer is wired (off the recording path).
+// deadlines against: the clock read the Absorb appended to the recording clock's
+// buffer at index before, captured under the clock mutex so the Handle's timer
+// table mirrors the scheduler without a second clock read. It falls back to a
+// fresh clock read only when no recording clock is wired (off the recording path).
 func (h *Handle[S, E, C]) armNow(before int) time.Time {
-	if before >= 0 && h.clockBuf != nil && len(*h.clockBuf) > before {
-		return time.Unix(0, (*h.clockBuf)[before].ClockUnixNano).UTC()
+	if before >= 0 && h.recClock != nil {
+		if now, ok := h.recClock.armReadingAt(before); ok {
+			return now
+		}
 	}
 	return h.runner.cfg.clock.Now()
 }
@@ -300,7 +304,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		inst:     inst,
 		nextStep: 0,
 		sched:    state.NewScheduler(inst),
-		clockBuf: &buf,
+		recClock: recClock,
 		timers:   map[string]pendingTimer{},
 		svc:      svc,
 		svcBuf:   &svcBuf,
@@ -705,7 +709,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		inst:     inst,
 		nextStep: next,
 		sched:    sched,
-		clockBuf: &buf,
+		recClock: recClock,
 		timers:   armed,
 		svc:      svc,
 		svcBuf:   &svcBuf,

@@ -198,7 +198,7 @@ func (s *MemStore) History(_ context.Context, id InstanceID) ([]byte, []Record, 
 // (NewMemStore with WithHistory), so the per-checkpoint CheckpointOptions do not
 // change what Load returns here.
 func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error {
-	_ = resolveCheckpoint(opts...) // retainTail is superseded by store-level WithHistory
+	_ = resolveCheckpoint(opts...) // no per-checkpoint option defined; history is store-level (WithHistory)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

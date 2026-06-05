@@ -69,6 +69,47 @@ func (c *recordingClock) Now() time.Time {
 // through Now + Tick, so After carries no recorded nondeterminism.
 func (c *recordingClock) After(d time.Duration) <-chan time.Time { return c.base.After(d) }
 
+// drain returns and clears the readings accumulated since the last drain, taken
+// under the same mutex Now() appends under. The durable Handle calls it to close
+// a step's Record; holding the lock makes the drain safe against a Now() the
+// scheduler's timer goroutine issues concurrently (the documented "Tick from its
+// own timer loop" pattern), which would otherwise race the copy-and-truncate of
+// the shared buffer.
+func (c *recordingClock) drain() []state.JournalEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(*c.buf) == 0 {
+		return nil
+	}
+	out := make([]state.JournalEntry, len(*c.buf))
+	copy(out, *c.buf)
+	*c.buf = (*c.buf)[:0]
+	return out
+}
+
+// markBuf returns the current buffer length under the clock mutex, the index a
+// subsequent Scheduler.Absorb's clock read will land at. armReadingAt reads that
+// reading back under the same lock. The pair lets absorbTimers mirror the
+// scheduler's deadline without a second clock read while staying safe against a
+// concurrent Now() from the timer goroutine.
+func (c *recordingClock) markBuf() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(*c.buf)
+}
+
+// armReadingAt returns the clock reading recorded at index i, ok false when the
+// buffer holds no entry there (no read was appended). Taken under the clock mutex
+// so it does not race a concurrent Now().
+func (c *recordingClock) armReadingAt(i int) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < 0 || i >= len(*c.buf) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, (*c.buf)[i].ClockUnixNano).UTC(), true
+}
+
 // replayClock returns recorded clock readings in order instead of reading any
 // real clock, so a recovered instance's scheduler re-derives identical timer
 // deadlines without consulting the wall clock. It is the inverse of

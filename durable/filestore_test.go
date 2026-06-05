@@ -288,7 +288,11 @@ func TestFileStore_JournalOrderingPreserved(t *testing.T) {
 	}
 }
 
-func TestFileStore_Checkpoint_RetainTail(t *testing.T) {
+// TestFileStore_Checkpoint_CompactsTail verifies a Checkpoint compacts the
+// on-disk journal through the checkpointed step, so Load returns only the
+// post-checkpoint tail. Time-travel retention is a store-level capability
+// (HistoryStore / WithHistory), not a per-checkpoint flag.
+func TestFileStore_Checkpoint_CompactsTail(t *testing.T) {
 	ctx := context.Background()
 	st := newFileStore(t)
 	const id = durable.InstanceID("inst")
@@ -298,7 +302,7 @@ func TestFileStore_Checkpoint_RetainTail(t *testing.T) {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
-	if err := st.Checkpoint(ctx, id, marshaledSnapshot(t, "cp"), 1, durable.WithRetainTail()); err != nil {
+	if err := st.Checkpoint(ctx, id, marshaledSnapshot(t, "cp"), 1); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 	_, tail, err := st.Load(ctx, id)

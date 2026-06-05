@@ -394,7 +394,7 @@ func (s *FileStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, er
 // (temp+rename) and compacts the on-disk journal to only the post-checkpoint
 // tail. throughStep must advance beyond the current checkpoint.
 func (s *FileStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error {
-	_ = resolveCheckpoint(opts...) // retainTail does not change Load's view; on-disk tail is always compacted
+	_ = resolveCheckpoint(opts...) // no per-checkpoint option defined; on-disk tail is always compacted
 
 	inst, _, err := s.instance(id)
 	if err != nil {
@@ -544,8 +544,11 @@ func appendLine(path string, line []byte) (err error) {
 }
 
 // writeAtomic writes data to path atomically: a sibling temp file is written and
-// fsynced, then renamed over path (atomic on POSIX), so a reader sees either the
-// old contents or the fully written new contents, never a torn mix.
+// fsynced, then renamed over path (atomic on POSIX), then the parent directory is
+// fsynced so the rename itself survives a crash. Without the directory fsync the
+// renamed entry may not be durable even though the file's bytes are, so a reader
+// after a crash sees either the old contents or the fully written new contents,
+// never a torn mix and never a lost rename.
 func writeAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
@@ -565,7 +568,26 @@ func writeAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir fsyncs a directory so a rename or create within it is durable across a
+// crash. A failure to open or sync the directory is reported; a platform that
+// does not support syncing a directory handle (a rare case) surfaces its error to
+// the caller rather than being silently ignored.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("crucible/durable: opening dir %q to sync: %w", dir, err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("crucible/durable: syncing dir %q: %w", dir, err)
+	}
+	return nil
 }
 
 // encodeInstanceID maps an InstanceID to a filesystem-safe directory name. An id
