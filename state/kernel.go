@@ -586,18 +586,20 @@ func (r *Registry[C]) Action(name string, fn ActionFn[C], opts ...DescribeOption
 	return r
 }
 
-// Assign registers a named assign reducer — the sole context writer. The reducer
+// Reducer registers a named assign reducer — the sole context writer. The reducer
 // takes the prior context by value, the triggering event, and the ref's static
 // params, and returns the next context; the kernel folds the assigns declared on
 // a transition's exit/transition/entry phases to produce the instance's context.
 // An optional Describe option adds palette metadata; registering without one still
 // works and yields a minimal palette descriptor.
 //
-// Naming: the assign verb appears three times with distinct roles. Registry.Assign
-// (here) and its builder alias Builder.Reducer both REGISTER a reducer impl under a
-// name; Builder.Assign WIRES a registered reducer (by name) onto a transition. So
-// you register once (Reducer / Registry.Assign) and wire each use (.Assign(name)).
-func (r *Registry[C]) Assign(name string, fn AssignFn[C], opts ...DescribeOption) *Registry[C] {
+// Naming: registration and wiring are split cleanly, mirroring Guard/When and
+// Action/Do. Registry.Reducer (here) and its builder alias Builder.Reducer both
+// REGISTER a reducer impl under a name; Builder.Assign WIRES a registered reducer
+// (by name) onto a transition. So you register once (Reducer) and wire each use
+// (Assign(name)). The implementation type stays AssignFn — you register it via
+// Reducer and wire it via Assign.
+func (r *Registry[C]) Reducer(name string, fn AssignFn[C], opts ...DescribeOption) *Registry[C] {
 	r.assigns[name] = fn
 	r.bindAssign(name, inProcessAssign(fn))
 	r.describe(KindAssign, name, opts)
@@ -779,10 +781,10 @@ func (b *Builder[S, E, C]) Action(name string, fn ActionFn[C], opts ...DescribeO
 // context writer, wired onto a transition with the Assign DSL verb or onto a state
 // with OnEntryAssign / OnExitAssign. It is the builder-side registration of an
 // assign (the Do verb wires an Action that Action registers; the Assign verb wires
-// a reducer that Reducer registers), forwarding to Registry.Assign. An optional
+// a reducer that Reducer registers), forwarding to Registry.Reducer. An optional
 // Describe option attaches palette metadata.
 func (b *Builder[S, E, C]) Reducer(name string, fn AssignFn[C], opts ...DescribeOption) *Builder[S, E, C] {
-	b.reg.Assign(name, fn, opts...)
+	b.reg.Reducer(name, fn, opts...)
 	return b
 }
 
@@ -1342,7 +1344,8 @@ func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Buil
 // fires — the sole context-mutation site under the value-semantics contract. It is
 // distinct from Do: Do emits an effect, Assign computes the next context. The
 // referenced reducer is registered separately by Builder.Reducer (alias of
-// Registry.Assign); this WIRES a registered reducer by name onto the transition.
+// Registry.Reducer); this WIRES a registered reducer by name onto the transition,
+// mirroring how When wires a Guard and Do wires an Action.
 func (b *Builder[S, E, C]) Assign(assignName string, params ...map[string]any) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})

@@ -163,7 +163,7 @@ func TestAssignBinding_Shadow_MatchesDirectReducer(t *testing.T) {
 // never collides with a same-named action.
 func TestRegistry_AssignBindingRecorded(t *testing.T) {
 	reg := NewRegistry[bindOrder]().
-		Assign("credit", func(in AssignCtx[bindOrder]) bindOrder { return in.Entity })
+		Reducer("credit", func(in AssignCtx[bindOrder]) bindOrder { return in.Entity })
 	if reg.assignBinding("credit") == nil {
 		t.Fatal("Assign did not record an in-process AssignBinding")
 	}

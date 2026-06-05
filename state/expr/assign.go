@@ -60,7 +60,7 @@ func Assign[C any](reg *state.Registry[C], name, source string, schema state.Con
 		return fmt.Errorf("assign %q: build program: %w", name, err)
 	}
 
-	reg.Assign(name, celAssign[C](program, schema))
+	reg.Reducer(name, celAssign[C](program, schema))
 
 	if cfg.catalog != nil {
 		astBytes, err := checkedASTBytes(ast)

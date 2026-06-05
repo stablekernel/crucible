@@ -330,9 +330,9 @@ func TestAssign_ParallelRegionPanicStopsCommit(t *testing.T) {
 func TestAssign_IRRoundTrip(t *testing.T) {
 	reg := func() *state.Registry[acct] {
 		return state.NewRegistry[acct]().
-			Assign("exitA", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Notes = append(c.Notes, "exit"); return c }).
-			Assign("tr", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Balance += 7; return c }).
-			Assign("entryB", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Notes = append(c.Notes, "entry"); return c })
+			Reducer("exitA", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Notes = append(c.Notes, "exit"); return c }).
+			Reducer("tr", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Balance += 7; return c }).
+			Reducer("entryB", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Notes = append(c.Notes, "entry"); return c })
 	}
 	m := state.Forge[string, string, acct]("irrt").
 		Reducer("exitA", func(in state.AssignCtx[acct]) acct { return in.Entity }).
@@ -432,7 +432,7 @@ func TestAssign_UnboundRefFailsQuench(t *testing.T) {
 // under KindAssign.
 func TestAssign_Palette(t *testing.T) {
 	reg := state.NewRegistry[acct]().
-		Assign("credit", func(in state.AssignCtx[acct]) acct { return in.Entity })
+		Reducer("credit", func(in state.AssignCtx[acct]) acct { return in.Entity })
 	found := false
 	for _, d := range reg.Palette() {
 		if d.Kind == state.KindAssign && d.Name == "credit" {
