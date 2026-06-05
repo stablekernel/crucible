@@ -66,8 +66,8 @@ A complete statechart feature surface:
 - **Invoked services**: state-scoped `Invoke(src, onDone, onError)` with
   result/error routing, auto-stopped on exit, driven by a host `ServiceRunner`.
 - **Actor model**: child-machine actors, a host `ActorSystem`, mailboxes, and
-  dynamic `Spawn`, with **message passing** (`SendTo`, `SendParent`, `Respond`,
-  `ForwardTo`, and `StopChild`) and sender-tracked routing.
+  dynamic `Spawn` and `StopActor`, with **message passing** (`SendTo`,
+  `SendParent`, `Respond`, and `ForwardTo`) and sender-tracked routing.
 - **Snapshots**: `Instance.Snapshot()` captures the full runtime state
   (configuration, history, context, traces, pending timers/services/actors);
   `Machine.Restore` resumes from it without re-running entry actions, and

@@ -116,7 +116,7 @@ representative hot-path numbers.
   `Builder.Palette()` / `Machine.Palette()` surface the same set for a DSL- or
   `Provide`-built machine, and `Provide` carries descriptors over from the supplied
   registry. A separate `BuiltinPalette()` lists the language-level built-ins
-  (`spawn`/`stopActor`/`stopChild`/`sendTo`/`sendParent`/`respond`/`forwardTo`/`cancel`
+  (`spawn`/`stopActor`/`sendTo`/`sendParent`/`respond`/`forwardTo`/`cancel`
   actions and the `stateIn` guard), which are intentionally excluded from
   `Palette()`. Descriptors are metadata only; they never affect binding, lint, or
   `Fire` semantics.
@@ -286,9 +286,11 @@ representative hot-path numbers.
     parent; `Respond(event)` emits a `RespondToSender{Event}` routed back to the
     sender of the event the actor is currently handling (a no-op when there is no
     identifiable sender); `ForwardTo(targetID, ...)` emits a
-    `ForwardEvent{TargetID, SystemID}` that forwards the current event verbatim; and
-    `StopChild(id)` emits a `StopActor{ID}` to stop a spawned actor. Address a target
-    by registry id or, with `WithSendToSystemID`, by its system-scoped id. Like the
+    `ForwardEvent{TargetID, SystemID}` that forwards the current event verbatim. A
+    single `StopActor(id)` verb stops a spawned or invoked-child actor from a
+    transition (emitting `StopActor{ID}` via the one `crucible.stopActor` built-in).
+    Address a target by registry id or, with `WithSendToSystemID`, by its
+    system-scoped id. Like the
     spawn/stop/cancel built-ins, these need no host registration and are exempt from
     the unbound-ref lint.
   - **Sender-tracked routing in the `ActorSystem`.** Mailbox messages carry the

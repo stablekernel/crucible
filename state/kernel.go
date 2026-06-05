@@ -990,9 +990,9 @@ func (b *Builder[S, E, C]) Spawn(src, id string, opts ...SpawnOption) *Builder[S
 
 // StopActor attaches the kernel stop-actor built-in to the most-recent
 // transition: when the transition fires, the kernel emits a StopActor effect for
-// the given actor id, so a machine can explicitly stop a spawned actor before its
-// natural completion (stopping an actor). Stopping an unknown id is a
-// host-side no-op. The built-in needs no host registration, mirroring Cancel.
+// the given actor id, so a machine can explicitly stop a spawned or invoked-child
+// actor before its natural completion. Stopping an unknown id is a host-side
+// no-op. The built-in needs no host registration, mirroring Cancel.
 func (b *Builder[S, E, C]) StopActor(id string) *Builder[S, E, C] {
 	if b.curTransition != nil {
 		b.curTransition.Effects = append(b.curTransition.Effects,
@@ -1076,20 +1076,6 @@ func (b *Builder[S, E, C]) ForwardTo(targetID string, opts ...SendOption) *Build
 	}
 	b.curTransition.Effects = append(b.curTransition.Effects,
 		Ref{Name: forwardToBuiltinName, Params: params})
-	return b
-}
-
-// StopChild attaches the kernel stopChild built-in to the most-recent transition:
-// when the transition fires, the kernel emits a StopActor effect for the given
-// actor id, so a machine can explicitly stop a spawned child actor (the
-// `stopChild`). It is the action-level twin of StopActor and shares its effect;
-// stopping an unknown id is a host-side no-op. The built-in needs no host
-// registration.
-func (b *Builder[S, E, C]) StopChild(id string) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Effects = append(b.curTransition.Effects,
-			Ref{Name: stopChildBuiltinName, Params: map[string]any{stopChildIDParam: id}})
-	}
 	return b
 }
 
