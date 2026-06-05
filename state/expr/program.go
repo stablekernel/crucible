@@ -96,23 +96,55 @@ func checkedASTBytes(ast *cel.Ast) ([]byte, error) {
 // The AST is rebound against the schema-derived env so its variables resolve; an env
 // whose variables do not match the AST's declarations surfaces as an eval error.
 func EvalCheckedAST(checkedAST []byte, schema state.ContextSchema, entity any) (bool, error) {
-	ast, err := astFromCheckedBytes(checkedAST)
+	compiled, err := CompileChecked(checkedAST, schema)
 	if err != nil {
 		return false, err
+	}
+	return compiled.Eval(entity)
+}
+
+// CompiledChecked is a rich AST that has been rebuilt and bound to its
+// schema-derived environment exactly once, ready to evaluate against many context
+// values. EvalCheckedAST rebuilds the env and program on every call, which is fine
+// for a one-shot tooling probe but wasteful when the same stored AST is replayed
+// repeatedly; CompileChecked pays that cost once and Eval reuses the program. The
+// type is immutable after construction and its Eval is safe for the same
+// synchronous, single-evaluator use as a celGuard.
+type CompiledChecked struct {
+	program cel.Program
+	schema  state.ContextSchema
+}
+
+// CompileChecked rebuilds a program from stored canonical cel.dev/expr CheckedExpr
+// bytes and binds it to the schema-derived environment once, returning a reusable
+// CompiledChecked. It performs the same env-rebuild and program-build EvalCheckedAST
+// does, so a malformed AST or an env whose variables do not match the AST's
+// declarations surfaces here rather than per evaluation.
+func CompileChecked(checkedAST []byte, schema state.ContextSchema) (*CompiledChecked, error) {
+	ast, err := astFromCheckedBytes(checkedAST)
+	if err != nil {
+		return nil, err
 	}
 	env, err := newEnv(schema)
 	if err != nil {
-		return false, fmt.Errorf("rebuild env: %w", err)
+		return nil, fmt.Errorf("rebuild env: %w", err)
 	}
 	program, err := env.Program(ast, cel.CostLimit(defaultCostLimit))
 	if err != nil {
-		return false, fmt.Errorf("rebuild program: %w", err)
+		return nil, fmt.Errorf("rebuild program: %w", err)
 	}
-	activation, err := marshalActivation(entity, schema)
+	return &CompiledChecked{program: program, schema: schema}, nil
+}
+
+// Eval projects the entity into the bound environment and evaluates the compiled
+// program, returning its boolean verdict. It reuses the program built by
+// CompileChecked, so repeated evaluations skip the env/AST/program rebuild.
+func (c *CompiledChecked) Eval(entity any) (bool, error) {
+	activation, err := marshalActivation(entity, c.schema)
 	if err != nil {
 		return false, err
 	}
-	out, _, err := program.Eval(activation)
+	out, _, err := c.program.Eval(activation)
 	if err != nil {
 		return false, fmt.Errorf("eval: %w", err)
 	}

@@ -45,6 +45,61 @@ func TestEvalCheckedAST_RejectsBadBytes(t *testing.T) {
 	}
 }
 
+// TestCompileChecked_ReusesProgramAcrossEvals asserts a CompiledChecked built once
+// evaluates many context values and agrees with the one-shot EvalCheckedAST on each,
+// proving the cached program path is equivalent to the rebuild-every-call path.
+func TestCompileChecked_ReusesProgramAcrossEvals(t *testing.T) {
+	reg := state.NewRegistry[order]()
+	cat := expr.NewCatalog()
+	if _, err := expr.Guard[string](reg, "big", `total > 100.0`, orderSchema(), expr.WithCatalog(cat)); err != nil {
+		t.Fatalf("Guard: %v", err)
+	}
+	entry, ok := cat.Entry("big")
+	if !ok {
+		t.Fatal("catalog recorded no entry")
+	}
+
+	compiled, err := expr.CompileChecked(entry.CheckedAST, orderSchema())
+	if err != nil {
+		t.Fatalf("CompileChecked: %v", err)
+	}
+
+	for _, tc := range []struct {
+		total float64
+		want  bool
+	}{
+		{total: 50, want: false},
+		{total: 150, want: true},
+		{total: 100, want: false},
+		{total: 101, want: true},
+	} {
+		entity := order{Total: tc.total}
+		got, err := compiled.Eval(entity)
+		if err != nil {
+			t.Fatalf("Eval(total=%v): %v", tc.total, err)
+		}
+		if got != tc.want {
+			t.Fatalf("Eval(total=%v) = %v, want %v", tc.total, got, tc.want)
+		}
+		// The reusable program agrees with the rebuild-every-call helper.
+		oneShot, err := expr.EvalCheckedAST(entry.CheckedAST, orderSchema(), entity)
+		if err != nil {
+			t.Fatalf("EvalCheckedAST(total=%v): %v", tc.total, err)
+		}
+		if oneShot != got {
+			t.Fatalf("CompiledChecked.Eval=%v disagrees with EvalCheckedAST=%v at total=%v", got, oneShot, tc.total)
+		}
+	}
+}
+
+// TestCompileChecked_RejectsBadBytes asserts malformed checked-AST bytes fail at
+// compile time rather than at evaluation.
+func TestCompileChecked_RejectsBadBytes(t *testing.T) {
+	if _, err := expr.CompileChecked([]byte{0xff, 0xfe, 0xfd}, orderSchema()); err == nil {
+		t.Fatal("malformed checked-AST bytes should fail to compile")
+	}
+}
+
 // TestLoadCatalog_RejectsMalformedSidecar asserts a sidecar that is not an object,
 // and one whose checked-AST is not valid base64, are both rejected.
 func TestLoadCatalog_RejectsMalformedSidecar(t *testing.T) {

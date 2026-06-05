@@ -334,8 +334,22 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 		o(&cfg)
 	}
 
-	res := &Result{initial: initialName(m)}
-	top := readTopology(m)
+	// Round-trip the machine to its public IR once and reuse it across every
+	// structural builder below. Each builder previously re-serialized the machine,
+	// so a single Verify paid for the JSON marshal/unmarshal several times over.
+	ir, irOK := loadIR(m)
+
+	var (
+		res *Result
+		top topology
+	)
+	if irOK {
+		res = &Result{initial: initialNameFromIR(ir)}
+		top = topologyFromIR(ir)
+	} else {
+		res = &Result{initial: ""}
+		top = topology{parent: map[string]string{}}
+	}
 
 	// Authoritative reachability comes from the analysis package's static pass:
 	// its KindUnreachableState finding is the proven verdict, and it correctly
@@ -386,7 +400,12 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 	// their own structural search, so build the search graph once when either is
 	// requested.
 	if len(cfg.reachAvoiding) > 0 || len(cfg.alwaysEventually) > 0 {
-		g := buildSearchGraph(m)
+		var g searchGraph
+		if irOK {
+			g = buildSearchGraphFromIR(ir)
+		} else {
+			g = emptySearchGraph()
+		}
 
 		for _, q := range cfg.reachAvoiding {
 			if !g.nodes[q.target] {
@@ -414,7 +433,12 @@ func Verify[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts .
 	// whole configurations of co-active leaves over the configuration-product space,
 	// so they share one configGraph, built once when any is requested.
 	if len(cfg.invariants) > 0 || len(cfg.boundedSims) > 0 || cfg.coverageRequested {
-		cg := buildConfigGraph(m)
+		var cg configGraph
+		if irOK {
+			cg = buildConfigGraphFromIR(ir)
+		} else {
+			cg = emptyConfigGraph()
+		}
 		if len(cfg.invariants) > 0 {
 			exp := cg.explore()
 			for _, inv := range cfg.invariants {

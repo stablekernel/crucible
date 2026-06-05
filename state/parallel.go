@@ -20,7 +20,11 @@ func (i *Instance[S, E, C]) activeParallelAncestor() (S, bool) {
 		return zero, false
 	}
 	// Candidate parallel states are the ancestors shared by the config leaves.
-	seen := map[S]int{}
+	// Presize from the leaf count so the map does not grow-and-rehash while the
+	// orthogonal config is scanned. This runs only when already in a parallel
+	// configuration (len(config) >= 2); flat machines return above without
+	// allocating.
+	seen := make(map[S]int, len(i.config))
 	for _, leaf := range i.config {
 		for _, anc := range m.ancestors(leaf) {
 			n, ok := m.resolveNode(anc)
