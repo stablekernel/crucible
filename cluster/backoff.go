@@ -70,7 +70,11 @@ func (s *Supervisor) scheduleBackoff(esc *state.ActorEscalation) bool {
 }
 
 // backoffDelay is initial*factor^n capped at max (and floored at initial when the
-// factor would shrink it).
+// factor would shrink it). When no max is set (max==0) the growth is unbounded, so
+// the result is clamped to math.MaxInt64 before the time.Duration conversion: a
+// large n with factor>1 can drive the float past the int64 range, and converting
+// an out-of-range float64 to time.Duration is undefined and can yield a negative
+// (or wrapped) delay that would fire a backoff immediately or never.
 func backoffDelay(pol backoffPolicy, n int) time.Duration {
 	d := float64(pol.initial) * math.Pow(pol.factor, float64(n))
 	if d < float64(pol.initial) {
@@ -78,6 +82,9 @@ func backoffDelay(pol backoffPolicy, n int) time.Duration {
 	}
 	if pol.max > 0 && d > float64(pol.max) {
 		d = float64(pol.max)
+	}
+	if d > float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(d)
 }
@@ -90,6 +97,15 @@ func (s *Supervisor) Tick(ctx context.Context) int {
 	now := s.clock.Now()
 	s.mu.Lock()
 	respawner := s.respawner
+	// A Backoff schedule is only created while a Respawner is wired
+	// (scheduleBackoff returns false otherwise), but the Respawner can be cleared
+	// between scheduling and Tick; guard so a due restart with no Respawner is a
+	// no-op rather than a nil-pointer panic. The pending restarts are left in place
+	// so a Respawner wired again before the next Tick still applies them.
+	if respawner == nil {
+		s.mu.Unlock()
+		return 0
+	}
 	var due, keep []pendingRestart
 	for _, p := range s.pending {
 		if p.dueAt.After(now) {
