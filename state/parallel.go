@@ -176,7 +176,7 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 			}
 			if pass {
-				eff, aErr := i.applyRegionTransition(r, leaf, t, entity, eventData, tr)
+				eff, aErr := i.applyRegionTransition(parallel, r, leaf, t, eventData, tr)
 				return true, eff, aErr
 			}
 		}
@@ -191,29 +191,63 @@ func (i *Instance[S, E, C]) fireRegion(
 // reducer that errors or panics stops the cascade immediately and surfaces the
 // error to the caller rather than silently no-oping.
 func (i *Instance[S, E, C]) applyRegionTransition(
-	r *Region[S, E, C], leaf S, t *Transition[S, E, C], entity C, eventData any, tr *Trace,
+	parallel S, r *Region[S, E, C], leaf S, t *Transition[S, E, C], eventData any, tr *Trace,
 ) ([]Effect, error) {
 	m := i.machine
 	to := t.To
-	exits, entries := m.cascade(leaf, to)
 
-	// Region transition assigns fold onto the live instance context (i.entity) so
-	// sequential regions compose in region-declaration order; actions in each phase
-	// read the entity snapshot passed in, consistent with the main commit cascade.
+	// A history pseudostate target owned by a compound nested in THIS region
+	// re-enters the remembered configuration of that compound (or its default /
+	// initial when nothing is recorded yet). resolveHistory expands it to the
+	// concrete leaves and retargets the cascade at the owning compound; the
+	// cross-region history-target variant is already rejected at Quench, so any
+	// history target reaching here is region-internal and well-defined.
+	var restoreLeaves []S
+	if leaves, owner, isHist := i.resolveHistory(to); isHist {
+		restoreLeaves = leaves
+		to = owner
+	}
+
+	exits, entries := m.cascade(leaf, to)
+	if restoreLeaves != nil {
+		// Substitute the compound's default descent with the remembered descent:
+		// keep the entry chain up to and including the compound, then enter the
+		// recorded interior leaves instead of the InitialChild spine.
+		entries = m.entryChainTo(leaf, to)
+		entries = append(entries, m.restoreInterior(to, restoreLeaves)...)
+	}
+
+	// cur threads the context by value through this region's cascade, exactly as
+	// commit does (fire.go). Actions in a phase read cur as it stood at phase
+	// entry (read-only); that phase's assigns then fold cur, each reducer seeing
+	// the prior result. The folded value is committed to the instance once, at the
+	// end — the sole context-mutation site on the region path.
+	//
+	// The fold base is the LIVE instance context (i.entity), not the broadcast
+	// snapshot passed in for guard/action evaluation: sequential regions of one
+	// macrostep compose in declaration order, so this region must observe (and
+	// fold onto) the prior regions' committed folds. Using the frozen broadcast
+	// snapshot here would discard the earlier regions' assigns.
+	cur := i.entity
+
+	// Record the history of every compound being exited before the configuration
+	// advances, so a later history-targeted entry restores the leaves left here.
+	i.recordHistory(exits, i.config)
+
 	var effects []Effect
 	for _, s := range exits {
 		tr.recordExit(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
-			eff, errName, err := i.runActions(n.state.OnExit, entity, tr)
+			eff, errName, err := i.runActions(n.state.OnExit, cur, tr)
 			effects = append(effects, eff...)
 			if err != nil {
 				return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
 			}
-			next, _, aErr := i.applyAssigns(n.state.OnExitAssign, i.entity, eventData, tr)
+			next, _, aErr := i.applyAssigns(n.state.OnExitAssign, cur, eventData, tr)
 			if aErr != nil {
 				return effects, aErr
 			}
-			i.entity = next
+			cur = next
 		}
 	}
 
@@ -226,33 +260,38 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	effects = append(effects, i.invokeEffectsOnExit(exits, tr)...)
 	effects = append(effects, i.actorEffectsOnExit(exits, tr)...)
 
-	// Swap this region's leaf in the configuration.
-	i.replaceRegionLeaf(r, leaf, m.descendToLeaves(to))
+	// Swap this region's leaf in the configuration. A history restore pins the
+	// remembered leaves; otherwise descend into the target's initial children.
+	if restoreLeaves != nil {
+		i.replaceRegionLeaf(r, leaf, append([]S(nil), restoreLeaves...))
+	} else {
+		i.replaceRegionLeaf(r, leaf, m.descendToLeaves(to))
+	}
 
-	eff, errName, err := i.runActions(t.Effects, entity, tr)
+	eff, errName, err := i.runActions(t.Effects, cur, tr)
 	effects = append(effects, eff...)
 	if err != nil {
 		return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
 	}
-	next, _, aErr := i.applyAssigns(t.Assigns, i.entity, eventData, tr)
+	next, _, aErr := i.applyAssigns(t.Assigns, cur, eventData, tr)
 	if aErr != nil {
 		return effects, aErr
 	}
-	i.entity = next
+	cur = next
 
 	for _, s := range entries {
 		tr.recordEntry(m.label(s))
 		if n, ok := m.resolveNode(s); ok {
-			eff, errName, err := i.runActions(n.state.OnEntry, entity, tr)
+			eff, errName, err := i.runActions(n.state.OnEntry, cur, tr)
 			effects = append(effects, eff...)
 			if err != nil {
 				return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: errName, Cause: err}
 			}
-			next, _, aErr := i.applyAssigns(n.state.OnEntryAssign, i.entity, eventData, tr)
+			next, _, aErr := i.applyAssigns(n.state.OnEntryAssign, cur, eventData, tr)
 			if aErr != nil {
 				return effects, aErr
 			}
-			i.entity = next
+			cur = next
 		}
 	}
 
@@ -264,6 +303,23 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	effects = append(effects, i.afterEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.invokeEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.actorEffectsOnEntry(entries, tr)...)
+
+	// Done-event semantics for compounds INTERIOR to this region: entering a final
+	// leaf may complete a nested compound, which runs that compound's OnDone (and
+	// cascades upward while ancestors complete). The walk is bounded at the owning
+	// parallel state: the parallel-state-level done is settled separately by
+	// settleParallelDone in fireParallel, so settleInteriorDone must not run the
+	// parallel's OnDone here or it would double-emit. OnDone reads the folded
+	// context (cur), consistent with every other action reading context read-only.
+	doneEff, dname, derr := i.settleInteriorDone(to, parallel, cur, tr)
+	effects = append(effects, doneEff...)
+	if derr != nil {
+		return effects, &ActionFailedError{TransitionName: transName(leaf, to), ActionName: dname, Cause: derr}
+	}
+
+	// Commit the folded context to the instance — the sole context-mutation site
+	// on the region path (mirrors commit's single G1 write).
+	i.entity = cur
 
 	// Enqueue any internal events this region transition raises, mirroring the
 	// main commit path (fire.go). The queue is drained by the macrostep's
@@ -289,6 +345,53 @@ func (i *Instance[S, E, C]) replaceRegionLeaf(r *Region[S, E, C], old S, repl []
 		i.current = i.config[0]
 	}
 	_ = r
+}
+
+// settleInteriorDone runs the OnDone of every compound INTERIOR to a region that
+// completes when a region transition drives an active leaf final. It mirrors
+// settleDone (cascade.go) but is bounded at the owning parallel state: the walk
+// stops the moment the next ancestor is `parallel`, without noting or running
+// the parallel's own OnDone. The parallel-state-level done is settled separately
+// by settleParallelDone in fireParallel; running it here too would double-emit
+// the parallel OnDone within a single macrostep.
+//
+// `to` is the entered leaf, `parallel` the region's owning parallel state, and
+// `entity` the folded context the OnDone actions read.
+func (i *Instance[S, E, C]) settleInteriorDone(to, parallel S, entity C, tr *Trace) (effects []Effect, name string, err error) {
+	m := i.machine
+
+	n, ok := m.resolveNode(to)
+	if !ok || !n.state.IsFinal {
+		return effects, "", nil
+	}
+
+	cur := to
+	for {
+		cn, ok := m.resolveNode(cur)
+		if !ok || !cn.hasParent {
+			return effects, "", nil
+		}
+		parent := cn.parent
+		if parent == parallel {
+			// Reached the region boundary; the parallel's done is settled by
+			// settleParallelDone, not here.
+			return effects, "", nil
+		}
+		pn, ok := m.resolveNode(parent)
+		if !ok {
+			return effects, "", nil
+		}
+		tr.note("done." + m.label(cur))
+		if !i.stateComplete(parent) {
+			return effects, "", nil
+		}
+		eff, aname, aerr := i.runActions(pn.state.OnDone, entity, tr)
+		effects = append(effects, eff...)
+		if aerr != nil {
+			return effects, aname, aerr
+		}
+		cur = parent
+	}
 }
 
 // settleParallelDone runs the parallel state's OnDone (cascading upward) once all
