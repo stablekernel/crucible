@@ -33,6 +33,12 @@ import (
 // actorAdapter (the standard wrapper for a child *Instance) satisfies it; a host's
 // bespoke ActorInstance may implement it to participate in deep persistence, and an
 // ActorInstance that does not is re-spawned fresh on restore rather than resumed.
+//
+// Snapshotter is a FROZEN, host-implementable interface: its method set is LOCKED
+// at v1.0 and no method will be added to it. Post-v1 capabilities ship as a
+// SEPARATE optional interface discovered by type-asserting an ActorInstance value
+// (the io.Reader/io.ReaderAt idiom), never by widening this one — so a host's
+// snapshotting actor keeps compiling across minor versions.
 type Snapshotter interface {
 	// SnapshotJSON captures the actor's runtime state as JSON.
 	SnapshotJSON() ([]byte, error)

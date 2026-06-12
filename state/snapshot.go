@@ -285,6 +285,12 @@ type PendingRefs struct {
 // custom wire form). Encode is called by Snapshot.MarshalJSON; Decode by
 // Snapshot.UnmarshalJSON. When no codec is supplied, the default codec marshals C
 // with encoding/json, so C must be JSON-marshalable by default.
+//
+// ContextCodec is a FROZEN, host-implementable interface: its method set is
+// LOCKED at v1.0 and no method will be added to it. Post-v1 capabilities ship as a
+// SEPARATE optional interface discovered by type-asserting a ContextCodec value
+// (the io.Reader/io.ReaderAt idiom), never by widening this one — so a host's
+// codec keeps compiling across minor versions.
 type ContextCodec[C any] interface {
 	Encode(C) ([]byte, error)
 	Decode([]byte) (C, error)

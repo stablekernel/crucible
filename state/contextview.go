@@ -25,6 +25,13 @@ import "encoding/json"
 // the behavior-invocation boundary. Raw returns the live value for the in-process
 // fast path; JSON returns the serialized wire form an out-of-process binding
 // consumes. It carries no mutator — context is read-only at this seam.
+//
+// ContextView is SEALED: it is closed to host implementations via the unexported
+// isContextView marker method, so crucible's inProcessView is its only legal
+// implementer. Hosts MUST NOT implement ContextView — crucible owns it and it may
+// grow new methods after v1.0 without a major-version bump, and any future
+// out-of-process transport behind it is crucible-built. Consume the view; never
+// supply one.
 type ContextView interface {
 	// Raw returns the underlying context value. For the in-process projection it is
 	// the live entity itself (a zero-cost pass-through); a binding that knows it is
@@ -34,6 +41,9 @@ type ContextView interface {
 	// out-of-process binding receives. The in-process projection marshals the live
 	// value with the context codec on demand.
 	JSON() ([]byte, error)
+	// isContextView seals the interface to crucible: an unexported method a host
+	// package cannot satisfy, so ContextView stays closed and free to grow.
+	isContextView()
 }
 
 // inProcessView is the default ContextView: a pass-through to the live entity that
@@ -55,3 +65,7 @@ func (v inProcessView[C]) Raw() any { return v.entity }
 // matching the default ContextCodec wire form. A binding that crosses a process
 // boundary consumes this; the in-process path never calls it.
 func (v inProcessView[C]) JSON() ([]byte, error) { return json.Marshal(v.entity) }
+
+// isContextView satisfies the sealed ContextView marker; it has no behavior and
+// exists only to keep the interface closed to host implementations.
+func (v inProcessView[C]) isContextView() {}
