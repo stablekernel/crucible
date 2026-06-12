@@ -264,6 +264,12 @@ func (i *Instance[S, E, C]) applyRegionTransition(
 	effects = append(effects, i.afterEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.invokeEffectsOnEntry(entries, tr)...)
 	effects = append(effects, i.actorEffectsOnEntry(entries, tr)...)
+
+	// Enqueue any internal events this region transition raises, mirroring the
+	// main commit path (fire.go). The queue is drained by the macrostep's
+	// run-to-completion loop, so a Raise on a region-internal transition is
+	// delivered to sibling regions (or the parallel state) within the same Fire.
+	i.enqueueRaised(t, tr)
 	return effects, nil
 }
 
