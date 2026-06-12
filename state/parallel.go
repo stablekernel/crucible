@@ -133,14 +133,17 @@ func regionErrOutcome(err error) Outcome {
 }
 
 // fireRegion resolves the event within one region, child-first from the region's
-// active leaf up to (but not crossing) the region boundary. handled is true when
-// a transition matched (whether it then succeeded or failed a guard/effect).
+// active leaf up to (but not crossing) the region boundary. handled is true only
+// when a transition's guards passed and its cascade ran (or its guard PANICKED,
+// surfaced as a hard error). A candidate that matched but failed a guard PREDICATE
+// (returned false) does NOT consume the event: handled is false so the event
+// bubbles to the parallel-state-level handler, matching the compound-state shape
+// where a false guard continues up the ancestor chain.
 func (i *Instance[S, E, C]) fireRegion(
 	parallel S, r *Region[S, E, C], leaf S, event E, entity C, eventData any, tr *Trace,
 ) (handled bool, effects []Effect, err error) {
 	m := i.machine
 
-	matched := false
 	for _, anc := range m.ancestors(leaf) {
 		if anc == parallel {
 			break // do not cross the region boundary
@@ -151,7 +154,6 @@ func (i *Instance[S, E, C]) fireRegion(
 		}
 		cands := matchingTransitions(n.state, event)
 		for _, t := range cands {
-			matched = true
 			pass := true
 			for _, g := range t.Guards {
 				tr.recordGuard(g.Name)
@@ -161,7 +163,6 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 				if !okg {
 					pass = false
-					err = &GuardFailedError{GuardName: g.Name, Reason: "predicate returned false"}
 					break
 				}
 			}
@@ -172,7 +173,6 @@ func (i *Instance[S, E, C]) fireRegion(
 				}
 				if !res.ok {
 					pass = false
-					err = &GuardFailedError{GuardName: joinLeafs(res.failedLeafs), Reason: "composite guard failed"}
 				}
 			}
 			if pass {
@@ -181,9 +181,9 @@ func (i *Instance[S, E, C]) fireRegion(
 			}
 		}
 	}
-	// A matched-but-guard-failed candidate still counts as handled, so the event
-	// is not spuriously bubbled to a cross-cutting transition.
-	return matched, nil, err
+	// Either no candidate matched, or every match failed a guard predicate. In
+	// both cases the region did not consume the event; bubble it.
+	return false, nil, nil
 }
 
 // applyRegionTransition advances one region's leaf and runs the exit/transition/
