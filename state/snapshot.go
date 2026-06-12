@@ -98,8 +98,21 @@ type Snapshot[S comparable, E comparable, C any] struct {
 	HistoryDeep    map[S][]S `json:"historyDeep,omitempty"`
 
 	// Traces is the instance's recorded Fire history, preserved so History()
-	// reports the same ordered traces after restore.
+	// reports the same ordered traces after restore. Traces are stored in
+	// chronological order (oldest first), as History() returns them, so a restored
+	// ring-buffer instance resumes with its window already in order and HistHead 0.
 	Traces []Trace `json:"traces,omitempty"`
+
+	// HistLimit is the bounded-history retention cap (WithHistory(n)) the instance
+	// was running under at snapshot time: the ring-buffer capacity. It is persisted
+	// so a restored instance keeps the SAME bound rather than silently becoming an
+	// instance with no live retention (frozen on the snapshot traces) or an
+	// unbounded one. Zero means no bounded-ring retention was configured (the
+	// instance was unbounded or had no retention); a positive value is the ring
+	// capacity restored verbatim. The ring head is not serialized: Traces are stored
+	// chronologically, so a restored full ring resumes with HistHead 0 (its oldest
+	// entry at index 0).
+	HistLimit int `json:"histLimit,omitempty"`
 
 	// Status is the instance's lifecycle status at snapshot time. Output carries an
 	// instance's completion output (when StatusDone) and Error a settled instance's
@@ -316,6 +329,7 @@ func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
 		HistoryShallow:  copyMap(i.historyShallow),
 		HistoryDeep:     copyLeafMap(i.historyDeep),
 		Traces:          i.History(),
+		HistLimit:       i.histLimit,
 		Status:          StatusRunning,
 		SnapshotVersion: CurrentSnapshotVersion,
 		MachineVersion:  i.machine.envelope.version,
@@ -461,6 +475,17 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		current = cfg[0]
 	}
 
+	// Restore the bounded-history retention cap so a WithHistory(n) instance stays
+	// bounded across the round-trip instead of silently becoming an instance with no
+	// live retention (frozen on the snapshot traces) or an unbounded one. Bounded
+	// retention implies full trace, mirroring the Cast-time elevation (a retained
+	// trace must carry its rich fields); the unbounded restore option already
+	// elevates the same way. The ring head is not persisted: snap.Traces are stored
+	// chronologically, so a restored full ring resumes with histHead 0 — its oldest
+	// entry at index 0, exactly what History() expects.
+	histLimit := snap.HistLimit
+	traceFull := rcfg.traceFull || histLimit > 0
+
 	inst := &Instance[S, E, C]{
 		machine:        m,
 		entity:         snap.Context,
@@ -470,7 +495,8 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		historyShallow: copyMap(snap.HistoryShallow),
 		historyDeep:    copyLeafMap(snap.HistoryDeep),
 		clock:          clock,
-		traceFull:      rcfg.traceFull,
+		traceFull:      traceFull,
+		histLimit:      histLimit,
 		histUnbounded:  rcfg.histUnbounded,
 	}
 	return inst, nil
