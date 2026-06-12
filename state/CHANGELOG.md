@@ -28,6 +28,9 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
   an active leaf.
 - A compound nested inside a parallel region now emits its done event and fires
   `OnDone` when its leaf reaches final.
+- A parallel state that completes inside an enclosing compound now cascades that
+  compound's `OnDone` (and any guarded completion transition) up the spine, instead
+  of silently dropping it; the parallel's own `OnDone` still fires exactly once.
 - Region transition and entry actions now observe the threaded, exit-assign-folded
   context, consistent with the main commit path.
 - Eventless (`Always`) transitions now fire in every active parallel region and no
