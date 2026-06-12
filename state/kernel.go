@@ -447,8 +447,11 @@ type Trace struct {
 	// GuardsEvaluated names each guard the step evaluated, in evaluation order.
 	// Populated only in full mode.
 	GuardsEvaluated []string `json:"guardsEvaluated,omitempty"`
-	// PoliciesEvaluated names each policy the step evaluated, in evaluation order.
-	// Populated only in full mode.
+	// PoliciesEvaluated is RESERVED for a future policy-tracing feature: it names
+	// each policy the step evaluated, in evaluation order. It is always empty in
+	// v1.0 — no kernel step writes it — and is kept on the frozen Trace shape so the
+	// future feature can populate it additively without a breaking change. Do not
+	// rely on it being non-empty at this version.
 	PoliciesEvaluated []string `json:"policiesEvaluated,omitempty"`
 	// EffectsEmitted names each effect the step emitted, in emission order — the
 	// human-readable companion to FireResult.Effects (the effect data itself).
