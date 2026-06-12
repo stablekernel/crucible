@@ -47,6 +47,15 @@ func (e *GuardPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: guard %q panicked: %v", e.GuardName, e.Recovered)
 }
 
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *GuardPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
+}
+
 // AssignPanicError is returned when an assign reducer panicked and was recovered,
 // or when an assign ref did not resolve at fire time. An assign is a total reducer,
 // so a panic is a programmer error the kernel surfaces as a typed failure that
@@ -58,6 +67,15 @@ type AssignPanicError struct {
 
 func (e *AssignPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: assign %q panicked: %v", e.AssignName, e.Recovered)
+}
+
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *AssignPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
 }
 
 // ActionPanicError is returned when a host action (an OnEntry/OnExit action or a
@@ -208,10 +226,17 @@ func (e *UnboundActorError) Error() string {
 // context encode/decode failure. Op names the failing operation
 // ("restore" | "marshal" | "unmarshal"), State (when set) names the offending
 // configuration leaf, and Reason carries the detail.
+//
+// Cause is the wrapped underlying error when the failure originated in one (a
+// JSON encode/decode error, for example), exposed via Unwrap so errors.Is /
+// errors.As can reach it. Reason stays the human-readable message for backward
+// compatibility — when a cause is present, Reason carries its text — so existing
+// callers that read Reason are unaffected.
 type SnapshotError struct {
 	Op     string
 	State  string
 	Reason string
+	Cause  error
 }
 
 func (e *SnapshotError) Error() string {
@@ -220,6 +245,10 @@ func (e *SnapshotError) Error() string {
 	}
 	return fmt.Sprintf("crucible/state: snapshot %s failed: %s", e.Op, e.Reason)
 }
+
+// Unwrap exposes the wrapped cause for errors.Is / errors.As traversal; it
+// returns nil when the snapshot failure had no underlying error.
+func (e *SnapshotError) Unwrap() error { return e.Cause }
 
 // SnapshotVersionError is returned by Restore when a snapshot's version identity
 // is incompatible with the target: a snapshot-format schema version across a major

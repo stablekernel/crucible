@@ -95,7 +95,7 @@ func (a *actorAdapter[S, E, C]) SnapshotJSON() ([]byte, error) {
 func (a *actorAdapter[S, E, C]) RestoreJSON(b []byte) error {
 	var snap Snapshot[S, E, C]
 	if err := json.Unmarshal(b, &snap); err != nil {
-		return &SnapshotError{Op: "unmarshal", Reason: "actor child decode failed: " + err.Error()}
+		return &SnapshotError{Op: "unmarshal", Reason: "actor child decode failed: " + err.Error(), Cause: err}
 	}
 	restoreOpts := []RestoreOption[S]{WithRestoreClock[S](a.inst.clock)}
 	// Preserve the actor's observability mode across an in-place restore so a
@@ -154,7 +154,7 @@ func (s *ActorSystem[S, E, C]) SnapshotActors() (map[string]json.RawMessage, err
 		}
 		b, err := json.Marshal(snap)
 		if err != nil {
-			return nil, &SnapshotError{Op: "marshal", Reason: "actor encode failed: " + err.Error()}
+			return nil, &SnapshotError{Op: "marshal", Reason: "actor encode failed: " + err.Error(), Cause: err}
 		}
 		out[id] = b
 	}
@@ -197,7 +197,7 @@ func (s *ActorSystem[S, E, C]) snapshotActor(id string) (actorSnapshot, bool, er
 	if sn, ok := inst.(Snapshotter); ok {
 		b, err := sn.SnapshotJSON()
 		if err != nil {
-			return actorSnapshot{}, false, &SnapshotError{Op: "marshal", State: id, Reason: err.Error()}
+			return actorSnapshot{}, false, &SnapshotError{Op: "marshal", State: id, Reason: err.Error(), Cause: err}
 		}
 		snap.Child = b
 		snap.Resumed = true
@@ -231,7 +231,7 @@ func (s *ActorSystem[S, E, C]) RestoreActors(ctx context.Context, actors map[str
 	for _, raw := range actors {
 		var snap actorSnapshot
 		if err := json.Unmarshal(raw, &snap); err != nil {
-			return &SnapshotError{Op: "unmarshal", Reason: "actor decode failed: " + err.Error()}
+			return &SnapshotError{Op: "unmarshal", Reason: "actor decode failed: " + err.Error(), Cause: err}
 		}
 		if err := s.restoreActor(ctx, snap); err != nil {
 			return err
@@ -253,7 +253,7 @@ func (s *ActorSystem[S, E, C]) restoreActor(ctx context.Context, snap actorSnaps
 	}
 	inst, err := behavior(snap.Input)
 	if err != nil {
-		return &SnapshotError{Op: "restore", State: snap.ID, Reason: "actor re-spawn failed: " + err.Error()}
+		return &SnapshotError{Op: "restore", State: snap.ID, Reason: "actor re-spawn failed: " + err.Error(), Cause: err}
 	}
 	s.propagateTrace(inst)
 

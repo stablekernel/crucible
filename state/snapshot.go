@@ -480,7 +480,7 @@ func MarshalSnapshot[S comparable, E comparable, C any](snap Snapshot[S, E, C], 
 	codec := resolveCodec(opts...)
 	raw, err := codec.Encode(snap.Context)
 	if err != nil {
-		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error(), Cause: err}
 	}
 	snap.ContextRaw = raw
 	return json.Marshal(snapshotWire[S, E, C](snap))
@@ -494,12 +494,12 @@ func UnmarshalSnapshot[S comparable, E comparable, C any](b []byte, opts ...Snap
 	codec := resolveCodec(opts...)
 	var wire snapshotWire[S, E, C]
 	if err := json.Unmarshal(b, &wire); err != nil {
-		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: err.Error(), Cause: err}
 	}
 	snap := Snapshot[S, E, C](wire)
 	ctx, err := codec.Decode(snap.ContextRaw)
 	if err != nil {
-		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error(), Cause: err}
 	}
 	snap.Context = ctx
 	return snap, nil
@@ -516,7 +516,7 @@ type snapshotWire[S comparable, E comparable, C any] Snapshot[S, E, C]
 func (snap Snapshot[S, E, C]) MarshalJSON() ([]byte, error) {
 	raw, err := json.Marshal(snap.Context)
 	if err != nil {
-		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error(), Cause: err}
 	}
 	snap.ContextRaw = raw
 	return json.Marshal(snapshotWire[S, E, C](snap))
@@ -527,7 +527,7 @@ func (snap Snapshot[S, E, C]) MarshalJSON() ([]byte, error) {
 func (snap *Snapshot[S, E, C]) UnmarshalJSON(b []byte) error {
 	var wire snapshotWire[S, E, C]
 	if err := json.Unmarshal(b, &wire); err != nil {
-		return &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+		return &SnapshotError{Op: "unmarshal", Reason: err.Error(), Cause: err}
 	}
 	*snap = Snapshot[S, E, C](wire)
 	if len(snap.ContextRaw) == 0 {
@@ -535,7 +535,7 @@ func (snap *Snapshot[S, E, C]) UnmarshalJSON(b []byte) error {
 	}
 	var ctx C
 	if err := json.Unmarshal(snap.ContextRaw, &ctx); err != nil {
-		return &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+		return &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error(), Cause: err}
 	}
 	snap.Context = ctx
 	return nil
