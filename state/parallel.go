@@ -534,15 +534,54 @@ func (i *Instance[S, E, C]) settleParallelDone(parallel S, entity C, tr *Trace) 
 	if aerr != nil {
 		return eff, aname, aerr
 	}
-	// Continue settling upward if the parallel state itself completes a parent.
-	if pn.hasParent {
-		up, uname, uerr := i.settleDone(parallel, entity, tr)
-		eff = append(eff, up...)
-		if uerr != nil {
-			return eff, uname, uerr
-		}
+	// Continue settling upward through the enclosing spine. A parallel state is
+	// never IsFinal, so settleDone (which gates on IsFinal) is a no-op here;
+	// instead settle each enclosing compound through completion semantics, exactly
+	// as settleInteriorDone does for compounds interior to a region. Walking from
+	// the parallel up its ancestors, every enclosing compound that is now
+	// stateComplete records a done microstep and runs its OnDone, innermost-first,
+	// until an incomplete ancestor halts the cascade. The parallel's OWN OnDone
+	// already ran above and is not re-emitted here.
+	up, uname, uerr := i.settleEnclosingDone(parallel, entity, tr)
+	eff = append(eff, up...)
+	if uerr != nil {
+		return eff, uname, uerr
 	}
 	return eff, "", nil
+}
+
+// settleEnclosingDone settles the done/OnDone of every compound that ENCLOSES a
+// completed state, cascading innermost-first up the ancestor spine while each
+// enclosing ancestor is stateComplete. It is the upward counterpart shared by
+// settleParallelDone: a parallel state is never IsFinal, so settleDone cannot
+// carry the cascade past it; this routes through stateComplete instead, the same
+// completion gate settleInteriorDone uses. The starting state's own OnDone is the
+// caller's responsibility and is never run here.
+func (i *Instance[S, E, C]) settleEnclosingDone(start S, entity C, tr *Trace) (effects []Effect, name string, err error) {
+	m := i.machine
+
+	cur := start
+	for {
+		cn, ok := m.resolveNode(cur)
+		if !ok || !cn.hasParent {
+			return effects, "", nil
+		}
+		parent := cn.parent
+		pn, ok := m.resolveNode(parent)
+		if !ok {
+			return effects, "", nil
+		}
+		tr.note("done." + m.label(cur))
+		if !i.stateComplete(parent) {
+			return effects, "", nil
+		}
+		eff, aname, aerr := i.runActions(pn.state.OnDone, entity, tr)
+		effects = append(effects, eff...)
+		if aerr != nil {
+			return effects, aname, aerr
+		}
+		cur = parent
+	}
 }
 
 // fireFromState resolves the event from an explicit state up through its
