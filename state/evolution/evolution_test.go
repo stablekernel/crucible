@@ -114,6 +114,57 @@ func TestDiff_AddState_Additive(t *testing.T) {
 	assertKinds(t, r, evolution.KindStateAdded, evolution.KindTransitionAdded)
 }
 
+// TestDiff_SrcPosOnly_NotUnknownBreaking is the regression for the cluster
+// migration false-positive: a DSL-forged machine captures the builder call site
+// in each transition's SrcFile/SrcLine (diagnostic-only position metadata). When
+// a state is added, an unchanged transition can pick up a different SrcLine purely
+// because the two machines are defined at different source lines. The unknown-
+// structural-delta backstop must NOT treat that benign, non-semantic difference as
+// breaking; it must classify the change as additive (state_added).
+func TestDiff_SrcPosOnly_NotUnknownBreaking(t *testing.T) {
+	// old: a -> b, with a source position on the only transition.
+	old := &state.IR[string, string, any]{
+		Name:       "mig",
+		Initial:    "a",
+		HasInitial: true,
+		States: []state.State[string, string, any]{
+			{Name: "a", Transitions: []state.Transition[string, string, any]{
+				{From: "a", On: "go", To: "b", SrcFile: "mig.go", SrcLine: 26},
+			}},
+			{Name: "b"},
+		},
+	}
+	// updated: identical semantics, plus an added (unreachable) state "d". The
+	// unchanged a->go->b transition differs ONLY in SrcLine, as it would when the
+	// two machines are forged at different lines of the same file.
+	updated := &state.IR[string, string, any]{
+		Name:       "mig",
+		Initial:    "a",
+		HasInitial: true,
+		States: []state.State[string, string, any]{
+			{Name: "a", Transitions: []state.Transition[string, string, any]{
+				{From: "a", On: "go", To: "b", SrcFile: "mig.go", SrcLine: 38},
+			}},
+			{Name: "b"},
+			{Name: "d", IsFinal: true},
+		},
+	}
+
+	r := evolution.Diff(old, updated)
+	if hasKind(r, evolution.KindUnknownStructuralDelta) {
+		t.Fatalf("a SrcPos-only transition delta must not trip the unknown-structural-delta backstop:\n%s", r)
+	}
+	if r.Breaking() {
+		t.Fatalf("adding a state with only a SrcPos delta on an unchanged transition is additive, got breaking:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindStateAdded) {
+		t.Fatalf("expected state_added, got:\n%s", r)
+	}
+	if got := r.SemverBump(); got != evolution.Minor {
+		t.Fatalf("additive -> Minor, got %q", got)
+	}
+}
+
 func TestDiff_RemoveState_Breaking(t *testing.T) {
 	old := docMachine()
 	updated := docMachine()

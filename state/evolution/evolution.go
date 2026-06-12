@@ -611,14 +611,17 @@ func (d *differ[S, E, C]) diffTransition(tpath string, ot, nt state.Transition[S
 
 // diffUnknownStructuralDelta is the fail-safe backstop. Every structural field
 // the differ models explicitly (From, To, On, Guards, Effects, WaitMode,
-// GuardExpr, EventLess) is zeroed on both transitions, then the residuals are
+// GuardExpr, EventLess), plus the diagnostic-only source-position fields
+// (SrcFile, SrcLine), is zeroed on both transitions, then the residuals are
 // JSON-marshaled and compared. Any remaining difference — Forbidden, Wildcard,
 // Internal, Reenter, Raise, or a field a future IR adds — trips this breaking
 // change so unmodeled deltas over-report rather than silently classifying as a
 // patch. Zeroing the understood fields keeps the backstop from double-firing on a
-// difference a specific rule already reported. Marshaling failures are ignored;
-// they cannot happen for the IR's JSON-safe transition shape, and the package's
-// no-panic contract forbids surfacing them here.
+// difference a specific rule already reported; zeroing the source-position fields
+// keeps it from flagging a benign, non-semantic call-site shift (e.g. an unchanged
+// transition forged at a different line in the new revision). Marshaling failures
+// are ignored; they cannot happen for the IR's JSON-safe transition shape, and the
+// package's no-panic contract forbids surfacing them here.
 func (d *differ[S, E, C]) diffUnknownStructuralDelta(tpath string, ot, nt state.Transition[S, E, C]) {
 	if residualEqual(ot, nt) {
 		return
@@ -646,7 +649,11 @@ func residualEqual[S comparable, E comparable, C any](ot, nt state.Transition[S,
 
 // zeroUnderstood returns a copy of the transition with every field the differ
 // models explicitly reset to its zero value, so only residual (unmodeled) fields
-// remain to be compared by the backstop.
+// remain to be compared by the backstop. It also zeroes the diagnostic-only
+// source-position fields (SrcFile, SrcLine): these are non-semantic call-site
+// markers captured by the DSL builder (and strippable via WithoutSrcPos), so a
+// position-only delta — e.g. an unchanged transition forged at a different line in
+// the new revision — must not be mistaken for a structural change.
 func zeroUnderstood[S comparable, E comparable, C any](t state.Transition[S, E, C]) state.Transition[S, E, C] {
 	var zeroS S
 	var zeroE E
@@ -658,6 +665,9 @@ func zeroUnderstood[S comparable, E comparable, C any](t state.Transition[S, E, 
 	t.WaitMode = 0
 	t.GuardExpr = nil
 	t.EventLess = false
+	// Diagnostic-only source position: never a behavior change.
+	t.SrcFile = ""
+	t.SrcLine = 0
 	return t
 }
 
