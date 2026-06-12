@@ -34,6 +34,11 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	defer func() {
 		i.fireData = nil
 		i.hasFireData = false
+		// The raised-event queue is macrostep-local: the run-to-completion loop
+		// drains it on the success path, but a macrostep that errors returns early
+		// (fireCore/runToCompletion) with events still queued. Reset it here so a
+		// stale internal event cannot leak into — and replay during — a later Fire.
+		i.raised = nil
 	}()
 	return i.fireWithMiddleware(ctx, event)
 }
