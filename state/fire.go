@@ -890,9 +890,11 @@ func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
 }
 
-// evalAction resolves and runs an action ref. Kernel built-in actions (e.g. the
-// Cancel built-in) are handled directly without consulting the host registry.
-func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
+// evalAction resolves and runs an action ref, recovering a panicking host action
+// into a typed ActionPanicError so a faulty action fails the fire deterministically
+// rather than crashing Fire. Kernel built-in actions (e.g. the Cancel built-in) are
+// handled directly without consulting the host registry.
+func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 	if isBuiltinAction(a.Name) {
 		return evalBuiltinAction(a)
 	}
@@ -900,6 +902,12 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
 	if !found {
 		return nil, fmt.Errorf("unbound action %q at fire time", a.Name)
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			eff = nil
+			err = &ActionPanicError{ActionName: a.Name, Recovered: r}
+		}
+	}()
 	return fn(ActionCtx[C]{Entity: entity, Params: a.Params})
 }
 

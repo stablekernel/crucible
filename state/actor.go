@@ -275,6 +275,12 @@ type actorAdapter[S comparable, E comparable, C any] struct {
 	inst    *Instance[S, E, C]
 	output  func(*Instance[S, E, C]) any
 	pending []Effect
+	// fireErr holds the FireResult.Err from the most recent DeliverFire, so the
+	// ActorSystem's guarded step can settle a child whose fire failed (e.g. a
+	// recovered action/guard/assign panic surfaced as a typed error) as a failure
+	// rather than silently swallowing it. It is read once via FireErr and cleared
+	// at the start of each DeliverFire.
+	fireErr error
 }
 
 // NewActor adapts a Cast child *Instance into an ActorInstance an ActorSystem can
@@ -326,11 +332,13 @@ func isActorEffect(eff Effect) bool {
 // ChildEffects and reports whether the child reached its final state plus its
 // output.
 func (a *actorAdapter[S, E, C]) DeliverFire(ctx context.Context, event any) (bool, any) {
+	a.fireErr = nil
 	ev, ok := event.(E)
 	if !ok {
 		return a.inst.InFinal(), a.outputIfDone()
 	}
 	res := a.inst.Fire(ctx, ev)
+	a.fireErr = res.Err
 	for _, eff := range res.Effects {
 		if isActorEffect(eff) {
 			a.pending = append(a.pending, eff)
@@ -339,6 +347,14 @@ func (a *actorAdapter[S, E, C]) DeliverFire(ctx context.Context, event any) (boo
 	done := a.inst.InFinal()
 	return done, a.outputIfDone()
 }
+
+// FireErr returns the FireResult.Err from the most recent DeliverFire, or nil
+// when that step fired cleanly. The ActorSystem reads it (via the unexported
+// fireErrer interface) to settle a child whose fire failed — for instance a host
+// action that panicked and was recovered into a typed ActionPanicError — as a
+// failure that routes onError or escalates, rather than swallowing it. It is not
+// part of the public ActorInstance contract.
+func (a *actorAdapter[S, E, C]) FireErr() error { return a.fireErr }
 
 // ChildEffects returns and drains the buffered child actor effects — the
 // SpawnActor / StopActor lifecycle effects and the SendTo / SendParent /

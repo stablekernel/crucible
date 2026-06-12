@@ -60,6 +60,30 @@ func (e *AssignPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: assign %q panicked: %v", e.AssignName, e.Recovered)
 }
 
+// ActionPanicError is returned when a host action (an OnEntry/OnExit action or a
+// transition action) panicked and was recovered. An action is host code the
+// kernel runs during a fire; a panic is a programmer error the kernel surfaces as
+// a typed failure on FireResult.Err rather than letting it crash Fire. When the
+// recovered value is itself an error, Unwrap exposes it so errors.Is / errors.As
+// can reach the inner cause.
+type ActionPanicError struct {
+	ActionName string
+	Recovered  any
+}
+
+func (e *ActionPanicError) Error() string {
+	return fmt.Sprintf("crucible/state: action %q panicked: %v", e.ActionName, e.Recovered)
+}
+
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *ActionPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
+}
+
 // PolicyDeniedError is returned when a policy returned Deny.
 type PolicyDeniedError struct {
 	PolicyName string
