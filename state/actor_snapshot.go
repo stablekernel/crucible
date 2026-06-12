@@ -68,12 +68,14 @@ type actorSnapshot struct {
 	// Done reports whether the actor had already reached its final state and been
 	// settled at snapshot time, so RestoreActors does not re-spawn a completed actor.
 	Done bool `json:"done"`
-	// Mailbox is the reserved slot for the actor's mailbox backlog (queued but
-	// unprocessed envelopes). Empty at this version under the quiescence assumption
-	// (mailboxes are drained by Step before a snapshot is taken), present so a future
-	// distributed/async resume — where a node can crash mid-delivery — has a place to
-	// carry the backlog without a format break. This reserves capacity for the
-	// mailbox-loss gap documented above.
+	// Mailbox is the RESERVED slot for the actor's mailbox backlog (queued but
+	// unprocessed envelopes). It is always empty in v1.0: SnapshotActors requires a
+	// quiesced actor tree and refuses (with a typed *NonQuiescentActorError) to
+	// snapshot an actor whose mailbox is non-empty, so no backlog is ever dropped.
+	// Populating mailboxes — to support a future distributed/async resume where a
+	// node can crash mid-delivery — is a future additive change that lifts the
+	// quiescence requirement without a format break; the slot is present now so that
+	// change needs no new field.
 	Mailbox []json.RawMessage `json:"mailbox,omitempty"`
 	// Children is the recursive snapshots of this actor's own spawned children.
 	Children []actorSnapshot `json:"children,omitempty"`
@@ -123,10 +125,13 @@ func (a *actorAdapter[S, E, C]) RestoreJSON(b []byte) error {
 // under the parent snapshot's Actors map. It is a pure read of the system's actor
 // registry and never fires or mutates an actor.
 //
-// Call it at a quiescent point (after draining mailboxes with Step), so no
-// in-flight mailbox backlog is lost. An actor whose ActorInstance does not
-// implement Snapshotter is recorded as present but not resumable (Resumed false)
-// and is re-spawned fresh on RestoreActors.
+// It requires a QUIESCED tree: v1.0 does not persist the reserved per-actor
+// mailbox slot, so SnapshotActors refuses — returning a typed *NonQuiescentActorError
+// naming the offending actor — when any actor in the tree has a queued, in-flight
+// message, rather than silently producing a lossy snapshot. Drain the tree (Step/
+// Tick every actor to empty its mailbox) before calling it. An actor whose
+// ActorInstance does not implement Snapshotter is recorded as present but not
+// resumable (Resumed false) and is re-spawned fresh on RestoreActors.
 func (s *ActorSystem[S, E, C]) SnapshotActors() (map[string]json.RawMessage, error) {
 	s.mu.Lock()
 	roots := make([]string, 0, len(s.actors))
@@ -172,6 +177,20 @@ func (s *ActorSystem[S, E, C]) snapshotActor(id string) (actorSnapshot, bool, er
 	if !ok {
 		s.mu.Unlock()
 		return actorSnapshot{}, false, nil
+	}
+	// Quiescence guard: a v1.0 actor-tree snapshot requires a drained tree. The
+	// reserved mailbox slot is not persisted, so an actor with a queued, in-flight
+	// message cannot be snapshotted without silently losing that message. Refuse with
+	// a typed error naming the actor instead of producing a lossy snapshot. A host
+	// drains the tree (Step/Tick each actor) before snapshotting.
+	if n := len(ra.mailbox); n > 0 {
+		systemID := ra.ref.SystemID
+		s.mu.Unlock()
+		return actorSnapshot{}, false, &NonQuiescentActorError{
+			ActorID:  id,
+			SystemID: systemID,
+			Queued:   n,
+		}
 	}
 	snap := actorSnapshot{
 		ID:       id,

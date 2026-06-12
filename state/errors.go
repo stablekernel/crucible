@@ -271,6 +271,35 @@ func (e *SnapshotVersionError) Error() string {
 		e.Kind, e.Machine, e.Got, e.Want, e.Reason)
 }
 
+// NonQuiescentActorError is returned by SnapshotActors when an actor in the tree
+// has a non-empty mailbox (a queued, in-flight message) at snapshot time. A v1.0
+// actor-tree snapshot requires a quiesced tree: the reserved per-actor mailbox slot
+// is not persisted, so snapshotting a non-quiesced tree would silently drop the
+// queued messages. SnapshotActors refuses such a snapshot with this typed error
+// instead, naming the offending actor and its system, and reporting how many
+// envelopes were queued. Drain the tree (Step/Tick every actor to empty its
+// mailbox) before snapshotting, or wait for the future additive change that
+// persists mailbox backlog.
+type NonQuiescentActorError struct {
+	// ActorID is the id of the actor whose mailbox was non-empty.
+	ActorID string
+	// SystemID is the actor's well-known system id, when it has one.
+	SystemID string
+	// Queued is the number of in-flight envelopes in the actor's mailbox.
+	Queued int
+}
+
+func (e *NonQuiescentActorError) Error() string {
+	if e.SystemID != "" {
+		return fmt.Sprintf(
+			"crucible/state: cannot snapshot non-quiesced actor %q (systemId %q): %d queued message(s); drain the actor tree before snapshotting",
+			e.ActorID, e.SystemID, e.Queued)
+	}
+	return fmt.Sprintf(
+		"crucible/state: cannot snapshot non-quiesced actor %q: %d queued message(s); drain the actor tree before snapshotting",
+		e.ActorID, e.Queued)
+}
+
 // MultiRegionError aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.

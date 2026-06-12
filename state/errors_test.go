@@ -114,6 +114,16 @@ func TestTypedErrors_Messages(t *testing.T) {
 			err:      &state.UnknownEffectKindError{Kind: "foreign"},
 			contains: []string{"unknown effect kind", "foreign"},
 		},
+		{
+			name:     "NonQuiescentActor with systemId",
+			err:      &state.NonQuiescentActorError{ActorID: "child-0", SystemID: "worker", Queued: 2},
+			contains: []string{"non-quiesced actor", "child-0", "worker", "2 queued"},
+		},
+		{
+			name:     "NonQuiescentActor without systemId",
+			err:      &state.NonQuiescentActorError{ActorID: "child-0", Queued: 1},
+			contains: []string{"non-quiesced actor", "child-0", "1 queued"},
+		},
 	}
 
 	for _, tc := range cases {
