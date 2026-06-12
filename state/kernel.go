@@ -353,7 +353,9 @@ func (t *Transition[S, E, C]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Effect is an abstract, domain-defined payload. The kernel never inspects it.
+// Effect is host-defined effect data emitted by actions; it is opaque to the
+// kernel — the host interprets it by kind, never the kernel. Effect = any keeps
+// the payload free-form.
 type Effect = any
 
 // Outcome classifies the result recorded in a Trace.
