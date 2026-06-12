@@ -1,6 +1,9 @@
 package state
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // isZero reports whether a comparable value equals its type's zero value. Used
 // to tell a targetless wildcard (no GoTo) from one with an explicit target.
@@ -125,6 +128,19 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
 			Severity: diagWarning,
 			Message:  "missing CurrentStateFn (cannot derive current state from an entity)",
+		}})
+	}
+
+	// Pointer context (C is a pointer type) forfeits clean-replay determinism: a
+	// bound action that mutates through the pointer escapes the value-semantics
+	// contract, so replaying a trace can diverge. This is a soft warning, not a
+	// hard error — a pointer context still builds and fires; Strict mode rejects
+	// it. It is type-level (no source position), mirroring the CurrentStateFn
+	// warning above.
+	if reflect.TypeOf((*C)(nil)).Elem().Kind() == reflect.Pointer {
+		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+			Severity: diagWarning,
+			Message:  "pointer context (C is a pointer type) forfeits clean-replay determinism; prefer a value context",
 		}})
 	}
 
