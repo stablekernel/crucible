@@ -1402,9 +1402,13 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	diags := b.lint()
 	for _, d := range diags {
 		if d.Severity == diagError || (cfg.strict && d.Severity == diagWarning) {
-			// Unbound refs surface as the typed error so callers can errors.As.
+			// Unbound refs and the region-lint findings surface as their typed
+			// errors so callers can errors.As through Quench's panic.
 			if d.unboundRef != nil {
 				panic(d.unboundRef)
+			}
+			if d.regionEscape != nil {
+				panic(d.regionEscape)
 			}
 			panic(&quenchError{Diagnostic: d})
 		}

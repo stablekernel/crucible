@@ -236,6 +236,23 @@ func (e *MultiRegionError) Error() string {
 // Unwrap exposes the per-region errors for errors.As / errors.Is traversal.
 func (e *MultiRegionError) Unwrap() []error { return e.Errors }
 
+// RegionEscapeError reports a region-internal transition whose target lies
+// outside the owning parallel region. The construct is ill-defined: SCXML
+// semantics would exit the whole parallel state, which the region-scoped builder
+// API does not express, so it is rejected at Quench rather than corrupting the
+// configuration at runtime. Region names the owning region, From the source
+// state, and To the escaping target.
+type RegionEscapeError struct {
+	Region string
+	From   string
+	To     string
+}
+
+func (e *RegionEscapeError) Error() string {
+	return fmt.Sprintf("crucible/state: region %q transition from %q targets %q outside the region",
+		e.Region, e.From, e.To)
+}
+
 // VerifyError aggregates one or more failing requirements found by Verify.
 type VerifyError struct {
 	Failures []RequirementFailure

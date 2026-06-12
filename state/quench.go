@@ -21,6 +21,9 @@ const (
 type diagnostic struct {
 	Diagnostic
 	unboundRef *UnboundRefError
+	// regionEscape carries the typed region-escape error so Quench can panic with
+	// the exact errors.As-able value, mirroring unboundRef.
+	regionEscape *RegionEscapeError
 }
 
 // quenchError wraps a non-ref lint finding so Quench panics with an error value
@@ -95,6 +98,11 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 			b.checkHistoryNested(&diags, &sd.state, nil)
 		}
 	}
+
+	// Region-scoped transition validity: a region-internal transition must not
+	// target a state outside its owning region (T7 escape), nor a history
+	// pseudo-state owned by a different region (K2 cross-region history target).
+	b.checkRegionTransitions(&diags)
 
 	// Missing initial state.
 	if !b.hasInitial {
@@ -294,6 +302,109 @@ func (b *Builder[S, E, C]) checkHistoryNested(diags *[]diagnostic, s *State[S, E
 			// A region is parallel substructure: a history state nested here is in a
 			// region, not a compound — flag via the parent check above.
 			b.checkHistoryNested(diags, &s.Regions[ri].States[i], s)
+		}
+	}
+}
+
+// regionMembership records, for one state, the ordered chain of orthogonal
+// regions that enclose it, outermost first. Each entry pairs the owning parallel
+// state's label with the region name. A flat (non-region) state has an empty
+// chain.
+type regionMembership struct {
+	parallels []string // owning parallel-state labels, outermost first
+	regions   []string // region names, aligned with parallels
+}
+
+// innermost returns the innermost (parallel, region) pair and whether the state
+// sits inside any region at all.
+func (rm regionMembership) innermost() (parallel, region string, ok bool) {
+	if len(rm.regions) == 0 {
+		return "", "", false
+	}
+	last := len(rm.regions) - 1
+	return rm.parallels[last], rm.regions[last], true
+}
+
+// contains reports whether (parallel, region) appears anywhere in the chain — i.e.
+// whether this state lies inside that specific region (possibly nested deeper).
+func (rm regionMembership) contains(parallel, region string) bool {
+	for i := range rm.regions {
+		if rm.parallels[i] == parallel && rm.regions[i] == region {
+			return true
+		}
+	}
+	return false
+}
+
+// regionChains computes the region membership of every declared state for the
+// DSL (flat stateDef) path by walking each state's parent chain. The chain is
+// built outermost-first. Keyed by the state's label.
+func (b *Builder[S, E, C]) regionChains() map[S]regionMembership {
+	out := make(map[S]regionMembership, len(b.states))
+	var chainOf func(sd *stateDef[S, E, C]) regionMembership
+	chainOf = func(sd *stateDef[S, E, C]) regionMembership {
+		if !sd.hasParent {
+			return regionMembership{}
+		}
+		parent, ok := b.stateIndex[sd.parent]
+		var rm regionMembership
+		if ok {
+			rm = chainOf(parent)
+		}
+		// sd.region is set only when sd sits directly inside a Region block; its
+		// parent is then the owning parallel state.
+		if sd.region != "" {
+			rm.parallels = append(append([]string(nil), rm.parallels...), fmt.Sprint(sd.parent))
+			rm.regions = append(append([]string(nil), rm.regions...), sd.region)
+		}
+		return rm
+	}
+	for _, sd := range b.states {
+		out[sd.state.Name] = chainOf(sd)
+	}
+	return out
+}
+
+// checkRegionTransitions validates that region-internal transitions stay within
+// their owning region. It is a no-op for the prebuilt (IR) path, where region
+// substructure is nested rather than flat; the DSL Forge path (where region
+// states are flat stateDefs indexed in stateIndex) is the one that can express
+// an escaping target.
+func (b *Builder[S, E, C]) checkRegionTransitions(diags *[]diagnostic) {
+	if b.prebuilt {
+		return
+	}
+	chains := b.regionChains()
+	for _, sd := range b.states {
+		parallel, region, inRegion := chains[sd.state.Name].innermost()
+		if !inRegion {
+			continue // flat / compound transitions are unconstrained here
+		}
+		for ti := range sd.state.Transitions {
+			t := &sd.state.Transitions[ti]
+			if isZero(t.To) || t.Forbidden {
+				continue
+			}
+			if _, ok := b.stateIndex[t.To]; !ok {
+				continue // undeclared target is reported by the main target check
+			}
+			// Region escape (T7): the target lies outside the source's region.
+			if !chains[t.To].contains(parallel, region) {
+				re := &RegionEscapeError{
+					Region: region,
+					From:   fmt.Sprint(t.From),
+					To:     fmt.Sprint(t.To),
+				}
+				*diags = append(*diags, diagnostic{
+					Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  re.Error(),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					},
+					regionEscape: re,
+				})
+			}
 		}
 	}
 }
