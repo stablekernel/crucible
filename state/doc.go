@@ -204,6 +204,94 @@
 // log.Fatal on an operational error. Panics are reserved strictly for
 // programmer error at construction time (Quench).
 //
+// # Concurrency
+//
+// An Instance is NOT safe for concurrent use; the host must serialize all access
+// (Fire/Snapshot/WaitFor) to a given Instance. The Instance carries no mutex and no
+// atomic: Fire mutates the configuration, context, and history in place while
+// Snapshot and the WaitFor family read those same fields, so touching one Instance
+// from more than one goroutine without external synchronization is a data race. Run
+// each Instance on a single goroutine (or guard it with the host's own lock);
+// distinct Instances are independent and may run in parallel. A Machine, by
+// contrast, is immutable after Quench and may be shared across goroutines freely —
+// it is the per-instance runtime state, not the definition, that is single-owner.
+//
+// WaitFor in particular invites cross-goroutine misuse because it reads as a
+// blocking wait, but it is NOT one: it is a synchronous driver-poll loop that runs
+// entirely on the caller's goroutine, advancing the driver (which fires the
+// instance) and re-reading the snapshot each iteration with no lock. WaitFor must be
+// called on the same goroutine that owns the instance; never park one goroutine in
+// WaitFor while another fires the same instance. The only cross-goroutine signal it
+// honors is ctx cancellation, which it polls between steps.
+//
+// # Timer deadlines are a host concern (v1.0 contract)
+//
+// A delayed (`after`) transition arms a host timer through a ScheduleAfter effect
+// carrying its FULL declared delay. The kernel snapshot intentionally does NOT carry
+// absolute deadlines or remaining durations for pending timers: PendingRefs.Timers
+// holds stable schedule IDs only, and ResumeEffects re-arms each pending timer with
+// its full declared delay — the same effect a fresh entry would emit. A non-durable
+// host that re-arms straight from ResumeEffects therefore restarts every `after`
+// timer from zero on each restore, i.e. timer drift on every restore cycle.
+//
+// This is a deliberate v1.0 contract decision: the absolute deadline of an `after`
+// timer is a HOST concern. A durable host persists the timer's absolute deadline out
+// of band and re-arms with the REMAINING time on restore (this is exactly what the
+// durable subpackage does); the kernel keeps the pure snapshot deadline-free. Note
+// the consequence: a host rolling its OWN persistence (rather than using durable)
+// must persist and restore timer deadlines itself, or accept the drift. Carrying
+// deadlines in the kernel snapshot (e.g. a Pending.TimerDeadlines field) is a
+// post-1.0 ADDITIVE item, not part of the v1.0 frozen surface.
+//
+// # Guard eval-error asymmetry (kernel policy)
+//
+// The kernel is the policy owner for what happens when a guard ERRORS during
+// evaluation, and the policy is deliberately asymmetric by guard trigger:
+//
+//   - An EVENTLESS (`Always`) guard that errors fails CLOSED: the transition is
+//     treated as not-taken and no error surfaces, so a faulty guard can never
+//     silently enable an eventless transition (it simply does not fire).
+//   - An EVENT-DRIVEN guard that errors fails LOUD: the error surfaces as a Fire
+//     error (OutcomeGuardPanic), so a host learns immediately that an event it
+//     dispatched hit a broken guard rather than silently dropping the event.
+//
+// The rationale is that an eventless transition is the kernel's own
+// run-to-completion drive — failing it closed keeps a macrostep from looping on a
+// broken guard — whereas an event-driven transition is a host request that deserves
+// an explicit error. The expr subpackage documents the same asymmetry from its side;
+// this is the kernel-contract statement of it.
+//
+// # Stability (v1.0 freeze)
+//
+// At v1.0 the kernel's data model and contracts are frozen. The freeze COVERS the
+// machine definition and its serialized IR (the JSON wire form), the context model
+// (value-context assign semantics), the effect envelope (kind + payload + meta and
+// the KindedEffect/EffectEnvelope surface), and the emission-ordering contract (the
+// determinism and ordering rules above). From 1.0.0 onward these arrive new
+// capability as ADDITIVE packages, modules, and options rather than breaking
+// changes; a MAJOR schema bump is refused rather than guessed at.
+//
+// The freeze does NOT cover the advisory tooling subpackages shipped alongside the
+// release: analysis (static model-checking over a machine's IR), evolution
+// (classifying the difference between two machine definitions), conformance (the
+// cross-implementation harness), and verify (with symbolic). These are part of the
+// RELEASE but their APIs and finding-shapes are ADVISORY and may change in a minor
+// release; depend on them as tooling, not as a frozen contract. The frozen core
+// kernel never imports them.
+//
+// # Known limitations
+//
+// One confirmed SCXML divergence is deferred in v1.0, documented here so it is a
+// conscious gap rather than a silent one: entering a compound state via INITIAL
+// DESCENT that lands directly on a FINAL leaf does NOT currently raise that
+// compound's done / OnDone. The done settlement runs only on a transition commit, so
+// a DIRECT transition to the final leaf DOES raise the compound's done as expected,
+// but an initial descent (e.g. at Cast, or descending into a freshly-entered
+// compound whose initial child is itself final) lands on the final leaf without
+// settling the enclosing compound's completion. Avoid declaring a compound whose
+// initial child is final when you depend on its OnDone; reach the final leaf by a
+// transition. Closing this gap is a deferred post-1.0 item.
+//
 // # Status
 //
 // The kernel implements the Forge/Temper/Quench build path, Cast/Fire pure step

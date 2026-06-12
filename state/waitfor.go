@@ -45,6 +45,18 @@ type WaitPredicate[S comparable, E comparable, C any] func(snap Snapshot[S, E, C
 // WaitFor never reads the wall clock: time is measured by the driver's clock (the
 // Scheduler's, a FakeClock in tests), so the whole helper is deterministic under a
 // fake clock.
+//
+// Concurrency: despite its blocking framing, WaitFor is NOT a cross-goroutine
+// wait. It is a synchronous driver-poll loop that runs ENTIRELY on the calling
+// goroutine: each iteration it advances the driver (whose advance calls Tick ->
+// Fire, mutating the instance) and then reads inst.Snapshot(), with no lock. Because
+// Instance is not safe for concurrent use, WaitFor must be called on the SAME
+// goroutine that owns the instance, and no Fire (or other WaitFor/Snapshot) on that
+// instance may run concurrently on another goroutine. Do not "park" one goroutine in
+// WaitFor while another fires the instance — that is a data race. The supported
+// pattern is single-goroutine: WaitFor itself IS the driver that advances and
+// observes the instance; the only concurrency it tolerates is ctx cancellation from
+// another goroutine, which it polls between steps.
 func WaitFor[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *Instance[S, E, C],
@@ -111,14 +123,20 @@ func WaitFor[S comparable, E comparable, C any](
 
 // WaitInState returns a WaitPredicate that holds when the instance's primary
 // active leaf equals target — the common "wait until it reaches state X" case
-// (waiting until the instance's snapshot satisfies a predicate).
+// (waiting until the instance's snapshot satisfies a predicate). Pass it to
+// WaitFor, which drives and observes the instance on the caller's goroutine;
+// Instance is not safe for concurrent use, so the host must serialize all access
+// (Fire/Snapshot/WaitFor) to a given instance.
 func WaitInState[S comparable, E comparable, C any](target S) WaitPredicate[S, E, C] {
 	return func(snap Snapshot[S, E, C]) bool { return snap.Current == target }
 }
 
 // WaitDone returns a WaitPredicate that holds when the instance has reached
 // completion (its whole active configuration is final), mirroring
-// `waitFor(actor, (s) => s.status === 'done')`.
+// `waitFor(actor, (s) => s.status === 'done')`. Pass it to WaitFor, which drives
+// and observes the instance on the caller's goroutine; Instance is not safe for
+// concurrent use, so the host must serialize all access (Fire/Snapshot/WaitFor) to
+// a given instance.
 func WaitDone[S comparable, E comparable, C any]() WaitPredicate[S, E, C] {
 	return func(snap Snapshot[S, E, C]) bool { return snap.Status == StatusDone }
 }

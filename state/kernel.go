@@ -1670,6 +1670,14 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 }
 
 // Instance binds a Machine to one entity and carries trace history.
+//
+// Instance is NOT safe for concurrent use; the host must serialize all access
+// (Fire/Snapshot/WaitFor) to a given Instance. The struct carries no mutex and no
+// atomic: Fire mutates the configuration, context, history, and the macrostep-local
+// queues in place, while Snapshot and the WaitFor family read those same fields. A
+// host that touches one Instance from more than one goroutine without external
+// synchronization races. Run each Instance on a single goroutine (or guard it with
+// the host's own lock); distinct Instances are independent and may run in parallel.
 type Instance[S comparable, E comparable, C any] struct {
 	machine *Machine[S, E, C]
 	entity  C

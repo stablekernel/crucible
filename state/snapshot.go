@@ -270,7 +270,11 @@ type InFlightService struct {
 // effects.
 type PendingRefs struct {
 	// Timers are the schedule IDs of the pending delayed (`after`) transitions
-	// armed for the active configuration.
+	// armed for the active configuration. These are IDENTITIES only — the snapshot
+	// carries no absolute deadline or remaining duration for a pending timer. On
+	// restore, ResumeEffects re-arms each timer with its FULL declared delay; a host
+	// that needs drift-free timers persists the absolute deadline itself (the v1.0
+	// host-owns-deadlines contract; see ResumeEffects).
 	Timers []string `json:"timers,omitempty"`
 	// Services are the IDs of the invoked services running for the active
 	// configuration.
@@ -325,6 +329,12 @@ func (jsonCodec[C]) Decode(b []byte) (C, error) {
 // configuration (StatusDone when the whole configuration is final, else
 // StatusRunning); a host that tracks an explicit failure sets StatusError and
 // Error on the returned snapshot before persisting.
+//
+// Snapshot is a read, but Instance is NOT safe for concurrent use: the host must
+// serialize all access (Fire/Snapshot/WaitFor) to a given Instance. Snapshot must
+// not run concurrently with a Fire on the same Instance — they touch the same
+// unguarded fields. Take a snapshot at a quiescent point between Fires, on the same
+// goroutine that drives the Instance.
 func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
 	cfg := i.Configuration()
 	snap := Snapshot[S, E, C]{
@@ -390,6 +400,19 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // Entry actions are NOT re-run: ResumeEffects emits only the lifecycle re-arm
 // effects, never the states' OnEntry actions, so a restored instance resumes
 // rather than re-enters.
+//
+// Timer re-arm and the v1.0 deadline contract: ResumeEffects re-arms each pending
+// `after` timer with its FULL declared delay (the same ScheduleAfter a fresh entry
+// would emit), NOT the time remaining at snapshot. The kernel snapshot intentionally
+// carries NO absolute deadlines or remaining durations for pending timers (see
+// PendingRefs.Timers, which holds stable schedule IDs only), so a host that re-arms
+// straight from ResumeEffects restarts every `after` timer from zero on restore —
+// timer drift on every restore cycle. In v1.0 the absolute deadline of an `after`
+// timer is a HOST concern: a durable host persists the timer's absolute deadline out
+// of band and re-arms with the REMAINING time (this is what the durable subpackage
+// does); the kernel's snapshot deliberately does not own the wall-clock deadline.
+// Carrying deadlines in the snapshot (e.g. a Pending.TimerDeadlines field) is a
+// post-1.0 ADDITIVE item, not a v1.0 contract.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
 	cfg := i.Configuration()

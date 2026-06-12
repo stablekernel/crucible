@@ -299,6 +299,13 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 // guardsPass reports whether every guard on a transition currently passes. A
 // guard that errors (panics) is treated as not passing, so a faulty guard never
 // silently enables an eventless transition.
+//
+// This is the EVENTLESS (`Always`) half of the kernel's guard eval-error policy:
+// an errored guard fails CLOSED (the transition is treated as not-taken and no
+// error surfaces). It is deliberately asymmetric with an EVENT-DRIVEN guard, which
+// fails LOUD — an error there sets OutcomeGuardPanic and is returned as a Fire
+// error (see the guard evaluation in fireSpine). The kernel owns this policy; the
+// expr subpackage documents the same asymmetry from its side.
 func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
 	for _, g := range t.Guards {
 		ok, err := i.machine.evalGuard(g, i.entity)
