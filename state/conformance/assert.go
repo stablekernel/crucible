@@ -2,7 +2,6 @@ package conformance
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -28,8 +27,9 @@ func evaluate[S comparable](assertions []Assertion, res ScenarioResult[S]) []Ass
 	return out
 }
 
-// scoreAssertion evaluates one assertion. EffectsEmitted is order-insensitive;
-// the remaining assertions compare scalars.
+// scoreAssertion evaluates one assertion. EffectsEmitted compares the emitted
+// effect ref names ORDER-SENSITIVELY (a reordered sequence fails); the remaining
+// assertions compare scalars.
 func scoreAssertion[S comparable](a Assertion, res ScenarioResult[S]) AssertionResult {
 	r := AssertionResult{Type: a.Type, Expected: a.Expected}
 	switch a.Type {
@@ -40,7 +40,11 @@ func scoreAssertion[S comparable](a Assertion, res ScenarioResult[S]) AssertionR
 	case AssertEffectsEmitted:
 		actual := effectRefNames(res.Effects)
 		r.Actual = actual
-		r.Pass = sameSet(toStringSlice(a.Expected), actual)
+		r.Pass = sameSequence(toStringSlice(a.Expected), actual)
+	case AssertEffectsPayloads:
+		actual := res.EffectDetails
+		r.Actual = actual
+		r.Pass = sameSequence(toStringSlice(a.Expected), actual)
 	case AssertTraceLength:
 		actual := len(res.Trace.Steps)
 		r.Actual = actual
@@ -72,18 +76,17 @@ func effectRefNames(labels []string) []string {
 	return out
 }
 
-// sameSet reports whether two slices contain the same elements, ignoring order
-// but honoring multiplicity.
-func sameSet(a, b []string) bool {
+// sameSequence reports whether two slices are element-wise equal in order. It is
+// the order-sensitive, payload-aware comparison the conformance contract
+// requires: a reordered effect sequence or a changed payload rendering is a
+// mismatch, not an equivalence. This is deliberately NOT a set comparison — the
+// whole point of conformance is to catch an emission-order regression.
+func sameSequence(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	ac := append([]string(nil), a...)
-	bc := append([]string(nil), b...)
-	sort.Strings(ac)
-	sort.Strings(bc)
-	for i := range ac {
-		if ac[i] != bc[i] {
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}

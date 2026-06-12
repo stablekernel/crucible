@@ -20,4 +20,13 @@
 // The package depends only on the state kernel and the standard library, so it
 // adds no third-party dependencies to a consumer that vendors it to prove its
 // own machines correct.
+//
+// # Stability
+//
+// This package SHIPS as part of the v1.0 release, but it is ADVISORY: its API
+// surface and its golden/assertion/trace schema shapes are NOT covered by the
+// v1.0 frozen-contract guarantee and MAY change in a minor release. Depend on it
+// to prove your machines correct, but pin your version and expect the
+// scenario/trace/assertion shapes to evolve. The frozen v1.0 contract is the
+// state kernel itself; conformance is the tooling that exercises it.
 package conformance

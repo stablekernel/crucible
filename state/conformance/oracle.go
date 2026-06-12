@@ -75,12 +75,34 @@ func diffResults[S comparable](name string, ref, sub ScenarioResult[S], cfg comp
 			Subject:   fmt.Sprint(sub.FinalState),
 		})
 	}
-	if !cfg.ignoreEffects && !sameSet(effectRefNames(ref.Effects), effectRefNames(sub.Effects)) {
+	if !cfg.ignoreEffects {
+		// Effects are compared ORDER-SENSITIVELY: a reordered emission sequence is a
+		// regression, not an equivalence.
+		if !sameSequence(effectRefNames(ref.Effects), effectRefNames(sub.Effects)) {
+			out = append(out, Mismatch{
+				Scenario:  name,
+				Field:     "effects",
+				Reference: fmt.Sprint(effectRefNames(ref.Effects)),
+				Subject:   fmt.Sprint(effectRefNames(sub.Effects)),
+			})
+		} else if !sameSequence(ref.EffectDetails, sub.EffectDetails) {
+			// Names agree in order but a payload diverged (e.g. a changed timer
+			// duration). Payload-aware comparison catches what the name comparison
+			// cannot.
+			out = append(out, Mismatch{
+				Scenario:  name,
+				Field:     "effects.payload",
+				Reference: fmt.Sprint(ref.EffectDetails),
+				Subject:   fmt.Sprint(sub.EffectDetails),
+			})
+		}
+	}
+	if fmt.Sprint(ref.FinalContext) != fmt.Sprint(sub.FinalContext) {
 		out = append(out, Mismatch{
 			Scenario:  name,
-			Field:     "effects",
-			Reference: fmt.Sprint(effectRefNames(ref.Effects)),
-			Subject:   fmt.Sprint(effectRefNames(sub.Effects)),
+			Field:     "finalContext",
+			Reference: ref.FinalContext,
+			Subject:   sub.FinalContext,
 		})
 	}
 	if !cfg.ignoreTrace {
@@ -103,20 +125,40 @@ func diffTraces(name string, ref, sub Trace) []Mismatch {
 		return out
 	}
 	for i := range ref.Steps {
-		if ref.Steps[i].Outcome != sub.Steps[i].Outcome {
+		rs, ss := ref.Steps[i], sub.Steps[i]
+		if rs.Outcome != ss.Outcome {
 			out = append(out, Mismatch{
 				Scenario:  name,
 				Field:     fmt.Sprintf("trace.step[%d].outcome", i),
-				Reference: ref.Steps[i].Outcome,
-				Subject:   sub.Steps[i].Outcome,
+				Reference: rs.Outcome,
+				Subject:   ss.Outcome,
 			})
 		}
-		if ref.Steps[i].ToState != sub.Steps[i].ToState {
+		if rs.ToState != ss.ToState {
 			out = append(out, Mismatch{
 				Scenario:  name,
 				Field:     fmt.Sprintf("trace.step[%d].toState", i),
-				Reference: ref.Steps[i].ToState,
-				Subject:   sub.Steps[i].ToState,
+				Reference: rs.ToState,
+				Subject:   ss.ToState,
+			})
+		}
+		// Per-step effects are compared ORDER-SENSITIVELY by ref name, so a step
+		// that reorders its emissions diverges here even when the whole-run effect
+		// multiset is unchanged.
+		if !sameSequence(rs.EffectsEmitted, ss.EffectsEmitted) {
+			out = append(out, Mismatch{
+				Scenario:  name,
+				Field:     fmt.Sprintf("trace.step[%d].effects", i),
+				Reference: fmt.Sprint(rs.EffectsEmitted),
+				Subject:   fmt.Sprint(ss.EffectsEmitted),
+			})
+		} else if !sameSequence(rs.EffectPayloads, ss.EffectPayloads) {
+			// Effect labels agree but a payload diverged within the step.
+			out = append(out, Mismatch{
+				Scenario:  name,
+				Field:     fmt.Sprintf("trace.step[%d].effects.payload", i),
+				Reference: fmt.Sprint(rs.EffectPayloads),
+				Subject:   fmt.Sprint(ss.EffectPayloads),
 			})
 		}
 	}
