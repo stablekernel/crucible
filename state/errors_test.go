@@ -114,6 +114,16 @@ func TestTypedErrors_Messages(t *testing.T) {
 			err:      &state.UnknownEffectKindError{Kind: "foreign"},
 			contains: []string{"unknown effect kind", "foreign"},
 		},
+		{
+			name:     "NonQuiescentActor with systemId",
+			err:      &state.NonQuiescentActorError{ActorID: "child-0", SystemID: "worker", Queued: 2},
+			contains: []string{"non-quiesced actor", "child-0", "worker", "2 queued"},
+		},
+		{
+			name:     "NonQuiescentActor without systemId",
+			err:      &state.NonQuiescentActorError{ActorID: "child-0", Queued: 1},
+			contains: []string{"non-quiesced actor", "child-0", "1 queued"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -145,6 +155,52 @@ func TestActionFailedError_WrapsCause(t *testing.T) {
 	}
 	if !errors.Is(err, cause) {
 		t.Fatal("ActionFailedError should unwrap to its cause")
+	}
+}
+
+// TestPanicErrors_UnwrapToRecoveredError asserts that GuardPanicError,
+// AssignPanicError, and ActionPanicError expose a panic(err) value through
+// errors.As / errors.Is, so a host can reach the inner cause of a recovered
+// panic. A non-error recovered value (a string) yields no inner error.
+func TestPanicErrors_UnwrapToRecoveredError(t *testing.T) {
+	inner := errors.New("inner boom")
+	t.Run("GuardPanicError unwraps error", func(t *testing.T) {
+		err := error(&state.GuardPanicError{GuardName: "g", Recovered: inner})
+		if !errors.Is(err, inner) {
+			t.Fatal("GuardPanicError should unwrap to the recovered error")
+		}
+	})
+	t.Run("AssignPanicError unwraps error", func(t *testing.T) {
+		err := error(&state.AssignPanicError{AssignName: "fold", Recovered: inner})
+		if !errors.Is(err, inner) {
+			t.Fatal("AssignPanicError should unwrap to the recovered error")
+		}
+	})
+	t.Run("ActionPanicError unwraps error", func(t *testing.T) {
+		err := error(&state.ActionPanicError{ActionName: "do", Recovered: inner})
+		if !errors.Is(err, inner) {
+			t.Fatal("ActionPanicError should unwrap to the recovered error")
+		}
+	})
+	t.Run("non-error recovered yields no inner error", func(t *testing.T) {
+		err := error(&state.GuardPanicError{GuardName: "g", Recovered: "string panic"})
+		if errors.Unwrap(err) != nil {
+			t.Fatal("a string panic must not unwrap to a non-nil error")
+		}
+	})
+}
+
+// TestSnapshotError_WrapsCause asserts SnapshotError exposes a wrapped cause via
+// errors.Is / errors.As while keeping its Reason message backward-compatible.
+func TestSnapshotError_WrapsCause(t *testing.T) {
+	cause := errors.New("context encode failed")
+	err := &state.SnapshotError{Op: "marshal", Reason: cause.Error(), Cause: cause}
+
+	if !strings.Contains(err.Error(), "context encode failed") {
+		t.Fatalf("message %q should retain the Reason text", err.Error())
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("SnapshotError should unwrap to its Cause")
 	}
 }
 

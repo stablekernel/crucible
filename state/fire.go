@@ -34,6 +34,11 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	defer func() {
 		i.fireData = nil
 		i.hasFireData = false
+		// The raised-event queue is macrostep-local: the run-to-completion loop
+		// drains it on the success path, but a macrostep that errors returns early
+		// (fireCore/runToCompletion) with events still queued. Reset it here so a
+		// stale internal event cannot leak into — and replay during — a later Fire.
+		i.raised = nil
 	}()
 	return i.fireWithMiddleware(ctx, event)
 }
@@ -143,7 +148,7 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		}
 
 		// No pending internal events: fire one enabled eventless transition.
-		t, anc, ok := i.selectEventless()
+		t, anc, leaf, ok := i.selectEventless()
 		if !ok {
 			return res
 		}
@@ -151,7 +156,7 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		if steps > maxMicrosteps {
 			return microstepOverflow(res, i.current)
 		}
-		sub := i.commit(ctx, t, i.current, anc, i.entity, i.eventData(t.On), i.seedTrace("always"))
+		sub := i.commitEventless(ctx, t, anc, leaf)
 		res.Effects = append(res.Effects, sub.Effects...)
 		absorbMicrosteps(&res.Trace, sub.Trace)
 		res.NewState = i.current
@@ -161,6 +166,68 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 			return res
 		}
 	}
+}
+
+// commitEventless dispatches one selected eventless ("always") transition. A
+// transition resident inside an active parallel region is routed through the
+// region commit path (applyRegionTransition), which advances only that region's
+// leaf and leaves the sibling regions' leaves in place; otherwise it goes through
+// the whole-configuration commit path. Routing region-resident eventless
+// transitions through commit would replace the entire configuration and drop the
+// sibling region leaves (the K5/T1b corruption).
+//
+// leaf is the active configuration leaf the transition was found on (its source
+// in the live config); anc is the ancestor node the transition is declared on.
+func (i *Instance[S, E, C]) commitEventless(ctx context.Context, t *Transition[S, E, C], anc, leaf S) FireResult[S] {
+	if parallel, r, ok := i.regionOwning(leaf); ok {
+		tr := i.seedTrace("always")
+		tr.MatchedAt = i.machine.label(anc)
+		eff, err := i.applyRegionTransition(parallel, r, leaf, t, i.eventData(t.On), &tr)
+		if err != nil {
+			tr.Outcome = regionErrOutcome(err)
+			return FireResult[S]{NewState: i.current, Effects: eff, Trace: tr, Err: err}
+		}
+		tr.Outcome = OutcomeSuccess
+		return FireResult[S]{NewState: i.current, Effects: eff, Trace: tr}
+	}
+	return i.commit(ctx, t, leaf, anc, i.entity, i.eventData(t.On), i.seedTrace("always"))
+}
+
+// regionOwning returns the parallel state and region that directly contain the
+// given active leaf, when the leaf is inside an active parallel state. It walks
+// the leaf's ancestor chain to the region boundary — the first node whose region
+// name is set — and confirms that boundary's parent is an active parallel state
+// (a parallel currently holding leaves in two or more of its regions). A leaf
+// outside any active parallel returns ok=false.
+func (i *Instance[S, E, C]) regionOwning(leaf S) (parallel S, r *Region[S, E, C], ok bool) {
+	m := i.machine
+	parent, found := i.activeParallelAncestor()
+	if !found {
+		var zero S
+		return zero, nil, false
+	}
+	cur := leaf
+	for {
+		cn, resolved := m.resolveNode(cur)
+		if !resolved || !cn.hasParent {
+			break
+		}
+		if cn.region != "" && cn.parent == parent {
+			pn, pok := m.resolveNode(parent)
+			if !pok {
+				break
+			}
+			for ri := range pn.state.Regions {
+				if pn.state.Regions[ri].Name == cn.region {
+					return parent, &pn.state.Regions[ri], true
+				}
+			}
+			break
+		}
+		cur = cn.parent
+	}
+	var zero S
+	return zero, nil, false
 }
 
 // marshalEventPayload renders the structured, JSON form of the event value driving
@@ -193,32 +260,52 @@ func (i *Instance[S, E, C]) seedTrace(event string) Trace {
 }
 
 // selectEventless finds one enabled eventless ("always") transition for the
-// current configuration, resolved child-first and bubbling up through ancestors;
-// the first whose guards all pass is returned with the ancestor it was found on.
-func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc S, ok bool) {
+// current configuration. It scans every active leaf in the configuration — not
+// only config[0]'s spine — so an eventless transition resident in a non-first
+// parallel region is selected rather than starved (the K5/T1a fix). Each leaf is
+// resolved child-first, bubbling up through its ancestors; the first transition
+// whose guards all pass is returned with the ancestor it was declared on (anc)
+// and the active configuration leaf it was found under (leaf), the latter so the
+// caller can route a region-resident transition through the region commit path.
+//
+// Leaves are scanned in configuration order, which is region-declaration order
+// for an orthogonal configuration. Selection returns a single transition, so one
+// macrostep microstep fires exactly one eventless transition; multiple regions'
+// eventless transitions settle across successive microsteps in declaration
+// order, preserving the run-to-completion determinism contract.
+func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool) {
 	m := i.machine
-	for _, a := range m.ancestors(i.current) {
-		n, found := m.resolveNode(a)
-		if !found {
-			continue
-		}
-		for ti := range n.state.Transitions {
-			cand := &n.state.Transitions[ti]
-			if !cand.EventLess {
+	for _, l := range i.config {
+		for _, a := range m.ancestors(l) {
+			n, found := m.resolveNode(a)
+			if !found {
 				continue
 			}
-			if i.guardsPass(cand) {
-				return cand, a, true
+			for ti := range n.state.Transitions {
+				cand := &n.state.Transitions[ti]
+				if !cand.EventLess {
+					continue
+				}
+				if i.guardsPass(cand) {
+					return cand, a, l, true
+				}
 			}
 		}
 	}
 	var zero S
-	return nil, zero, false
+	return nil, zero, zero, false
 }
 
 // guardsPass reports whether every guard on a transition currently passes. A
 // guard that errors (panics) is treated as not passing, so a faulty guard never
 // silently enables an eventless transition.
+//
+// This is the EVENTLESS (`Always`) half of the kernel's guard eval-error policy:
+// an errored guard fails CLOSED (the transition is treated as not-taken and no
+// error surfaces). It is deliberately asymmetric with an EVENT-DRIVEN guard, which
+// fails LOUD — an error there sets OutcomeGuardPanic and is returned as a Fire
+// error (see the guard evaluation in fireSpine). The kernel owns this policy; the
+// expr subpackage documents the same asymmetry from its side.
 func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
 	for _, g := range t.Guards {
 		ok, err := i.machine.evalGuard(g, i.entity)
@@ -249,6 +336,7 @@ func absorbMicrosteps(dst *Trace, sub Trace) {
 	dst.Microsteps = append(dst.Microsteps, sub.Microsteps...)
 	dst.GuardsEvaluated = append(dst.GuardsEvaluated, sub.GuardsEvaluated...)
 	dst.EffectsEmitted = append(dst.EffectsEmitted, sub.EffectsEmitted...)
+	dst.AssignsApplied = append(dst.AssignsApplied, sub.AssignsApplied...)
 	dst.ExitedStates = append(dst.ExitedStates, sub.ExitedStates...)
 	dst.EnteredStates = append(dst.EnteredStates, sub.EnteredStates...)
 }
@@ -502,8 +590,13 @@ func (i *Instance[S, E, C]) commit(
 		effects, errName, err := i.runActions(t.Effects, cur, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
+			// Effects are emitted only on a fully-successful Fire (the NTE
+			// transactionality contract): a failed Fire returns no partial effects so
+			// a host replaying it cannot double-apply the ones that ran before the
+			// error. Config is intentionally not rolled back (out of scope); only the
+			// effect emission is transactional.
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     errName, Cause: err,
@@ -514,7 +607,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     aName, Cause: aErr,
@@ -568,7 +661,14 @@ func (i *Instance[S, E, C]) commit(
 
 	// Exit actions then exit assigns: innermost -> outermost. Each state's exit
 	// actions read cur (pre-assign), then its exit assigns fold cur.
-	for _, s := range exits {
+	//
+	// A cross-cutting transition that exits a parallel superstate names only the
+	// matched state's spine in the structural cascade; the orthogonal regions'
+	// active leaves leave the configuration too and must run their OnExit actions.
+	// exitActionChain interleaves each exited parallel's active region-leaf spines
+	// (region-declaration order, innermost-leaf-first) before the parallel state's
+	// own OnExit, so the full exit-action set runs in the locked order.
+	for _, s := range i.exitActionChain(exits) {
 		tr.recordExit(m.label(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
@@ -579,7 +679,7 @@ func (i *Instance[S, E, C]) commit(
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
@@ -587,7 +687,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
@@ -636,7 +736,7 @@ func (i *Instance[S, E, C]) commit(
 	if err != nil {
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 		}
 	}
@@ -644,7 +744,7 @@ func (i *Instance[S, E, C]) commit(
 	if taErr != nil {
 		tr.Outcome = OutcomeAssignFailed
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: taName, Cause: taErr},
 		}
 	}
@@ -663,7 +763,7 @@ func (i *Instance[S, E, C]) commit(
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
@@ -671,7 +771,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
@@ -698,7 +798,7 @@ func (i *Instance[S, E, C]) commit(
 	if derr != nil {
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: dname, Cause: derr},
 		}
 	}
@@ -798,9 +898,11 @@ func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
 }
 
-// evalAction resolves and runs an action ref. Kernel built-in actions (e.g. the
-// Cancel built-in) are handled directly without consulting the host registry.
-func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
+// evalAction resolves and runs an action ref, recovering a panicking host action
+// into a typed ActionPanicError so a faulty action fails the fire deterministically
+// rather than crashing Fire. Kernel built-in actions (e.g. the Cancel built-in) are
+// handled directly without consulting the host registry.
+func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 	if isBuiltinAction(a.Name) {
 		return evalBuiltinAction(a)
 	}
@@ -808,6 +910,12 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (Effect, error) {
 	if !found {
 		return nil, fmt.Errorf("unbound action %q at fire time", a.Name)
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			eff = nil
+			err = &ActionPanicError{ActionName: a.Name, Recovered: r}
+		}
+	}()
 	return fn(ActionCtx[C]{Entity: entity, Params: a.Params})
 }
 

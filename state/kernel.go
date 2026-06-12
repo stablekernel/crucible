@@ -57,10 +57,21 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 }
 
 // HistoryType is the reserved drop-in surface for shallow/deep history states.
+//
+// It serializes as a bare omitempty integer, so its numeric values are part of
+// the FROZEN v1.0 wire contract — a recorded IR encodes a history kind by its
+// integer. The mapping is append-only: existing values may never be reordered or
+// repurposed; a new history kind may only be added with the next unused integer.
+// The frozen value -> meaning mapping is:
+//
+//	0 = HistoryNone (the v1 default: no history)
+//	1 = HistoryShallow
+//	2 = HistoryDeep
 type HistoryType int
 
 // History kinds. HistoryNone is the v1 default (no history); shallow and deep
-// are reserved for the deferred history-state feature.
+// are reserved for the deferred history-state feature. The integers are a frozen,
+// append-only wire contract (see HistoryType).
 const (
 	HistoryNone HistoryType = iota
 	HistoryShallow
@@ -69,11 +80,22 @@ const (
 
 // WaitMode tags a transition's synchronization expectation. The kernel only
 // stores the tag; the consumer acts on it.
+//
+// It serializes as a bare omitempty integer, so its numeric values are part of
+// the FROZEN v1.0 wire contract — a recorded IR encodes a wait mode by its
+// integer. The mapping is append-only: existing values may never be reordered or
+// repurposed; a new wait mode may only be added with the next unused integer.
+// The frozen value -> meaning mapping is:
+//
+//	0 = SyncReply (await a reply)
+//	1 = FireAndForget (emit and move on)
+//	2 = ValidatePoll (poll the entity, re-running Verify, until it validates)
 type WaitMode int
 
 // Wait modes. SyncReply awaits a reply, FireAndForget emits and moves on, and
 // ValidatePoll signals the consumer to poll the entity (re-running Verify) until
-// it validates.
+// it validates. The integers are a frozen, append-only wire contract (see
+// WaitMode).
 const (
 	SyncReply WaitMode = iota
 	FireAndForget
@@ -184,6 +206,43 @@ type Region[S comparable, E comparable, C any] struct {
 	Name         string           `json:"name"`
 	States       []State[S, E, C] `json:"states,omitempty"`
 	InitialChild *S               `json:"initialChild,omitempty"`
+
+	// Meta is the reserved extension namespace at region granularity: studio
+	// layout, documentation, and codegen hints live here, mirroring the Meta map
+	// every other IR node carries. The kernel never inspects it; it round-trips
+	// verbatim.
+	Meta map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// regionKnownKeys is the set of JSON keys Region models; anything else is captured
+// into extra and preserved verbatim on round-trip.
+var regionKnownKeys = map[string]struct{}{
+	"name": {}, "states": {}, "initialChild": {}, "meta": {},
+}
+
+// MarshalJSON encodes a Region, merging its preserved unknown keys back in with
+// stable key ordering.
+func (r Region[S, E, C]) MarshalJSON() ([]byte, error) {
+	type alias Region[S, E, C]
+	return marshalWithExtra(alias(r), r.extra)
+}
+
+// UnmarshalJSON decodes a Region and captures any unknown keys into extra so they
+// survive re-serialization.
+func (r *Region[S, E, C]) UnmarshalJSON(data []byte) error {
+	type alias Region[S, E, C]
+	var a alias
+	extra, err := captureExtra(data, &a, regionKnownKeys)
+	if err != nil {
+		return err
+	}
+	*r = Region[S, E, C](a)
+	r.extra = extra
+	return nil
 }
 
 // Transition is a directed edge.
@@ -294,7 +353,9 @@ func (t *Transition[S, E, C]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Effect is an abstract, domain-defined payload. The kernel never inspects it.
+// Effect is host-defined effect data emitted by actions; it is opaque to the
+// kernel — the host interprets it by kind, never the kernel. Effect = any keeps
+// the payload free-form.
 type Effect = any
 
 // Outcome classifies the result recorded in a Trace.
@@ -388,8 +449,11 @@ type Trace struct {
 	// GuardsEvaluated names each guard the step evaluated, in evaluation order.
 	// Populated only in full mode.
 	GuardsEvaluated []string `json:"guardsEvaluated,omitempty"`
-	// PoliciesEvaluated names each policy the step evaluated, in evaluation order.
-	// Populated only in full mode.
+	// PoliciesEvaluated is RESERVED for a future policy-tracing feature: it names
+	// each policy the step evaluated, in evaluation order. It is always empty in
+	// v1.0 — no kernel step writes it — and is kept on the frozen Trace shape so the
+	// future feature can populate it additively without a breaking change. Do not
+	// rely on it being non-empty at this version.
 	PoliciesEvaluated []string `json:"policiesEvaluated,omitempty"`
 	// EffectsEmitted names each effect the step emitted, in emission order — the
 	// human-readable companion to FireResult.Effects (the effect data itself).
@@ -647,8 +711,10 @@ type FireFunc[S comparable, E comparable, C any] func(ctx context.Context, event
 // surfaced before Quench. Consumers pattern-match on it, so its field names are
 // stable.
 type Diagnostic struct {
-	// Severity is the finding's level ("warning" | "error"); under Strict, Quench
-	// rejects any finding, otherwise only "error".
+	// Severity is the finding's level ("info" | "warning" | "error"). Quench
+	// rejects "error" always and "warning" under Strict; "info" is advisory and is
+	// never escalated, even under Strict (e.g. the supported pointer-context escape
+	// hatch).
 	Severity string
 	// Message is the human-readable description of the finding.
 	Message string
@@ -1220,11 +1286,23 @@ func (b *Builder[S, E, C]) openTransition() {
 	b.curTransition = &sd.state.Transitions[len(sd.state.Transitions)-1]
 }
 
+// requireTransitionCursor panics with an actionable construction error when no
+// transition cursor is open. A cursor-consuming DSL method (GoTo/When/Do/...) is
+// only meaningful after an opener (On/OnAny/Always/After/Transition); a preceding
+// State()/GoTo() that closed the cursor would otherwise make the call a silent
+// no-op, so this turns that footgun into a loud programmer error.
+func (b *Builder[S, E, C]) requireTransitionCursor(method string) {
+	if b.curTransition == nil {
+		panic(fmt.Sprintf("crucible/state: %s called with no open transition; "+
+			"chain it after On/OnAny/Always/After/Transition "+
+			"(a preceding State()/GoTo() closed the cursor)", method))
+	}
+}
+
 // GoTo sets the target of the most-recent transition.
 func (b *Builder[S, E, C]) GoTo(to S) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.To = to
-	}
+	b.requireTransitionCursor("GoTo")
+	b.curTransition.To = to
 	return b
 }
 
@@ -1263,9 +1341,8 @@ func (b *Builder[S, E, C]) After(delay time.Duration) *Builder[S, E, C] {
 // runs the full exit/entry cascade of its target. This is the DSL form of the
 // v5 `reenter: true`.
 func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Reenter = true
-	}
+	b.requireTransitionCursor("Reenter")
+	b.curTransition.Reenter = true
 	return b
 }
 
@@ -1274,9 +1351,8 @@ func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
 // macrostep by the run-to-completion loop, before Fire returns. This is the DSL
 // form of raising an internal event.
 func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Raise = append(b.curTransition.Raise, events...)
-	}
+	b.requireTransitionCursor("Raise")
+	b.curTransition.Raise = append(b.curTransition.Raise, events...)
 	return b
 }
 
@@ -1288,18 +1364,16 @@ func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
 // index. Canceling an unknown id is a host-side no-op. The built-in needs no
 // host registration, mirroring the stateIn guard built-in.
 func (b *Builder[S, E, C]) Cancel(id string) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Effects = append(b.curTransition.Effects,
-			Ref{Name: cancelBuiltinName, Params: map[string]any{cancelIDParam: id}})
-	}
+	b.requireTransitionCursor("Cancel")
+	b.curTransition.Effects = append(b.curTransition.Effects,
+		Ref{Name: cancelBuiltinName, Params: map[string]any{cancelIDParam: id}})
 	return b
 }
 
 // When attaches a named guard ref with params to the most-recent transition.
 func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Guards = append(b.curTransition.Guards, Ref{Name: guardName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("When")
+	b.curTransition.Guards = append(b.curTransition.Guards, Ref{Name: guardName, Params: firstParams(params)})
 	return b
 }
 
@@ -1310,18 +1384,16 @@ func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Bui
 // pass. Use When for the common single-guard case and WhenExpr when a transition
 // needs composition or stateIn.
 func (b *Builder[S, E, C]) WhenExpr(expr GuardNode[S]) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		e := expr
-		b.curTransition.GuardExpr = &e
-	}
+	b.requireTransitionCursor("WhenExpr")
+	e := expr
+	b.curTransition.GuardExpr = &e
 	return b
 }
 
 // Do attaches a named action ref with params to the most-recent transition.
 func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Effects = append(b.curTransition.Effects, Ref{Name: actionName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("Do")
+	b.curTransition.Effects = append(b.curTransition.Effects, Ref{Name: actionName, Params: firstParams(params)})
 	return b
 }
 
@@ -1333,9 +1405,8 @@ func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Buil
 // Registry.Reducer); this WIRES a registered reducer by name onto the transition,
 // mirroring how When wires a Guard and Do wires an Action.
 func (b *Builder[S, E, C]) Assign(assignName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("Assign")
+	b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
 	return b
 }
 
@@ -1402,9 +1473,16 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 	diags := b.lint()
 	for _, d := range diags {
 		if d.Severity == diagError || (cfg.strict && d.Severity == diagWarning) {
-			// Unbound refs surface as the typed error so callers can errors.As.
+			// Unbound refs and the region-lint findings surface as their typed
+			// errors so callers can errors.As through Quench's panic.
 			if d.unboundRef != nil {
 				panic(d.unboundRef)
+			}
+			if d.regionEscape != nil {
+				panic(d.regionEscape)
+			}
+			if d.historyCrossRegion != nil {
+				panic(d.historyCrossRegion)
 			}
 			panic(&quenchError{Diagnostic: d})
 		}
@@ -1594,6 +1672,14 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 }
 
 // Instance binds a Machine to one entity and carries trace history.
+//
+// Instance is NOT safe for concurrent use; the host must serialize all access
+// (Fire/Snapshot/WaitFor) to a given Instance. The struct carries no mutex and no
+// atomic: Fire mutates the configuration, context, history, and the macrostep-local
+// queues in place, while Snapshot and the WaitFor family read those same fields. A
+// host that touches one Instance from more than one goroutine without external
+// synchronization races. Run each Instance on a single goroutine (or guard it with
+// the host's own lock); distinct Instances are independent and may run in parallel.
 type Instance[S comparable, E comparable, C any] struct {
 	machine *Machine[S, E, C]
 	entity  C

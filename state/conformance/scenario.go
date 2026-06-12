@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -20,8 +21,13 @@ type AssertionType string
 const (
 	AssertFinalState     AssertionType = "FinalState"
 	AssertEffectsEmitted AssertionType = "EffectsEmitted"
-	AssertTraceLength    AssertionType = "TraceLength"
-	AssertNoErrors       AssertionType = "NoErrors"
+	// AssertEffectsPayloads asserts the ORDERED, PAYLOAD-AWARE rendering of every
+	// emitted effect ("name=payload"). Unlike AssertEffectsEmitted, which compares
+	// only ref names, this catches a changed payload (e.g. a wrong timer duration)
+	// even when the effect name is unchanged.
+	AssertEffectsPayloads AssertionType = "EffectsPayloads"
+	AssertTraceLength     AssertionType = "TraceLength"
+	AssertNoErrors        AssertionType = "NoErrors"
 )
 
 // Assertion is a declarative expectation about a scenario run. Assertions are
@@ -99,10 +105,14 @@ type TraceStep struct {
 	MatchedAt       string   `json:"matchedAt,omitempty"`
 	GuardsEvaluated []string `json:"guardsEvaluated,omitempty"`
 	EffectsEmitted  []string `json:"effectsEmitted,omitempty"`
-	ExitedStates    []string `json:"exitedStates,omitempty"`
-	EnteredStates   []string `json:"enteredStates,omitempty"`
-	Outcome         string   `json:"outcome"`
-	Err             string   `json:"err,omitempty"`
+	// EffectPayloads renders each emitted effect's payload ("name=payload") in
+	// emission order, so a trace divergence on payload (not just on the effect's
+	// type/name) is captured and diffable.
+	EffectPayloads []string `json:"effectPayloads,omitempty"`
+	ExitedStates   []string `json:"exitedStates,omitempty"`
+	EnteredStates  []string `json:"enteredStates,omitempty"`
+	Outcome        string   `json:"outcome"`
+	Err            string   `json:"err,omitempty"`
 }
 
 // Trace is the serializable record of a whole scenario run: the ordered steps
@@ -114,6 +124,9 @@ type Trace struct {
 	FromState     string      `json:"fromState"`
 	ToState       string      `json:"toState"`
 	Steps         []TraceStep `json:"steps"`
+	// FinalContext is a stable rendering of the entity after the run, captured so a
+	// divergence in context mutation is diffable from the serialized trace alone.
+	FinalContext string `json:"finalContext,omitempty"`
 }
 
 // MarshalJSON emits the trace with its schema version pinned.
@@ -139,8 +152,18 @@ type ScenarioResult[S comparable] struct {
 	FinalState S
 	Trace      Trace
 	Assertions []AssertionResult
-	Effects    []string
-	Err        error
+	// Effects lists each emitted effect's ref name in EMISSION ORDER. Order is
+	// significant: a reordered sequence is a regression, not an equivalence.
+	Effects []string
+	// EffectDetails lists each emitted effect's PAYLOAD-AWARE rendering
+	// ("name=payload") in emission order, so a changed payload (e.g. a wrong timer
+	// duration) is caught even when the ref name is unchanged.
+	EffectDetails []string
+	// FinalContext is a stable rendering of the entity after the last Fire,
+	// captured so a divergence in context mutation is observable in a golden or an
+	// oracle diff. It is best-effort: it renders whatever the entity's value is.
+	FinalContext string
+	Err          error
 }
 
 // Passed reports whether every assertion in the result passed.
@@ -163,13 +186,23 @@ func (r ScenarioResult[S]) Passed() bool {
 // form; a disagreement is reported as ErrInitialStateMismatch and the events are
 // not fired, so a serialized scenario can never silently replay from a different
 // state than it describes.
+//
+// RunAgainst accepts trailing RunOptions. They are additive: passing none
+// preserves the original behavior, so the seam below (e.g. WithSnapshotSink,
+// which captures the instance Snapshot after the run for snapshot/restore
+// conformance) can grow without breaking existing callers.
 func RunAgainst[S comparable, E comparable, C any](
 	m *state.Machine[S, E, C],
 	sc Scenario,
 	entity C,
 	codec EventCodec[E],
 	startState S,
+	opts ...RunOption[S, E, C],
 ) ScenarioResult[S] {
+	cfg := runConfig[S, E, C]{}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	res := ScenarioResult[S]{FinalState: startState}
 	tr := Trace{MachineID: m.Name(), FromState: sc.InitialState}
 
@@ -177,6 +210,8 @@ func RunAgainst[S comparable, E comparable, C any](
 		if resolved := fmt.Sprint(startState); resolved != sc.InitialState {
 			res.Err = &ErrInitialStateMismatch{Declared: sc.InitialState, Resolved: resolved}
 			tr.ToState = resolved
+			res.FinalContext = renderContext(entity)
+			tr.FinalContext = res.FinalContext
 			res.Trace = tr
 			res.Assertions = evaluate(sc.Assertions, res)
 			return res
@@ -195,21 +230,111 @@ func RunAgainst[S comparable, E comparable, C any](
 		}
 		fr := inst.Fire(context.Background(), typed)
 		res.FinalState = fr.NewState
-		res.Effects = append(res.Effects, traceEffectNames(fr.Trace.EffectsEmitted)...)
-		tr.Steps = append(tr.Steps, stepFromKernel(fr))
+		names := effectRefNames(traceEffectNames(fr.Trace.EffectsEmitted))
+		res.Effects = append(res.Effects, names...)
+		stepDetails := effectDetails(names, fr.Effects)
+		res.EffectDetails = append(res.EffectDetails, stepDetails...)
+		tr.Steps = append(tr.Steps, stepFromKernel(fr, stepDetails))
 		if fr.Err != nil && res.Err == nil {
 			res.Err = fr.Err
 		}
 	}
 
 	tr.ToState = fmt.Sprint(res.FinalState)
+	res.FinalContext = renderContext(entity)
+	tr.FinalContext = res.FinalContext
 	res.Trace = tr
 	res.Assertions = evaluate(sc.Assertions, res)
+	if cfg.snapshotSink != nil {
+		cfg.snapshotSink(inst.Snapshot())
+	}
 	return res
 }
 
+// RunOption configures a RunAgainst invocation additively. Passing no options
+// preserves RunAgainst's original behavior; this is the non-breaking seam through
+// which snapshot/restore (and any future per-run capability) is exposed without
+// changing RunAgainst's existing signature.
+type RunOption[S comparable, E comparable, C any] func(*runConfig[S, E, C])
+
+type runConfig[S comparable, E comparable, C any] struct {
+	snapshotSink func(state.Snapshot[S, E, C])
+}
+
+// WithSnapshotSink captures the machine instance's Snapshot after the scenario's
+// events have fired. It is the snapshot/restore conformance seam: a caller can
+// snapshot the post-run instance, Restore it on another machine, and assert the
+// two resume identically — without RunAgainst's signature ever changing. The sink
+// is not called when the run aborts before casting an instance (e.g. an initial
+// state mismatch), so it only ever observes a genuinely-run instance.
+func WithSnapshotSink[S comparable, E comparable, C any](sink func(state.Snapshot[S, E, C])) RunOption[S, E, C] {
+	return func(c *runConfig[S, E, C]) { c.snapshotSink = sink }
+}
+
+// effectDetails pairs each emitted effect's ref name with a PAYLOAD-AWARE
+// rendering of the effect value, in emission order. The kernel reports the ref
+// names (in EffectsEmitted) and the concrete effect values (in FireResult
+// .Effects) as positionally-aligned slices; this zips them into "name=payload"
+// labels so a changed payload is observable. When the two slices disagree in
+// length (an effect failed mid-step and recorded a name without a value), the
+// available names still render, with the payload shown as "?".
+func effectDetails(names []string, effects []any) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		if i < len(effects) {
+			out[i] = fmt.Sprintf("%s=%s", n, renderPayload(effects[i]))
+			continue
+		}
+		out[i] = n + "=?"
+	}
+	return out
+}
+
+// renderPayload renders an effect value to a stable, payload-sensitive string.
+// %#v is used so a struct's field values (e.g. a timer duration) are part of the
+// rendering: a changed payload yields a different string and therefore fails an
+// ordered, payload-aware comparison.
+func renderPayload(v any) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%#v", v)
+}
+
+// renderContext renders the entity after a run to a stable, VALUE-based string so
+// a divergence in context mutation is observable without false positives from
+// non-deterministic pointer addresses. It marshals the entity to JSON, which
+// dereferences pointers and renders by value: two value-equal entities at
+// different addresses render identically, and a real mutation diverges. When the
+// entity cannot be marshaled (e.g. an unsupported type), it falls back to a
+// dereferenced %+v rendering. It is best-effort: an entity whose meaningful state
+// lives in unexported fields renders as "{}" under JSON, which is still
+// deterministic (equal entities stay equal), just less informative.
+func renderContext(entity any) string {
+	if entity == nil {
+		return ""
+	}
+	if data, err := json.Marshal(entity); err == nil {
+		return string(data)
+	}
+	rv := reflect.ValueOf(entity)
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "<nil>"
+		}
+		return fmt.Sprintf("%+v", rv.Elem().Interface())
+	}
+	return fmt.Sprintf("%+v", entity)
+}
+
 // stepFromKernel projects a kernel FireResult onto the serializable TraceStep.
-func stepFromKernel[S comparable](fr state.FireResult[S]) TraceStep {
+// payloads carries the per-step PAYLOAD-AWARE effect renderings ("name=payload")
+// computed by the caller, so the step records both the effect labels and their
+// payloads and a divergence in either is diffable.
+func stepFromKernel[S comparable](fr state.FireResult[S], payloads []string) TraceStep {
 	st := TraceStep{
 		Event:           fr.Trace.Event,
 		FromState:       fr.Trace.FromState,
@@ -217,6 +342,7 @@ func stepFromKernel[S comparable](fr state.FireResult[S]) TraceStep {
 		MatchedAt:       fr.Trace.MatchedAt,
 		GuardsEvaluated: fr.Trace.GuardsEvaluated,
 		EffectsEmitted:  traceEffectNames(fr.Trace.EffectsEmitted),
+		EffectPayloads:  payloads,
 		ExitedStates:    fr.Trace.ExitedStates,
 		EnteredStates:   fr.Trace.EnteredStates,
 		Outcome:         outcomeName(fr.Trace.Outcome),

@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -230,7 +231,30 @@ func deliverFireGuarded(ctx context.Context, inst ActorInstance, event any) (don
 		}
 	}()
 	done, output = inst.DeliverFire(ctx, event)
+	// A clean Go step may still have returned a FireResult.Err: the kernel now
+	// recovers a panicking host action/guard/assign into a typed error rather than
+	// letting it unwind, so a child failure surfaces here instead of as a Go panic.
+	// Treat it as a failure so it settles (routing onError or escalating). A panic
+	// recovered into an *ActionPanicError is re-rendered as an *ErrActorPanic
+	// carrying the original recovered value, preserving the panic-failure surface.
+	if fe, ok := inst.(fireErrer); ok {
+		if err := fe.FireErr(); err != nil {
+			var ap *ActionPanicError
+			if errors.As(err, &ap) {
+				return false, nil, &ErrActorPanic{Value: ap.Recovered}
+			}
+			return false, nil, err
+		}
+	}
 	return done, output, nil
+}
+
+// fireErrer is the optional interface a backing ActorInstance implements to expose
+// the FireResult.Err of its most recent DeliverFire, so deliverFireGuarded can
+// settle a child whose fire failed without that error having been a Go panic. The
+// in-process actorAdapter implements it; a host's own ActorInstance need not.
+type fireErrer interface {
+	FireErr() error
 }
 
 // inspectActorEscalated feeds one actor-escalation inspection event to the system's

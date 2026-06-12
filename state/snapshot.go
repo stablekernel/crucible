@@ -98,8 +98,21 @@ type Snapshot[S comparable, E comparable, C any] struct {
 	HistoryDeep    map[S][]S `json:"historyDeep,omitempty"`
 
 	// Traces is the instance's recorded Fire history, preserved so History()
-	// reports the same ordered traces after restore.
+	// reports the same ordered traces after restore. Traces are stored in
+	// chronological order (oldest first), as History() returns them, so a restored
+	// ring-buffer instance resumes with its window already in order and HistHead 0.
 	Traces []Trace `json:"traces,omitempty"`
+
+	// HistLimit is the bounded-history retention cap (WithHistory(n)) the instance
+	// was running under at snapshot time: the ring-buffer capacity. It is persisted
+	// so a restored instance keeps the SAME bound rather than silently becoming an
+	// instance with no live retention (frozen on the snapshot traces) or an
+	// unbounded one. Zero means no bounded-ring retention was configured (the
+	// instance was unbounded or had no retention); a positive value is the ring
+	// capacity restored verbatim. The ring head is not serialized: Traces are stored
+	// chronologically, so a restored full ring resumes with HistHead 0 (its oldest
+	// entry at index 0).
+	HistLimit int `json:"histLimit,omitempty"`
 
 	// Status is the instance's lifecycle status at snapshot time. Output carries an
 	// instance's completion output (when StatusDone) and Error a settled instance's
@@ -194,7 +207,11 @@ const (
 	JournalActorMessage JournalKind = "actorMessage"
 	// JournalClockRead records a Clock.Now() reading consumed during a step.
 	JournalClockRead JournalKind = "clockRead"
-	// JournalRandom records a host randomness draw consumed during a step.
+	// JournalRandom records a host randomness draw consumed during a step. Like a
+	// service result, the recorded draw rides the shared JournalEntry.Payload field
+	// (the structured JSON value the host consumed) — the variant needs no dedicated
+	// backing field. Replay returns Payload verbatim so the draw resolves
+	// identically, correlated by CorrelationID to the draw it stands in for.
 	JournalRandom JournalKind = "random"
 )
 
@@ -220,7 +237,8 @@ type JournalEntry struct {
 	// recorded value to the resolution it stands in for.
 	CorrelationID string `json:"correlationId,omitempty"`
 	// Payload is the structured, JSON result the source produced (a service's
-	// done-output, an actor message), returned verbatim on replay.
+	// done-output, an actor message, or a JournalRandom draw), returned verbatim on
+	// replay.
 	Payload json.RawMessage `json:"payload,omitempty"`
 	// ClockUnixNano is the recorded Clock.Now() reading (Unix nanoseconds) for a
 	// JournalClockRead entry, returned on replay so time-dependent transitions
@@ -252,7 +270,11 @@ type InFlightService struct {
 // effects.
 type PendingRefs struct {
 	// Timers are the schedule IDs of the pending delayed (`after`) transitions
-	// armed for the active configuration.
+	// armed for the active configuration. These are IDENTITIES only — the snapshot
+	// carries no absolute deadline or remaining duration for a pending timer. On
+	// restore, ResumeEffects re-arms each timer with its FULL declared delay; a host
+	// that needs drift-free timers persists the absolute deadline itself (the v1.0
+	// host-owns-deadlines contract; see ResumeEffects).
 	Timers []string `json:"timers,omitempty"`
 	// Services are the IDs of the invoked services running for the active
 	// configuration.
@@ -267,6 +289,12 @@ type PendingRefs struct {
 // custom wire form). Encode is called by Snapshot.MarshalJSON; Decode by
 // Snapshot.UnmarshalJSON. When no codec is supplied, the default codec marshals C
 // with encoding/json, so C must be JSON-marshalable by default.
+//
+// ContextCodec is a FROZEN, host-implementable interface: its method set is
+// LOCKED at v1.0 and no method will be added to it. Post-v1 capabilities ship as a
+// SEPARATE optional interface discovered by type-asserting a ContextCodec value
+// (the io.Reader/io.ReaderAt idiom), never by widening this one — so a host's
+// codec keeps compiling across minor versions.
 type ContextCodec[C any] interface {
 	Encode(C) ([]byte, error)
 	Decode([]byte) (C, error)
@@ -301,6 +329,12 @@ func (jsonCodec[C]) Decode(b []byte) (C, error) {
 // configuration (StatusDone when the whole configuration is final, else
 // StatusRunning); a host that tracks an explicit failure sets StatusError and
 // Error on the returned snapshot before persisting.
+//
+// Snapshot is a read, but Instance is NOT safe for concurrent use: the host must
+// serialize all access (Fire/Snapshot/WaitFor) to a given Instance. Snapshot must
+// not run concurrently with a Fire on the same Instance — they touch the same
+// unguarded fields. Take a snapshot at a quiescent point between Fires, on the same
+// goroutine that drives the Instance.
 func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
 	cfg := i.Configuration()
 	snap := Snapshot[S, E, C]{
@@ -311,6 +345,7 @@ func (i *Instance[S, E, C]) Snapshot() Snapshot[S, E, C] {
 		HistoryShallow:  copyMap(i.historyShallow),
 		HistoryDeep:     copyLeafMap(i.historyDeep),
 		Traces:          i.History(),
+		HistLimit:       i.histLimit,
 		Status:          StatusRunning,
 		SnapshotVersion: CurrentSnapshotVersion,
 		MachineVersion:  i.machine.envelope.version,
@@ -365,6 +400,19 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // Entry actions are NOT re-run: ResumeEffects emits only the lifecycle re-arm
 // effects, never the states' OnEntry actions, so a restored instance resumes
 // rather than re-enters.
+//
+// Timer re-arm and the v1.0 deadline contract: ResumeEffects re-arms each pending
+// `after` timer with its FULL declared delay (the same ScheduleAfter a fresh entry
+// would emit), NOT the time remaining at snapshot. The kernel snapshot intentionally
+// carries NO absolute deadlines or remaining durations for pending timers (see
+// PendingRefs.Timers, which holds stable schedule IDs only), so a host that re-arms
+// straight from ResumeEffects restarts every `after` timer from zero on restore —
+// timer drift on every restore cycle. In v1.0 the absolute deadline of an `after`
+// timer is a HOST concern: a durable host persists the timer's absolute deadline out
+// of band and re-arms with the REMAINING time (this is what the durable subpackage
+// does); the kernel's snapshot deliberately does not own the wall-clock deadline.
+// Carrying deadlines in the snapshot (e.g. a Pending.TimerDeadlines field) is a
+// post-1.0 ADDITIVE item, not a v1.0 contract.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
 	cfg := i.Configuration()
@@ -385,6 +433,11 @@ func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 // After Restore, a host that drove timers/services/actors re-arms them by
 // absorbing the instance's ResumeEffects through the same drivers it uses for
 // Fire — Restore itself fires nothing and performs no IO, so Fire stays pure.
+//
+// A snapshot is pure data and carries no live observability seam, so a plain
+// Restore re-attaches neither an Inspector nor a *slog.Logger and the restored
+// instance is silent. Pass WithRestoreInspector / WithRestoreLogger to re-arm
+// those seams, mirroring WithInspector / WithLogger at Cast.
 func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption[S]) (*Instance[S, E, C], error) {
 	if snap.Machine != m.name {
 		return nil, &SnapshotError{
@@ -456,6 +509,20 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		current = cfg[0]
 	}
 
+	// Restore the bounded-history retention cap so a WithHistory(n) instance stays
+	// bounded across the round-trip instead of silently becoming an instance with no
+	// live retention (frozen on the snapshot traces) or an unbounded one. Bounded
+	// retention implies full trace, mirroring the Cast-time elevation (a retained
+	// trace must carry its rich fields); the unbounded restore option already
+	// elevates the same way. The ring head is not persisted: snap.Traces are stored
+	// chronologically, so a restored full ring resumes with histHead 0 — its oldest
+	// entry at index 0, exactly what History() expects.
+	histLimit := snap.HistLimit
+	// An attached inspector or any history retention elevates the restored instance
+	// to full trace, mirroring the Cast-time elevation. A re-attached logger alone
+	// stays lite (it reads only always-present lite fields), exactly like WithLogger.
+	traceFull := rcfg.traceFull || histLimit > 0 || rcfg.inspector != nil
+
 	inst := &Instance[S, E, C]{
 		machine:        m,
 		entity:         snap.Context,
@@ -465,8 +532,11 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		historyShallow: copyMap(snap.HistoryShallow),
 		historyDeep:    copyLeafMap(snap.HistoryDeep),
 		clock:          clock,
-		traceFull:      rcfg.traceFull,
+		traceFull:      traceFull,
+		histLimit:      histLimit,
 		histUnbounded:  rcfg.histUnbounded,
+		inspector:      rcfg.inspector,
+		logger:         rcfg.logger,
 	}
 	return inst, nil
 }
@@ -480,7 +550,7 @@ func MarshalSnapshot[S comparable, E comparable, C any](snap Snapshot[S, E, C], 
 	codec := resolveCodec(opts...)
 	raw, err := codec.Encode(snap.Context)
 	if err != nil {
-		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error(), Cause: err}
 	}
 	snap.ContextRaw = raw
 	return json.Marshal(snapshotWire[S, E, C](snap))
@@ -494,12 +564,12 @@ func UnmarshalSnapshot[S comparable, E comparable, C any](b []byte, opts ...Snap
 	codec := resolveCodec(opts...)
 	var wire snapshotWire[S, E, C]
 	if err := json.Unmarshal(b, &wire); err != nil {
-		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: err.Error(), Cause: err}
 	}
 	snap := Snapshot[S, E, C](wire)
 	ctx, err := codec.Decode(snap.ContextRaw)
 	if err != nil {
-		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+		return Snapshot[S, E, C]{}, &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error(), Cause: err}
 	}
 	snap.Context = ctx
 	return snap, nil
@@ -516,7 +586,7 @@ type snapshotWire[S comparable, E comparable, C any] Snapshot[S, E, C]
 func (snap Snapshot[S, E, C]) MarshalJSON() ([]byte, error) {
 	raw, err := json.Marshal(snap.Context)
 	if err != nil {
-		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error()}
+		return nil, &SnapshotError{Op: "marshal", Reason: "context encode failed: " + err.Error(), Cause: err}
 	}
 	snap.ContextRaw = raw
 	return json.Marshal(snapshotWire[S, E, C](snap))
@@ -527,7 +597,7 @@ func (snap Snapshot[S, E, C]) MarshalJSON() ([]byte, error) {
 func (snap *Snapshot[S, E, C]) UnmarshalJSON(b []byte) error {
 	var wire snapshotWire[S, E, C]
 	if err := json.Unmarshal(b, &wire); err != nil {
-		return &SnapshotError{Op: "unmarshal", Reason: err.Error()}
+		return &SnapshotError{Op: "unmarshal", Reason: err.Error(), Cause: err}
 	}
 	*snap = Snapshot[S, E, C](wire)
 	if len(snap.ContextRaw) == 0 {
@@ -535,7 +605,7 @@ func (snap *Snapshot[S, E, C]) UnmarshalJSON(b []byte) error {
 	}
 	var ctx C
 	if err := json.Unmarshal(snap.ContextRaw, &ctx); err != nil {
-		return &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error()}
+		return &SnapshotError{Op: "unmarshal", Reason: "context decode failed: " + err.Error(), Cause: err}
 	}
 	snap.Context = ctx
 	return nil

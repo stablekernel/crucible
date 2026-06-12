@@ -274,10 +274,13 @@ func TestHSM_JobRoundTrip(t *testing.T) {
 	}
 }
 
-// TestParallel_MultiRegionErr asserts that when two regions both match an event
-// but fail their guards, the result is a MultiRegionError unwrapping each region's
-// typed error.
-func TestParallel_MultiRegionErr(t *testing.T) {
+// TestParallel_GuardFailedRegionsBubble asserts that when every region's matching
+// candidate fails its guard PREDICATE (returns false), no region consumes the
+// event: it bubbles to the parallel-state-level handler, matching the
+// compound-state shape. With no cross-cutting handler declared the bubble yields
+// an InvalidTransitionError rather than masking the event behind a region-level
+// GuardFailedError. (A guard PANIC, by contrast, still surfaces as a hard error.)
+func TestParallel_GuardFailedRegionsBubble(t *testing.T) {
 	type s = int
 	type e = int
 	const (
@@ -316,16 +319,16 @@ func TestParallel_MultiRegionErr(t *testing.T) {
 	inst := m.Cast(nil)
 	inst.Fire(context.Background(), on)
 	res := inst.Fire(context.Background(), step)
+
+	// The guard-false candidates must NOT surface as a region-level error; the
+	// event bubbles past them to the (absent) parallel handler.
 	var multi *state.MultiRegionError
-	if !errors.As(res.Err, &multi) {
-		t.Fatalf("err = %v, want *MultiRegionError", res.Err)
+	if errors.As(res.Err, &multi) {
+		t.Fatalf("err = %v, want the event to bubble, not a MultiRegionError", res.Err)
 	}
-	if len(multi.Errors) != 2 {
-		t.Fatalf("MultiRegionError.Errors = %d, want 2", len(multi.Errors))
-	}
-	var gf *state.GuardFailedError
-	if !errors.As(res.Err, &gf) {
-		t.Fatalf("MultiRegionError does not unwrap to *GuardFailedError: %v", res.Err)
+	var inv *state.InvalidTransitionError
+	if !errors.As(res.Err, &inv) {
+		t.Fatalf("err = %v, want *InvalidTransitionError (event bubbled past failed guards)", res.Err)
 	}
 }
 

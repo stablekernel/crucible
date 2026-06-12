@@ -194,6 +194,12 @@ func (i *Instance[S, E, C]) afterEffectsOnExit(exits []S, tr *Trace) []Effect {
 // kernel). A real host wires a wall-clock implementation; a test wires a fake
 // clock so `after` machines are exercised deterministically. The kernel's Fire
 // step never calls a Clock — only effect-consuming drivers do.
+//
+// Clock is a FROZEN, host-implementable interface: its method set is LOCKED at
+// v1.0 and no method will be added to it. Post-v1 capabilities ship as a SEPARATE
+// optional interface a driver discovers by type-asserting a Clock value (the
+// io.Reader/io.ReaderAt idiom), never by widening this one — so a host's
+// implementation keeps compiling across minor versions.
 type Clock interface {
 	// Now reports the current time.
 	Now() time.Time

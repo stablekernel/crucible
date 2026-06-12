@@ -51,6 +51,13 @@ type ActorBehavior func(input map[string]any) (ActorInstance, error)
 // child's own (S, E, C) generic parameters erased. A host obtains one by wrapping
 // a Cast child *Instance with NewActor; the deterministic test driver and the
 // production driver both drive actors purely through this interface.
+//
+// ActorInstance is a FROZEN, host-implementable interface: its method set is
+// LOCKED at v1.0 and no method will be added to it. Post-v1 capabilities ship as a
+// SEPARATE optional interface a system discovers by type-asserting an
+// ActorInstance value (the io.Reader/io.ReaderAt idiom — Snapshotter already
+// follows it), never by widening this one — so a host's bespoke actor keeps
+// compiling across minor versions.
 type ActorInstance interface {
 	// DeliverFire fires one event through the actor, returning whether the actor
 	// reached its final state and the output it exposes on completion. The event is

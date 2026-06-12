@@ -23,4 +23,10 @@
 //
 // The package imports only [state] and the standard library, preserving the
 // kernel's stdlib-only dependency stance.
+//
+// Stability: this package ships as part of the v1.0 release, but its API and its
+// classification results are ADVISORY and are NOT covered by the v1.0
+// frozen-contract compatibility guarantee. Both may change in a minor release as
+// the differ's fidelity improves; do not treat a specific bump or change kind as
+// a stable contract.
 package evolution

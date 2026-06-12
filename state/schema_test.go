@@ -422,14 +422,17 @@ func TestSchemaOf_NonStructContextYieldsEmptyObject(t *testing.T) {
 	}
 }
 
-func TestSchemaOf_InterfaceFieldFallsBackToString(t *testing.T) {
+func TestSchemaOf_InterfaceFieldIsAny(t *testing.T) {
+	// An interface field cannot be reflected to a narrower schema; SchemaOf reports
+	// the honest SchemaAny kind rather than dishonestly coercing it to a string,
+	// which would give a freeze-time type-check false confidence about its shape.
 	type withAny struct {
 		Payload any `json:"payload"`
 	}
 	s := state.SchemaOf[withAny]()
 	f := fieldByName(t, s, "payload")
-	if f.Kind != state.SchemaString {
-		t.Fatalf("interface field kind = %q, want string fallback", f.Kind)
+	if f.Kind != state.SchemaAny {
+		t.Fatalf("interface field kind = %q, want %q", f.Kind, state.SchemaAny)
 	}
 }
 

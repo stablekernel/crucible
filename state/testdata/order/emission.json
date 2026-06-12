@@ -26,6 +26,10 @@
     "assignsApplied": [
       "asg",
       "asg2",
+      "asg",
+      "asg",
+      "asg2",
+      "asg",
       "asg"
     ],
     "microsteps": [
@@ -128,6 +132,8 @@
     "to": "Work",
     "outcome": 0,
     "exitedStates": [
+      "AlphaF",
+      "BetaF",
       "Work"
     ],
     "enteredStates": [

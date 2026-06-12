@@ -114,6 +114,57 @@ func TestDiff_AddState_Additive(t *testing.T) {
 	assertKinds(t, r, evolution.KindStateAdded, evolution.KindTransitionAdded)
 }
 
+// TestDiff_SrcPosOnly_NotUnknownBreaking is the regression for the cluster
+// migration false-positive: a DSL-forged machine captures the builder call site
+// in each transition's SrcFile/SrcLine (diagnostic-only position metadata). When
+// a state is added, an unchanged transition can pick up a different SrcLine purely
+// because the two machines are defined at different source lines. The unknown-
+// structural-delta backstop must NOT treat that benign, non-semantic difference as
+// breaking; it must classify the change as additive (state_added).
+func TestDiff_SrcPosOnly_NotUnknownBreaking(t *testing.T) {
+	// old: a -> b, with a source position on the only transition.
+	old := &state.IR[string, string, any]{
+		Name:       "mig",
+		Initial:    "a",
+		HasInitial: true,
+		States: []state.State[string, string, any]{
+			{Name: "a", Transitions: []state.Transition[string, string, any]{
+				{From: "a", On: "go", To: "b", SrcFile: "mig.go", SrcLine: 26},
+			}},
+			{Name: "b"},
+		},
+	}
+	// updated: identical semantics, plus an added (unreachable) state "d". The
+	// unchanged a->go->b transition differs ONLY in SrcLine, as it would when the
+	// two machines are forged at different lines of the same file.
+	updated := &state.IR[string, string, any]{
+		Name:       "mig",
+		Initial:    "a",
+		HasInitial: true,
+		States: []state.State[string, string, any]{
+			{Name: "a", Transitions: []state.Transition[string, string, any]{
+				{From: "a", On: "go", To: "b", SrcFile: "mig.go", SrcLine: 38},
+			}},
+			{Name: "b"},
+			{Name: "d", IsFinal: true},
+		},
+	}
+
+	r := evolution.Diff(old, updated)
+	if hasKind(r, evolution.KindUnknownStructuralDelta) {
+		t.Fatalf("a SrcPos-only transition delta must not trip the unknown-structural-delta backstop:\n%s", r)
+	}
+	if r.Breaking() {
+		t.Fatalf("adding a state with only a SrcPos delta on an unchanged transition is additive, got breaking:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindStateAdded) {
+		t.Fatalf("expected state_added, got:\n%s", r)
+	}
+	if got := r.SemverBump(); got != evolution.Minor {
+		t.Fatalf("additive -> Minor, got %q", got)
+	}
+}
+
 func TestDiff_RemoveState_Breaking(t *testing.T) {
 	old := docMachine()
 	updated := docMachine()
@@ -527,6 +578,238 @@ func TestRegionDiff(t *testing.T) {
 	r = evolution.Diff(withRegion, noRegion)
 	if !r.Breaking() {
 		t.Fatalf("removing a region must be breaking, got:\n%s", r)
+	}
+}
+
+// --- v1-freeze fidelity fixes (edit classes 1-7) ---
+
+// TestDiff_TransitionReordered_Breaking proves that reordering a state's
+// transition list (same multiset, different order) is breaking: order decides
+// which transition fires first.
+func TestDiff_TransitionReordered_Breaking(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	// running has [succeed, fail]; swap to [fail, succeed].
+	tr := updated.States[1].Transitions
+	updated.States[1].Transitions = []state.Transition[string, string, any]{tr[1], tr[0]}
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("reordering transitions must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindTransitionReordered) {
+		t.Fatalf("expected transition_reordered, got:\n%s", r)
+	}
+	if got := r.SemverBump(); got != evolution.Major {
+		t.Fatalf("reorder -> Major, got %q", got)
+	}
+}
+
+// TestDiff_TransitionReordered_NoFalsePositiveOnAdd proves the reorder check does
+// not fire when a transition is genuinely added (a different multiset).
+func TestDiff_TransitionReordered_NoFalsePositiveOnAdd(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	updated.States[0].Transitions = append(updated.States[0].Transitions,
+		state.Transition[string, string, any]{From: "queued", On: "cancel", To: "failed"})
+
+	r := evolution.Diff(old, updated)
+	if hasKind(r, evolution.KindTransitionReordered) {
+		t.Fatalf("adding a transition must not be reported as a reorder, got:\n%s", r)
+	}
+}
+
+// TestDiff_GuardStructureChanged_Breaking proves that changing a composite
+// guard's operator structure (And -> Or) with an identical leaf set is breaking.
+func TestDiff_GuardStructureChanged_Breaking(t *testing.T) {
+	build := func(expr state.GuardNode[string]) *state.IR[string, string, any] {
+		e := expr
+		return &state.IR[string, string, any]{
+			Name: "router", Initial: "router", HasInitial: true,
+			States: []state.State[string, string, any]{
+				{Name: "router", Transitions: []state.Transition[string, string, any]{
+					{From: "router", On: "go", To: "done", GuardExpr: &e},
+				}},
+				{Name: "done", IsFinal: true},
+			},
+		}
+	}
+	old := build(state.And(state.Guard[string]("a"), state.Guard[string]("b")))
+	updated := build(state.Or(state.Guard[string]("a"), state.Guard[string]("b")))
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("changing guard operator structure must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindGuardStructureChanged) {
+		t.Fatalf("expected guard_structure_changed, got:\n%s", r)
+	}
+	// The leaf set is identical, so no guard add/remove must fire.
+	if hasKind(r, evolution.KindGuardAdded) || hasKind(r, evolution.KindGuardRemoved) {
+		t.Fatalf("identical leaf set must not register as add/remove, got:\n%s", r)
+	}
+}
+
+// TestDiff_InitialChildChanged_Breaking proves that flipping a compound state's
+// InitialChild (default descent) is breaking.
+func TestDiff_InitialChildChanged_Breaking(t *testing.T) {
+	old := mediaPlayer()
+	updated := mediaPlayer()
+	paused := "paused"
+	updated.States[0].InitialChild = &paused
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("changing InitialChild must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindInitialChildChanged) {
+		t.Fatalf("expected initial_child_changed, got:\n%s", r)
+	}
+}
+
+// TestDiff_RegionInitialChildChanged_Breaking proves a Region.InitialChild flip
+// is breaking.
+func TestDiff_RegionInitialChildChanged_Breaking(t *testing.T) {
+	build := func(child string) *state.IR[string, string, any] {
+		c := child
+		return &state.IR[string, string, any]{
+			Name: "parallel", Initial: "root", HasInitial: true,
+			States: []state.State[string, string, any]{
+				{Name: "root", Regions: []state.Region[string, string, any]{
+					{Name: "r1", InitialChild: &c, States: []state.State[string, string, any]{
+						{Name: "a"}, {Name: "b"},
+					}},
+				}},
+			},
+		}
+	}
+	r := evolution.Diff(build("a"), build("b"))
+	if !r.Breaking() {
+		t.Fatalf("changing region InitialChild must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindInitialChildChanged) {
+		t.Fatalf("expected initial_child_changed, got:\n%s", r)
+	}
+}
+
+// TestDiff_HistoryChanged_Breaking proves that flipping a state's HistoryType is
+// breaking.
+func TestDiff_HistoryChanged_Breaking(t *testing.T) {
+	old := mediaPlayer()
+	updated := mediaPlayer()
+	updated.States[0].HistoryType = state.HistoryDeep
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("changing HistoryType must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindHistoryChanged) {
+		t.Fatalf("expected history_changed, got:\n%s", r)
+	}
+}
+
+// TestDiff_ContextSchemaChanged_Breaking proves that adding/retyping a context
+// schema field is breaking.
+func TestDiff_ContextSchemaChanged_Breaking(t *testing.T) {
+	withCtx := func(fields ...state.SchemaField) *state.IR[string, string, any] {
+		ir := jobMachine()
+		ir.Context = &state.ContextSchema{Fields: fields}
+		return ir
+	}
+	old := withCtx(state.SchemaField{Name: "retries", Kind: "int"})
+	updated := withCtx(
+		state.SchemaField{Name: "retries", Kind: "int"},
+		state.SchemaField{Name: "owner", Kind: "string"},
+	)
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("adding a context field must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindContextSchemaChanged) {
+		t.Fatalf("expected context_schema_changed, got:\n%s", r)
+	}
+
+	// Retype an existing field.
+	retyped := withCtx(state.SchemaField{Name: "retries", Kind: "string"})
+	r = evolution.Diff(old, retyped)
+	if !r.Breaking() || !hasKind(r, evolution.KindContextSchemaChanged) {
+		t.Fatalf("retyping a context field must be breaking, got:\n%s", r)
+	}
+
+	// nil -> set is breaking.
+	r = evolution.Diff(jobMachine(), old)
+	if !r.Breaking() || !hasKind(r, evolution.KindContextSchemaChanged) {
+		t.Fatalf("introducing a context schema must be breaking, got:\n%s", r)
+	}
+
+	// Identical schemas produce no schema change.
+	r = evolution.Diff(old, withCtx(state.SchemaField{Name: "retries", Kind: "int"}))
+	if hasKind(r, evolution.KindContextSchemaChanged) {
+		t.Fatalf("identical context schema must not register a change, got:\n%s", r)
+	}
+}
+
+// TestDiff_EventlessAdded_Breaking proves that adding an eventless (Always) edge
+// is breaking, not an additive transition_added.
+func TestDiff_EventlessAdded_Breaking(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	updated.States[0].Transitions = append(updated.States[0].Transitions,
+		state.Transition[string, string, any]{From: "queued", On: "", To: "running", EventLess: true})
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("adding an eventless edge must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindEventlessChanged) {
+		t.Fatalf("expected eventless_changed, got:\n%s", r)
+	}
+}
+
+// TestDiff_EventlessFlipped_Breaking proves that flipping an existing transition's
+// EventLess flag is breaking.
+func TestDiff_EventlessFlipped_Breaking(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	updated.States[0].Transitions[0].EventLess = true
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("flipping EventLess must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindEventlessChanged) {
+		t.Fatalf("expected eventless_changed, got:\n%s", r)
+	}
+}
+
+// TestDiff_UnknownStructuralDelta_Breaking proves the catch-all backstop: a field
+// the differ has no specific rule for (here Forbidden) still forces a Major bump
+// so future IR additions fail safe.
+func TestDiff_UnknownStructuralDelta_Breaking(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	updated.States[1].Transitions[0].Forbidden = true
+
+	r := evolution.Diff(old, updated)
+	if !r.Breaking() {
+		t.Fatalf("an unmodeled structural field change must be breaking, got:\n%s", r)
+	}
+	if !hasKind(r, evolution.KindUnknownStructuralDelta) {
+		t.Fatalf("expected unknown_structural_delta, got:\n%s", r)
+	}
+}
+
+// TestDiff_UnknownStructuralDelta_NoDoubleFire proves the backstop does NOT fire
+// for a difference already specifically reported (a retarget).
+func TestDiff_UnknownStructuralDelta_NoDoubleFire(t *testing.T) {
+	old := jobMachine()
+	updated := jobMachine()
+	updated.States[1].Transitions[0].To = "failed" // a modeled retarget
+
+	r := evolution.Diff(old, updated)
+	if hasKind(r, evolution.KindUnknownStructuralDelta) {
+		t.Fatalf("a modeled difference must not trip the backstop, got:\n%s", r)
 	}
 }
 

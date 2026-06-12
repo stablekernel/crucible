@@ -1,6 +1,9 @@
 package state
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 // isZero reports whether a comparable value equals its type's zero value. Used
 // to tell a targetless wildcard (no GoTo) from one with an explicit target.
@@ -10,9 +13,15 @@ func isZero[S comparable](s S) bool {
 }
 
 // Diagnostic severities used by lint/Temper/Quench.
+//
+// diagInfo is an advisory severity: it is surfaced in Temper/Assay output for a
+// host to inspect, but the Strict-promotion logic never escalates it to an error
+// (unlike diagWarning, which Strict promotes). It marks a supported-but-noteworthy
+// configuration, such as the pointer-context escape hatch.
 const (
 	diagError   = "error"
 	diagWarning = "warning"
+	diagInfo    = "info"
 )
 
 // diagnostic is the internal lint finding; it carries the public Diagnostic
@@ -21,6 +30,10 @@ const (
 type diagnostic struct {
 	Diagnostic
 	unboundRef *UnboundRefError
+	// regionEscape and historyCrossRegion carry the typed region-lint errors so
+	// Quench can panic with the exact errors.As-able value, mirroring unboundRef.
+	regionEscape       *RegionEscapeError
+	historyCrossRegion *HistoryCrossRegionError
 }
 
 // quenchError wraps a non-ref lint finding so Quench panics with an error value
@@ -96,6 +109,11 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		}
 	}
 
+	// Region-scoped transition validity: a region-internal transition must not
+	// target a state outside its owning region (T7 escape), nor a history
+	// pseudo-state owned by a different region (K2 cross-region history target).
+	b.checkRegionTransitions(&diags)
+
 	// Missing initial state.
 	if !b.hasInitial {
 		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
@@ -116,6 +134,22 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
 			Severity: diagWarning,
 			Message:  "missing CurrentStateFn (cannot derive current state from an entity)",
+		}})
+	}
+
+	// Pointer context (C is a pointer type) forfeits clean-replay determinism: a
+	// bound action that mutates through the pointer escapes the value-semantics
+	// contract, so replaying a trace can diverge. A value context is preferred, but
+	// a pointer context is a documented, SUPPORTED escape hatch (see doc.go): it
+	// builds and fires, and is reported only as an advisory (diagInfo) diagnostic.
+	// The advisory is surfaced in Temper/Assay output for inspection but is NOT
+	// rejected — even under Strict, which escalates only diagWarning, not diagInfo.
+	// It is type-level (no source position), mirroring the CurrentStateFn warning
+	// above.
+	if reflect.TypeOf((*C)(nil)).Elem().Kind() == reflect.Pointer {
+		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
+			Severity: diagInfo,
+			Message:  "pointer context (C is a pointer type) forfeits clean-replay determinism; prefer a value context",
 		}})
 	}
 
@@ -294,6 +328,133 @@ func (b *Builder[S, E, C]) checkHistoryNested(diags *[]diagnostic, s *State[S, E
 			// A region is parallel substructure: a history state nested here is in a
 			// region, not a compound — flag via the parent check above.
 			b.checkHistoryNested(diags, &s.Regions[ri].States[i], s)
+		}
+	}
+}
+
+// regionMembership records, for one state, the ordered chain of orthogonal
+// regions that enclose it, outermost first. Each entry pairs the owning parallel
+// state's label with the region name. A flat (non-region) state has an empty
+// chain.
+type regionMembership struct {
+	parallels []string // owning parallel-state labels, outermost first
+	regions   []string // region names, aligned with parallels
+}
+
+// innermost returns the innermost (parallel, region) pair and whether the state
+// sits inside any region at all.
+func (rm regionMembership) innermost() (parallel, region string, ok bool) {
+	if len(rm.regions) == 0 {
+		return "", "", false
+	}
+	last := len(rm.regions) - 1
+	return rm.parallels[last], rm.regions[last], true
+}
+
+// contains reports whether (parallel, region) appears anywhere in the chain — i.e.
+// whether this state lies inside that specific region (possibly nested deeper).
+func (rm regionMembership) contains(parallel, region string) bool {
+	for i := range rm.regions {
+		if rm.parallels[i] == parallel && rm.regions[i] == region {
+			return true
+		}
+	}
+	return false
+}
+
+// regionChains computes the region membership of every declared state for the
+// DSL (flat stateDef) path by walking each state's parent chain. The chain is
+// built outermost-first. Keyed by the state's label.
+func (b *Builder[S, E, C]) regionChains() map[S]regionMembership {
+	out := make(map[S]regionMembership, len(b.states))
+	var chainOf func(sd *stateDef[S, E, C]) regionMembership
+	chainOf = func(sd *stateDef[S, E, C]) regionMembership {
+		if !sd.hasParent {
+			return regionMembership{}
+		}
+		parent, ok := b.stateIndex[sd.parent]
+		var rm regionMembership
+		if ok {
+			rm = chainOf(parent)
+		}
+		// sd.region is set only when sd sits directly inside a Region block; its
+		// parent is then the owning parallel state.
+		if sd.region != "" {
+			rm.parallels = append(append([]string(nil), rm.parallels...), fmt.Sprint(sd.parent))
+			rm.regions = append(append([]string(nil), rm.regions...), sd.region)
+		}
+		return rm
+	}
+	for _, sd := range b.states {
+		out[sd.state.Name] = chainOf(sd)
+	}
+	return out
+}
+
+// checkRegionTransitions validates that region-internal transitions stay within
+// their owning region. It is a no-op for the prebuilt (IR) path, where region
+// substructure is nested rather than flat; the DSL Forge path (where region
+// states are flat stateDefs indexed in stateIndex) is the one that can express
+// an escaping target.
+func (b *Builder[S, E, C]) checkRegionTransitions(diags *[]diagnostic) {
+	if b.prebuilt {
+		return
+	}
+	chains := b.regionChains()
+	for _, sd := range b.states {
+		parallel, region, inRegion := chains[sd.state.Name].innermost()
+		if !inRegion {
+			continue // flat / compound transitions are unconstrained here
+		}
+		for ti := range sd.state.Transitions {
+			t := &sd.state.Transitions[ti]
+			if isZero(t.To) || t.Forbidden {
+				continue
+			}
+			target, ok := b.stateIndex[t.To]
+			if !ok {
+				continue // undeclared target is reported by the main target check
+			}
+			// Cross-region history target (K2 reject variant): a transition that
+			// targets a history pseudo-state belonging to a different region is
+			// ambiguous. The in-region history restore is well-defined and handled on
+			// the commit path; only the cross-region target is rejected here. This is
+			// checked before the escape rule so the more specific history message wins.
+			isHistory := target.isHistory || target.state.HistoryType != HistoryNone
+			if isHistory && !chains[t.To].contains(parallel, region) {
+				he := &HistoryCrossRegionError{
+					Region:  region,
+					From:    fmt.Sprint(t.From),
+					History: fmt.Sprint(t.To),
+				}
+				*diags = append(*diags, diagnostic{
+					Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  he.Error(),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					},
+					historyCrossRegion: he,
+				})
+				continue
+			}
+			// Region escape (T7): the target lies outside the source's region.
+			if !chains[t.To].contains(parallel, region) {
+				re := &RegionEscapeError{
+					Region: region,
+					From:   fmt.Sprint(t.From),
+					To:     fmt.Sprint(t.To),
+				}
+				*diags = append(*diags, diagnostic{
+					Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  re.Error(),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					},
+					regionEscape: re,
+				})
+			}
 		}
 	}
 }

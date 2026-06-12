@@ -4,11 +4,12 @@ import (
 	"github.com/stablekernel/crucible/state/analysis"
 )
 
-// This file implements bounded exhaustive simulation: enumerate the event
-// sequences (traces) the machine can run from its initial configuration up to a
-// depth bound, evaluate a caller-supplied oracle at every reached configuration,
-// and surface the shortest trace that drives the machine into a configuration the
-// oracle rejects.
+// This file implements bounded exhaustive simulation: enumerate the
+// configurations reachable from the initial configuration within a depth bound
+// (the distinct configurations of a breadth-first walk, not every distinct event
+// trace), evaluate a caller-supplied oracle once per configuration — on the
+// shortest path that first reaches it — and surface the shortest path that drives
+// the machine into a configuration the oracle rejects.
 //
 // Where invariant checking (invariant.go) decides a fixed catalog of structural
 // predicates (mutual exclusion, implication, never-active), bounded simulation

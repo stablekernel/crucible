@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "machineId": "document",
+  "name": "effects-order-Approved",
+  "initialState": "Draft",
+  "events": [
+    {
+      "event": "Submit"
+    },
+    {
+      "event": "Approve"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "FinalState",
+      "expected": "Approved"
+    },
+    {
+      "type": "EffectsEmitted",
+      "expected": [
+        "emit",
+        "emit"
+      ]
+    },
+    {
+      "type": "EffectsPayloads",
+      "expected": [
+        "emit=conformance_test.emitted{name:\"submitted\"}",
+        "emit=conformance_test.emitted{name:\"approved\"}"
+      ]
+    },
+    {
+      "type": "TraceLength",
+      "expected": 2
+    },
+    {
+      "type": "NoErrors",
+      "expected": true
+    }
+  ]
+}

@@ -2,6 +2,30 @@ package analysis
 
 import "fmt"
 
+// checkUndefinedTargets reports every transition whose target state is not a
+// declared state of the machine. Such an edge can never complete — the kernel
+// cannot enter a state that does not exist — and would otherwise be silently
+// skipped by the reachability and path walks (which defensively ignore unknown
+// targets), hiding the defect. Forbidden transitions are already excluded from
+// the edge set, so their meaningless To never reaches here.
+func checkUndefinedTargets(g *graph, r *Report) {
+	var found []Finding
+	for _, e := range g.edges {
+		if _, ok := g.nodes[e.to]; ok {
+			continue
+		}
+		found = append(found, Finding{
+			Kind:       KindUndefinedTarget,
+			Severity:   SeverityError,
+			State:      e.from,
+			Transition: e.label(),
+			Message:    fmt.Sprintf("transition from %q targets undeclared state %q; it can never complete", e.from, e.to),
+		})
+	}
+	sortFindings(found)
+	r.Findings = append(r.Findings, found...)
+}
+
 // checkUnreachable reports every declared state with no inbound path from the
 // initial state. The initial state itself is always reachable. A machine with
 // no declared initial state cannot be analyzed for reachability, so the check
@@ -63,18 +87,24 @@ func checkDeadTransitions(g *graph, r *Report) {
 func checkNondeterminism(g *graph, r *Report) {
 	var found []Finding
 	for _, name := range g.order {
-		// Count guardless transitions per event, and guardless "always" edges.
+		// Count guardless transitions per event, guardless "always" edges, and
+		// guardless wildcard ("*") edges. A wildcard's On field is meaningless, so it
+		// is tallied as a catch-all rather than as a specific (zero-value) event.
 		guardlessByEvent := map[string]int{}
 		guardlessAlways := 0
+		guardlessWildcard := 0
 		for _, e := range g.outgoing[name] {
 			if e.guarded {
 				continue
 			}
-			if e.eventLess {
+			switch {
+			case e.wildcard:
+				guardlessWildcard++
+			case e.eventLess:
 				guardlessAlways++
-				continue
+			default:
+				guardlessByEvent[e.on]++
 			}
-			guardlessByEvent[e.on]++
 		}
 		for ev, count := range guardlessByEvent {
 			if count >= 2 {
@@ -92,6 +122,14 @@ func checkNondeterminism(g *graph, r *Report) {
 				Severity: SeverityError,
 				State:    name,
 				Message:  fmt.Sprintf("state %q has %d guardless eventless (always) transitions; selection is ambiguous", name, guardlessAlways),
+			})
+		}
+		if guardlessWildcard >= 2 {
+			found = append(found, Finding{
+				Kind:     KindNondeterministic,
+				Severity: SeverityError,
+				State:    name,
+				Message:  fmt.Sprintf("state %q has %d guardless wildcard (catch-all) transitions; selection is ambiguous", name, guardlessWildcard),
 			})
 		}
 	}

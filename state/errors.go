@@ -47,6 +47,15 @@ func (e *GuardPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: guard %q panicked: %v", e.GuardName, e.Recovered)
 }
 
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *GuardPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
+}
+
 // AssignPanicError is returned when an assign reducer panicked and was recovered,
 // or when an assign ref did not resolve at fire time. An assign is a total reducer,
 // so a panic is a programmer error the kernel surfaces as a typed failure that
@@ -58,6 +67,39 @@ type AssignPanicError struct {
 
 func (e *AssignPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: assign %q panicked: %v", e.AssignName, e.Recovered)
+}
+
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *AssignPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
+}
+
+// ActionPanicError is returned when a host action (an OnEntry/OnExit action or a
+// transition action) panicked and was recovered. An action is host code the
+// kernel runs during a fire; a panic is a programmer error the kernel surfaces as
+// a typed failure on FireResult.Err rather than letting it crash Fire. When the
+// recovered value is itself an error, Unwrap exposes it so errors.Is / errors.As
+// can reach the inner cause.
+type ActionPanicError struct {
+	ActionName string
+	Recovered  any
+}
+
+func (e *ActionPanicError) Error() string {
+	return fmt.Sprintf("crucible/state: action %q panicked: %v", e.ActionName, e.Recovered)
+}
+
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *ActionPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
 }
 
 // PolicyDeniedError is returned when a policy returned Deny.
@@ -184,10 +226,17 @@ func (e *UnboundActorError) Error() string {
 // context encode/decode failure. Op names the failing operation
 // ("restore" | "marshal" | "unmarshal"), State (when set) names the offending
 // configuration leaf, and Reason carries the detail.
+//
+// Cause is the wrapped underlying error when the failure originated in one (a
+// JSON encode/decode error, for example), exposed via Unwrap so errors.Is /
+// errors.As can reach it. Reason stays the human-readable message for backward
+// compatibility — when a cause is present, Reason carries its text — so existing
+// callers that read Reason are unaffected.
 type SnapshotError struct {
 	Op     string
 	State  string
 	Reason string
+	Cause  error
 }
 
 func (e *SnapshotError) Error() string {
@@ -196,6 +245,10 @@ func (e *SnapshotError) Error() string {
 	}
 	return fmt.Sprintf("crucible/state: snapshot %s failed: %s", e.Op, e.Reason)
 }
+
+// Unwrap exposes the wrapped cause for errors.Is / errors.As traversal; it
+// returns nil when the snapshot failure had no underlying error.
+func (e *SnapshotError) Unwrap() error { return e.Cause }
 
 // SnapshotVersionError is returned by Restore when a snapshot's version identity
 // is incompatible with the target: a snapshot-format schema version across a major
@@ -218,6 +271,35 @@ func (e *SnapshotVersionError) Error() string {
 		e.Kind, e.Machine, e.Got, e.Want, e.Reason)
 }
 
+// NonQuiescentActorError is returned by SnapshotActors when an actor in the tree
+// has a non-empty mailbox (a queued, in-flight message) at snapshot time. A v1.0
+// actor-tree snapshot requires a quiesced tree: the reserved per-actor mailbox slot
+// is not persisted, so snapshotting a non-quiesced tree would silently drop the
+// queued messages. SnapshotActors refuses such a snapshot with this typed error
+// instead, naming the offending actor and its system, and reporting how many
+// envelopes were queued. Drain the tree (Step/Tick every actor to empty its
+// mailbox) before snapshotting, or wait for the future additive change that
+// persists mailbox backlog.
+type NonQuiescentActorError struct {
+	// ActorID is the id of the actor whose mailbox was non-empty.
+	ActorID string
+	// SystemID is the actor's well-known system id, when it has one.
+	SystemID string
+	// Queued is the number of in-flight envelopes in the actor's mailbox.
+	Queued int
+}
+
+func (e *NonQuiescentActorError) Error() string {
+	if e.SystemID != "" {
+		return fmt.Sprintf(
+			"crucible/state: cannot snapshot non-quiesced actor %q (systemId %q): %d queued message(s); drain the actor tree before snapshotting",
+			e.ActorID, e.SystemID, e.Queued)
+	}
+	return fmt.Sprintf(
+		"crucible/state: cannot snapshot non-quiesced actor %q: %d queued message(s); drain the actor tree before snapshotting",
+		e.ActorID, e.Queued)
+}
+
 // MultiRegionError aggregates the errors raised by more than one orthogonal
 // region firing on a single event. Its Unwrap returns each region's error so
 // errors.As finds any region's typed error.
@@ -235,6 +317,40 @@ func (e *MultiRegionError) Error() string {
 
 // Unwrap exposes the per-region errors for errors.As / errors.Is traversal.
 func (e *MultiRegionError) Unwrap() []error { return e.Errors }
+
+// RegionEscapeError reports a region-internal transition whose target lies
+// outside the owning parallel region. The construct is ill-defined: SCXML
+// semantics would exit the whole parallel state, which the region-scoped builder
+// API does not express, so it is rejected at Quench rather than corrupting the
+// configuration at runtime. Region names the owning region, From the source
+// state, and To the escaping target.
+type RegionEscapeError struct {
+	Region string
+	From   string
+	To     string
+}
+
+func (e *RegionEscapeError) Error() string {
+	return fmt.Sprintf("crucible/state: region %q transition from %q targets %q outside the region",
+		e.Region, e.From, e.To)
+}
+
+// HistoryCrossRegionError reports a region-internal transition targeting a
+// history pseudo-state owned by a different region (or by a state outside the
+// owning parallel). A history target is only meaningful within its own region's
+// scope; a cross-region history target is ambiguous and rejected at Quench.
+// Region names the transition's owning region, From the source state, and
+// History the targeted history pseudo-state.
+type HistoryCrossRegionError struct {
+	Region  string
+	From    string
+	History string
+}
+
+func (e *HistoryCrossRegionError) Error() string {
+	return fmt.Sprintf("crucible/state: region %q transition from %q targets history state %q in another region",
+		e.Region, e.From, e.History)
+}
 
 // VerifyError aggregates one or more failing requirements found by Verify.
 type VerifyError struct {
