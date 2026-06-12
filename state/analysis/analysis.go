@@ -61,6 +61,21 @@ const (
 	// finding makes the ambiguity explicit instead of analyzing a graph that does
 	// not match the declared machine.
 	KindDuplicateState Kind = "duplicate_state"
+
+	// KindUndefinedTarget marks a transition whose target state is not a declared
+	// state of the machine. Such an edge can never complete: the kernel cannot
+	// enter a state that does not exist. Exact: the IR proves the target is absent
+	// from the declared state set. A forbidden transition is exempt — its To field
+	// carries no meaning — and so is never flagged here.
+	KindUndefinedTarget Kind = "undefined_target"
+
+	// KindInternalError marks a failure inside the analysis pass itself — most
+	// commonly a machine whose serialized IR could not be read back. It is not a
+	// defect in the analyzed machine but a signal that the pass could not run, so
+	// the rest of the report (if any) is incomplete. Surfacing it as its own kind
+	// keeps an analyzer/loader failure from masquerading as a machine defect such
+	// as an unreachable state.
+	KindInternalError Kind = "internal_error"
 )
 
 // Severity ranks a finding's seriousness.
@@ -152,11 +167,12 @@ func Analyze[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts 
 
 	g, err := buildGraph(m)
 	if err != nil {
-		// A machine that cannot serialize its own IR is a kernel bug, not a user
-		// defect; surface it as a single finding rather than panicking, honoring
-		// the no-panic contract.
+		// A machine that cannot serialize/round-trip its own IR is an analyzer or
+		// kernel failure, not a user defect; surface it as a single internal-error
+		// finding rather than panicking (honoring the no-panic contract) and never
+		// as a machine defect such as an unreachable state.
 		return Report{Findings: []Finding{{
-			Kind:     KindUnreachableState,
+			Kind:     KindInternalError,
 			Severity: SeverityWarning,
 			Message:  fmt.Sprintf("analysis skipped: machine IR could not be read: %v", err),
 		}}}
@@ -172,6 +188,9 @@ func Analyze[S comparable, E comparable, C any](m *state.Machine[S, E, C], opts 
 				Message:  fmt.Sprintf("state %q is declared more than once; its analysis node collides and other declarations are masked", name),
 			})
 		}
+	}
+	if cfg.enabled(KindUndefinedTarget) {
+		checkUndefinedTargets(g, &r)
 	}
 	if cfg.enabled(KindUnreachableState) {
 		checkUnreachable(g, &r)
@@ -240,12 +259,18 @@ func Without(kinds ...Kind) Option {
 
 // --- graph -----------------------------------------------------------------
 
-// edge is one transition flattened out of the IR for graph analysis.
+// edge is one transition flattened out of the IR for graph analysis. Forbidden
+// transitions (Forbid/ForbidAny) are NOT modeled as edges at all — they consume
+// and drop an event and carry no meaningful target — so an edge is always a real,
+// traversable transition. A wildcard (OnAny) edge is a real catch-all transition
+// to its target, distinguished only so its label and event-overlap accounting do
+// not treat the (meaningless) On field as a specific event.
 type edge struct {
 	from      string
 	to        string
-	on        string // event label; "" when eventless
+	on        string // event label; "" when eventless or wildcard
 	eventLess bool
+	wildcard  bool
 	internal  bool
 	guarded   bool
 }
@@ -253,7 +278,10 @@ type edge struct {
 // label renders the edge for a finding's Transition field.
 func (e edge) label() string {
 	on := e.on
-	if e.eventLess {
+	switch {
+	case e.wildcard:
+		on = "*"
+	case e.eventLess:
 		on = "always"
 	}
 	return fmt.Sprintf("%s -%s-> %s", e.from, on, e.to)
@@ -342,11 +370,20 @@ func flatten[S comparable, E comparable, C any](g *graph, s *state.State[S, E, C
 
 	for ti := range s.Transitions {
 		t := &s.Transitions[ti]
+		// A forbidden transition (Forbid/ForbidAny) consumes and drops an event; it
+		// is not a real, traversable transition and its To field is meaningless, so
+		// it is not modeled as an edge. Recording it as an edge would both invent a
+		// false exit (masking a dead end) and invent false reachability into its junk
+		// target.
+		if t.Forbidden {
+			continue
+		}
 		e := edge{
 			from:      name,
 			to:        fmt.Sprint(t.To),
 			on:        fmt.Sprint(t.On),
 			eventLess: t.EventLess,
+			wildcard:  t.Wildcard,
 			internal:  t.Internal,
 			guarded:   len(t.Guards) > 0 || t.GuardExpr != nil,
 		}

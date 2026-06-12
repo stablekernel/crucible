@@ -32,4 +32,13 @@
 //
 // The package imports only [state] and the standard library, preserving the
 // kernel's stdlib-only dependency stance.
+//
+// # Stability
+//
+// This package ships in the v1.0 release but is advisory: its API and the shape
+// of its findings (the [Kind] set, [Finding] fields, and report semantics) are
+// NOT covered by the v1.0 frozen-contract guarantee, which names only the
+// kernel, IR, context, effect, and emission surfaces. The findings are
+// heuristic-or-exact diagnostics, not a stable contract, and may change in a
+// minor release.
 package analysis
