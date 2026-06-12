@@ -55,6 +55,11 @@ const (
 	SchemaMap SchemaKind = "map"
 	// SchemaEnum is a string constrained to an enumerated set carried on Enum.
 	SchemaEnum SchemaKind = "enum"
+	// SchemaAny is the honest kind for a Go type that cannot be reflected to a
+	// narrower schema — an interface, func, channel, or complex value. It signals
+	// "shape unknown" rather than asserting a concrete kind, so a freeze-time
+	// type-check is not given false confidence by a coerced-to-string field.
+	SchemaAny SchemaKind = "any"
 )
 
 // ContextSchema is a serializable description of a machine's context type: an
@@ -338,8 +343,9 @@ func kindOf(t reflect.Type) SchemaField {
 		return SchemaField{Kind: SchemaMap, Key: &key, Elem: &val, Nullable: true}
 	default:
 		// Interface, channel, func, complex, and any other kind cannot be reflected
-		// to a narrower schema; fall back to a string so the field still appears.
-		return SchemaField{Kind: SchemaString}
+		// to a narrower schema; report SchemaAny so the field still appears without
+		// dishonestly asserting it is a string (which would mislead a type-check).
+		return SchemaField{Kind: SchemaAny}
 	}
 }
 

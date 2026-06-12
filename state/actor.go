@@ -30,10 +30,20 @@ import "context"
 // verbatim; ActorKindMachine marks the invocation as spawning a child MACHINE
 // actor, so entering the owning state emits a SpawnActor effect instead of a
 // StartService effect, and the host's ActorSystem (not a ServiceRunner) runs it.
+//
+// It serializes as a bare omitempty integer, so its numeric values are part of
+// the FROZEN v1.0 wire contract — a recorded Invocation encodes its kind by the
+// integer. The mapping is append-only: existing values may never be reordered or
+// repurposed; a new actor kind may only be added with the next unused integer.
+// The frozen value -> meaning mapping is:
+//
+//	0 = ActorKindService (the invoked-services default, a host-run unit of work)
+//	1 = ActorKindMachine (invoke a child machine as an actor)
 type ActorKind int
 
 // Actor kinds. ActorKindService is the invoked-services default (a host-run unit
-// of work); ActorKindMachine invokes a child machine as an actor.
+// of work); ActorKindMachine invokes a child machine as an actor. The integers
+// are a frozen, append-only wire contract (see ActorKind).
 const (
 	ActorKindService ActorKind = iota
 	ActorKindMachine

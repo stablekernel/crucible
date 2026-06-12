@@ -194,7 +194,11 @@ const (
 	JournalActorMessage JournalKind = "actorMessage"
 	// JournalClockRead records a Clock.Now() reading consumed during a step.
 	JournalClockRead JournalKind = "clockRead"
-	// JournalRandom records a host randomness draw consumed during a step.
+	// JournalRandom records a host randomness draw consumed during a step. Like a
+	// service result, the recorded draw rides the shared JournalEntry.Payload field
+	// (the structured JSON value the host consumed) — the variant needs no dedicated
+	// backing field. Replay returns Payload verbatim so the draw resolves
+	// identically, correlated by CorrelationID to the draw it stands in for.
 	JournalRandom JournalKind = "random"
 )
 
@@ -220,7 +224,8 @@ type JournalEntry struct {
 	// recorded value to the resolution it stands in for.
 	CorrelationID string `json:"correlationId,omitempty"`
 	// Payload is the structured, JSON result the source produced (a service's
-	// done-output, an actor message), returned verbatim on replay.
+	// done-output, an actor message, or a JournalRandom draw), returned verbatim on
+	// replay.
 	Payload json.RawMessage `json:"payload,omitempty"`
 	// ClockUnixNano is the recorded Clock.Now() reading (Unix nanoseconds) for a
 	// JournalClockRead entry, returned on replay so time-dependent transitions

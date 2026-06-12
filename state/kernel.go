@@ -57,10 +57,21 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 }
 
 // HistoryType is the reserved drop-in surface for shallow/deep history states.
+//
+// It serializes as a bare omitempty integer, so its numeric values are part of
+// the FROZEN v1.0 wire contract — a recorded IR encodes a history kind by its
+// integer. The mapping is append-only: existing values may never be reordered or
+// repurposed; a new history kind may only be added with the next unused integer.
+// The frozen value -> meaning mapping is:
+//
+//	0 = HistoryNone (the v1 default: no history)
+//	1 = HistoryShallow
+//	2 = HistoryDeep
 type HistoryType int
 
 // History kinds. HistoryNone is the v1 default (no history); shallow and deep
-// are reserved for the deferred history-state feature.
+// are reserved for the deferred history-state feature. The integers are a frozen,
+// append-only wire contract (see HistoryType).
 const (
 	HistoryNone HistoryType = iota
 	HistoryShallow
@@ -69,11 +80,22 @@ const (
 
 // WaitMode tags a transition's synchronization expectation. The kernel only
 // stores the tag; the consumer acts on it.
+//
+// It serializes as a bare omitempty integer, so its numeric values are part of
+// the FROZEN v1.0 wire contract — a recorded IR encodes a wait mode by its
+// integer. The mapping is append-only: existing values may never be reordered or
+// repurposed; a new wait mode may only be added with the next unused integer.
+// The frozen value -> meaning mapping is:
+//
+//	0 = SyncReply (await a reply)
+//	1 = FireAndForget (emit and move on)
+//	2 = ValidatePoll (poll the entity, re-running Verify, until it validates)
 type WaitMode int
 
 // Wait modes. SyncReply awaits a reply, FireAndForget emits and moves on, and
 // ValidatePoll signals the consumer to poll the entity (re-running Verify) until
-// it validates.
+// it validates. The integers are a frozen, append-only wire contract (see
+// WaitMode).
 const (
 	SyncReply WaitMode = iota
 	FireAndForget
