@@ -21,9 +21,10 @@ const (
 type diagnostic struct {
 	Diagnostic
 	unboundRef *UnboundRefError
-	// regionEscape carries the typed region-escape error so Quench can panic with
-	// the exact errors.As-able value, mirroring unboundRef.
-	regionEscape *RegionEscapeError
+	// regionEscape and historyCrossRegion carry the typed region-lint errors so
+	// Quench can panic with the exact errors.As-able value, mirroring unboundRef.
+	regionEscape       *RegionEscapeError
+	historyCrossRegion *HistoryCrossRegionError
 }
 
 // quenchError wraps a non-ref lint finding so Quench panics with an error value
@@ -385,8 +386,32 @@ func (b *Builder[S, E, C]) checkRegionTransitions(diags *[]diagnostic) {
 			if isZero(t.To) || t.Forbidden {
 				continue
 			}
-			if _, ok := b.stateIndex[t.To]; !ok {
+			target, ok := b.stateIndex[t.To]
+			if !ok {
 				continue // undeclared target is reported by the main target check
+			}
+			// Cross-region history target (K2 reject variant): a transition that
+			// targets a history pseudo-state belonging to a different region is
+			// ambiguous. The in-region history restore is well-defined and handled on
+			// the commit path; only the cross-region target is rejected here. This is
+			// checked before the escape rule so the more specific history message wins.
+			isHistory := target.isHistory || target.state.HistoryType != HistoryNone
+			if isHistory && !chains[t.To].contains(parallel, region) {
+				he := &HistoryCrossRegionError{
+					Region:  region,
+					From:    fmt.Sprint(t.From),
+					History: fmt.Sprint(t.To),
+				}
+				*diags = append(*diags, diagnostic{
+					Diagnostic: Diagnostic{
+						Severity: diagError,
+						Message:  he.Error(),
+						SrcFile:  t.SrcFile,
+						SrcLine:  t.SrcLine,
+					},
+					historyCrossRegion: he,
+				})
+				continue
 			}
 			// Region escape (T7): the target lies outside the source's region.
 			if !chains[t.To].contains(parallel, region) {

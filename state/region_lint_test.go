@@ -82,3 +82,47 @@ func TestQuench_AcceptsInRegionTransition(t *testing.T) {
 		t.Fatalf("Quench rejected a valid in-region transition: %v", err)
 	}
 }
+
+// TestQuench_RejectsCrossRegionHistoryTarget proves that a region-internal
+// transition targeting a history pseudo-state owned by a DIFFERENT region is
+// rejected at Quench with a typed *HistoryCrossRegionError (the K2 reject
+// variant). The in-region history restore is well-defined and handled
+// elsewhere; only the cross-region history target is ambiguous and refused.
+func TestQuench_RejectsCrossRegionHistoryTarget(t *testing.T) {
+	err := quenchPanic(t, func() {
+		state.Forge[string, string, rlCtx]("xhist").
+			State("off").
+			Transition("off").On("go").GoTo("par").
+			SuperState("par").
+			Region("a").
+			Initial("a1").
+			SubState("a1").
+			EndRegion().
+			Region("b").
+			Initial("bidle").
+			SubState("bidle").
+			SuperState("K").
+			SubState("k1").
+			SubState("k2").
+			Initial("k1").
+			History("Khist", state.HistoryDeep).
+			EndSuperState().
+			EndRegion().
+			EndSuperState().
+			Initial("off").
+			CurrentStateFn(func(rlCtx) string { return "off" }).
+			// Region a targets a history pseudo-state owned by region b.
+			Transition("a1").On("jump").GoTo("Khist").
+			Quench()
+	})
+	if err == nil {
+		t.Fatalf("Quench accepted a cross-region history target; want a panic")
+	}
+	var xh *state.HistoryCrossRegionError
+	if !errors.As(err, &xh) {
+		t.Fatalf("Quench panic = %v, want *HistoryCrossRegionError", err)
+	}
+	if xh.Region != "a" {
+		t.Errorf("HistoryCrossRegionError.Region = %q, want \"a\"", xh.Region)
+	}
+}

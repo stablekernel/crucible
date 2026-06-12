@@ -1410,6 +1410,9 @@ func (b *Builder[S, E, C]) Quench(opts ...QuenchOption) *Machine[S, E, C] {
 			if d.regionEscape != nil {
 				panic(d.regionEscape)
 			}
+			if d.historyCrossRegion != nil {
+				panic(d.historyCrossRegion)
+			}
 			panic(&quenchError{Diagnostic: d})
 		}
 	}

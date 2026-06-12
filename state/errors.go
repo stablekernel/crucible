@@ -253,6 +253,23 @@ func (e *RegionEscapeError) Error() string {
 		e.Region, e.From, e.To)
 }
 
+// HistoryCrossRegionError reports a region-internal transition targeting a
+// history pseudo-state owned by a different region (or by a state outside the
+// owning parallel). A history target is only meaningful within its own region's
+// scope; a cross-region history target is ambiguous and rejected at Quench.
+// Region names the transition's owning region, From the source state, and
+// History the targeted history pseudo-state.
+type HistoryCrossRegionError struct {
+	Region  string
+	From    string
+	History string
+}
+
+func (e *HistoryCrossRegionError) Error() string {
+	return fmt.Sprintf("crucible/state: region %q transition from %q targets history state %q in another region",
+		e.Region, e.From, e.History)
+}
+
 // VerifyError aggregates one or more failing requirements found by Verify.
 type VerifyError struct {
 	Failures []RequirementFailure
