@@ -404,6 +404,11 @@ func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 // After Restore, a host that drove timers/services/actors re-arms them by
 // absorbing the instance's ResumeEffects through the same drivers it uses for
 // Fire — Restore itself fires nothing and performs no IO, so Fire stays pure.
+//
+// A snapshot is pure data and carries no live observability seam, so a plain
+// Restore re-attaches neither an Inspector nor a *slog.Logger and the restored
+// instance is silent. Pass WithRestoreInspector / WithRestoreLogger to re-arm
+// those seams, mirroring WithInspector / WithLogger at Cast.
 func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption[S]) (*Instance[S, E, C], error) {
 	if snap.Machine != m.name {
 		return nil, &SnapshotError{
@@ -484,7 +489,10 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 	// chronologically, so a restored full ring resumes with histHead 0 — its oldest
 	// entry at index 0, exactly what History() expects.
 	histLimit := snap.HistLimit
-	traceFull := rcfg.traceFull || histLimit > 0
+	// An attached inspector or any history retention elevates the restored instance
+	// to full trace, mirroring the Cast-time elevation. A re-attached logger alone
+	// stays lite (it reads only always-present lite fields), exactly like WithLogger.
+	traceFull := rcfg.traceFull || histLimit > 0 || rcfg.inspector != nil
 
 	inst := &Instance[S, E, C]{
 		machine:        m,
@@ -498,6 +506,8 @@ func (m *Machine[S, E, C]) Restore(snap Snapshot[S, E, C], opts ...RestoreOption
 		traceFull:      traceFull,
 		histLimit:      histLimit,
 		histUnbounded:  rcfg.histUnbounded,
+		inspector:      rcfg.inspector,
+		logger:         rcfg.logger,
 	}
 	return inst, nil
 }

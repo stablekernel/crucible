@@ -333,6 +333,8 @@ type restoreConfig[S comparable] struct {
 	rejectMachineVersion bool
 	traceFull            bool
 	histUnbounded        bool
+	inspector            Inspector
+	logger               *slog.Logger
 }
 
 // RejectMachineVersionMismatch makes Restore enforce the machine DEFINITION
@@ -372,6 +374,29 @@ func WithRestoreUnboundedHistory[S comparable]() RestoreOption[S] {
 		cfg.traceFull = true
 		cfg.histUnbounded = true
 	}
+}
+
+// WithRestoreInspector re-attaches a live observer sink to a restored instance,
+// mirroring WithInspector at Cast. A plain Restore drops the original instance's
+// Inspector (a snapshot is pure data and carries no live seam), leaving the
+// restored instance silent; pass this so the host re-arms inspection and a
+// subsequent Fire emits the event/transition/snapshot stream again. Like
+// WithInspector it elevates the restored instance to full trace, the inspector is
+// notified synchronously, and it must not block or mutate the instance. Omit it to
+// keep the default silent posture.
+func WithRestoreInspector[S comparable](insp Inspector) RestoreOption[S] {
+	return func(cfg *restoreConfig[S]) { cfg.inspector = insp }
+}
+
+// WithRestoreLogger re-attaches a structured-logging seam to a restored instance,
+// mirroring WithLogger at Cast. A plain Restore drops the original instance's
+// *slog.Logger, so the restored instance stops logging its Fire outcomes; pass
+// this so the host re-arms logging and each subsequent Fire writes the terse,
+// fixed-shape record (machine, event, from, to, outcome) at slog.LevelDebug. Like
+// WithLogger it is write-only and must not block; a logger-only restore stays lite
+// (it does not elevate the trace). Omit it to keep the default silent posture.
+func WithRestoreLogger[S comparable](l *slog.Logger) RestoreOption[S] {
+	return func(cfg *restoreConfig[S]) { cfg.logger = l }
 }
 
 // SnapshotCodecOption configures MarshalSnapshot / UnmarshalSnapshot.
