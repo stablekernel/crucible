@@ -108,11 +108,31 @@ type Finding struct {
 	Kind FindingKind
 	// State is the state the finding concerns.
 	State string
-	// Reachable is the property verdict for the state. For reachability and
-	// conditional-reachability kinds it is true when the (possibly constrained)
-	// target is reachable. For [KindLiveness] it is true when the target is always
-	// eventually reachable from every reachable configuration — so a true verdict
-	// is the desirable one and a false verdict carries a counterexample.
+	// Reachable is the property verdict for the state, but its polarity is
+	// overloaded per Kind — the field name reads naturally only for the
+	// reachability kinds. To read it unambiguously, prefer the kind-specific
+	// accessors [Finding.IsReachable], [Finding.Holds], [Finding.Violated], and
+	// [Finding.Covered], which interpret the bool for the finding's actual Kind.
+	// The per-kind meaning of a true value is:
+	//
+	//   - [KindReachability], [KindConditionalReachability]: the (possibly
+	//     constrained) target is reachable.
+	//   - [KindLiveness]: the target is always eventually reachable from every
+	//     reachable configuration (the property holds).
+	//   - [KindInvariant]: the predicate holds in every reachable configuration
+	//     (no violation).
+	//   - [KindBoundedViolation]: the oracle held across every configuration
+	//     reachable within the depth bound (no violation within the bound).
+	//   - [KindCoverage]: the scenarios leave nothing in the reachable universe
+	//     uncovered.
+	//
+	// So for the reachability kinds a true verdict is merely informational, while
+	// for the liveness/invariant/bounded/coverage kinds a true verdict is the
+	// desirable one and a false verdict carries a counterexample or coverage gap.
+	//
+	// Note: the single overloaded bool is an advisory-tier shape, not part of the
+	// frozen v1.0 contract (see the package stability banner); a future minor
+	// release may split it into kind-specific fields.
 	Reachable bool
 	// Witness is the supporting route. For reachability and conditional
 	// reachability it is the proving event sequence when the property holds, and
@@ -124,6 +144,61 @@ type Finding struct {
 	// coverage carries the structural-coverage breakdown for a [KindCoverage]
 	// finding, exposed via [Result.Coverage]. It is nil for every other kind.
 	coverage *CoverageReport
+}
+
+// IsReachable reports whether this finding's target is reachable. It is meaningful
+// only for the reachability kinds ([KindReachability] and
+// [KindConditionalReachability]), where it returns the Reachable verdict directly;
+// for every other kind it returns false, since "reachable" is not the property
+// those kinds decide. Use it to read the overloaded Reachable bool without
+// hard-coding its per-kind polarity.
+func (f Finding) IsReachable() bool {
+	switch f.Kind {
+	case KindReachability, KindConditionalReachability:
+		return f.Reachable
+	default:
+		return false
+	}
+}
+
+// Holds reports whether the decided property holds. It is meaningful for the kinds
+// whose true verdict is the desirable one — [KindLiveness] (always-eventually),
+// [KindInvariant] (no violation), and [KindBoundedViolation] (no violation within
+// the bound) — returning the Reachable verdict for those. For [KindReachability]
+// and [KindConditionalReachability] there is no holds/fails property, so it returns
+// false; read those with [Finding.IsReachable] instead. A bounded-violation Holds is
+// a bounded guarantee only, not a proof of absence.
+func (f Finding) Holds() bool {
+	switch f.Kind {
+	case KindLiveness, KindInvariant, KindBoundedViolation:
+		return f.Reachable
+	default:
+		return false
+	}
+}
+
+// Violated reports whether the decided property is violated — the negation of
+// [Finding.Holds] for the liveness, invariant, and bounded-violation kinds, where a
+// true result means the finding carries a counterexample Witness. For every other
+// kind it returns false (no holds/fails property to violate).
+func (f Finding) Violated() bool {
+	switch f.Kind {
+	case KindLiveness, KindInvariant, KindBoundedViolation:
+		return !f.Reachable
+	default:
+		return false
+	}
+}
+
+// Covered reports whether a [KindCoverage] finding leaves nothing in the reachable
+// universe uncovered. It is meaningful only for [KindCoverage] and returns false for
+// every other kind. The full covered/uncovered breakdown is read with
+// [Result.Coverage].
+func (f Finding) Covered() bool {
+	if f.Kind == KindCoverage {
+		return f.Reachable
+	}
+	return false
 }
 
 // Result is the outcome of a [Verify] pass: one [Finding] per decided property,

@@ -16,6 +16,14 @@
 //
 // It consumes only the kernel's own GuardNode and ContextSchema, so it adds no
 // dependency and stays in the stdlib-only state module.
+//
+// # Stability
+//
+// This package ships in v1.0 but is ADVISORY. Its API surface and result shapes
+// are NOT covered by the frozen-contract guarantee and may change in a minor
+// release. Its verdicts are sound where documented (a true Contradiction or
+// Disjoint is always correct) and intended to inform review, not to be a stable
+// contract automation depends on without pinning a version.
 package symbolic
 
 import (

@@ -2,6 +2,14 @@
 // machine and returns, for every property it decides, a witness: the concrete
 // event sequence that proves or refutes the claim.
 //
+// # Stability
+//
+// This package ships in v1.0 but is ADVISORY. Its API surface and finding shapes
+// (the [Finding] struct, [FindingKind] set, and option constructors) are NOT
+// covered by the frozen-contract guarantee and may change in a minor release.
+// Treat its verdicts as diagnostics that inform review, not as a stable contract
+// to build automation against without pinning a version.
+//
 // # Overview
 //
 // Where [github.com/stablekernel/crucible/state/analysis] reports structural
@@ -68,11 +76,15 @@
 // names that configuration as a '|'-joined list of active leaves.
 //
 // [SimulateBounded] adds bounded exhaustive simulation — it enumerates the
-// machine's event sequences up to a depth bound over the same
-// configuration-product space, evaluates a caller-supplied [Oracle] at every
-// reached configuration, and reports the shortest trace whose configuration the
-// oracle rejects. A violation is real and replayable; a clean run is a bounded
-// guarantee only (see Caveats below).
+// configurations reachable within a depth bound over the same
+// configuration-product space (the distinct configurations, not every distinct
+// event trace), evaluates a caller-supplied [Oracle] once per configuration — on
+// the BFS-shortest path that first reaches it — and reports the shortest such path
+// to a configuration the oracle rejects. Because each configuration is evaluated
+// once on its shortest discovery path, a longer trace that revisits the same
+// configuration is not separately oracle-checked; the guarantee is over reachable
+// configurations within the bound, not over every trace. A violation is real and
+// replayable; a clean run is a bounded guarantee only (see Caveats below).
 //
 // [Coverage] adds structural-coverage analysis — it replays a set of scenarios
 // (each an ordered event sequence) over the configuration-product explorer and
@@ -88,8 +100,13 @@
 // set of typed event sequences that together exercise every reachable state and
 // transition, walking the same configuration-product explorer greedily until
 // nothing reachable is left uncovered. Feeding its output back into [Coverage]
-// reports 100% coverage of the reachable universe — that round-trip is the
-// suite's guarantee. The suite is deterministic and stable across runs; it is a
+// reports 100% coverage of the reachable universe — that round-trip is the suite's
+// guarantee. Note this is a STRUCTURAL guarantee, scoped to the same guard-agnostic
+// configuration model both the generator and [Coverage] walk: it says the suite
+// covers every reachable state and transition in that model, NOT that replaying the
+// suite end-to-end through a live instance exercises them, since a real guard may
+// block a transition the structural model assumes passes. The suite is
+// deterministic and stable across runs; it is a
 // covering suite, not a provably minimal one (the generator favors a small,
 // deterministic result over minimum cardinality). [MaxScenarioLength] caps each
 // scenario's event count, splitting coverage across more, shorter sequences.
@@ -125,9 +142,21 @@
 // Bounded simulation is NOT a proof of absence. A holding [SimulateBounded]
 // verdict ("no violation within the bound") guarantees only that the oracle held
 // across every configuration reachable in at most the given number of events. A
-// violation may still exist in a longer trace. A violation it does report is real
-// and replayable. For an exact, unbounded verdict over fixed structural predicates,
-// use [CheckInvariant] instead.
+// violation may still exist in a longer trace. A violation it does report is
+// structural — it reaches the rejected configuration assuming guards cooperate, so
+// it may be infeasible in the real machine if a guard always blocks the route. For
+// an exact, unbounded HOLDING verdict over fixed structural predicates, use
+// [CheckInvariant] instead.
+//
+// The holds/violation asymmetry applies to liveness and invariant checks too. Only
+// the HOLDING verdict is exact: [CheckInvariant] reporting the predicate holds, and
+// [AlwaysEventually] reporting the target is always eventually reachable, are both
+// exact over the guard-agnostic model — no guard assignment can break them. A
+// reported VIOLATION (an invariant counterexample or a liveness stuck route),
+// however, is structural and may be guard-infeasible: it identifies a configuration
+// the model can reach assuming guards pass, which a real guard may render
+// unreachable. So treat a holding verdict as a proof and a violation as a candidate
+// to confirm by replaying its witness through the conformance harness.
 //
 // Configuration invariants and all other checks are configuration-level —
 // predicates over the set of active states. Context-value or symbolic reasoning
