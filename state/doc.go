@@ -38,6 +38,14 @@
 // at dispatch, never silently dropped. Effects stay data the host applies — the
 // kernel never executes them.
 //
+// Effect emission is transactional with respect to the step's outcome: a Fire's
+// effects are emitted (returned in FireResult.Effects) only on a fully-successful
+// Fire. A Fire that fails partway through its cascade — an action or assign that
+// errors or panics — returns the error with NO effects, so a host replaying a
+// failed Fire cannot double-apply the effects that ran before the error. (The
+// configuration is not rolled back on failure; only effect emission is made
+// transactional, which is what a replay observes.)
+//
 // # The definition IR is the spec
 //
 // The canonical machine is a serializable definition IR: pure data, lossless to

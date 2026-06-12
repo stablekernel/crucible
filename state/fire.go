@@ -582,8 +582,13 @@ func (i *Instance[S, E, C]) commit(
 		effects, errName, err := i.runActions(t.Effects, cur, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
+			// Effects are emitted only on a fully-successful Fire (the NTE
+			// transactionality contract): a failed Fire returns no partial effects so
+			// a host replaying it cannot double-apply the ones that ran before the
+			// error. Config is intentionally not rolled back (out of scope); only the
+			// effect emission is transactional.
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     errName, Cause: err,
@@ -594,7 +599,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{
 					TransitionName: fmt.Sprintf("%s->%s", fmtState(from), fmtState(from)),
 					ActionName:     aName, Cause: aErr,
@@ -666,7 +671,7 @@ func (i *Instance[S, E, C]) commit(
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
@@ -674,7 +679,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
@@ -723,7 +728,7 @@ func (i *Instance[S, E, C]) commit(
 	if err != nil {
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 		}
 	}
@@ -731,7 +736,7 @@ func (i *Instance[S, E, C]) commit(
 	if taErr != nil {
 		tr.Outcome = OutcomeAssignFailed
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: taName, Cause: taErr},
 		}
 	}
@@ -750,7 +755,7 @@ func (i *Instance[S, E, C]) commit(
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: errName, Cause: err},
 			}
 		}
@@ -758,7 +763,7 @@ func (i *Instance[S, E, C]) commit(
 		if aErr != nil {
 			tr.Outcome = OutcomeAssignFailed
 			return FireResult[S]{
-				NewState: i.current, Effects: effects, Trace: tr,
+				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: aName, Cause: aErr},
 			}
 		}
@@ -785,7 +790,7 @@ func (i *Instance[S, E, C]) commit(
 	if derr != nil {
 		tr.Outcome = OutcomeEffectError
 		return FireResult[S]{
-			NewState: i.current, Effects: effects, Trace: tr,
+			NewState: i.current, Effects: nil, Trace: tr,
 			Err: &ActionFailedError{TransitionName: transName(from, to), ActionName: dname, Cause: derr},
 		}
 	}
