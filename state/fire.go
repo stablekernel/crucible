@@ -148,7 +148,7 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		}
 
 		// No pending internal events: fire one enabled eventless transition.
-		t, anc, ok := i.selectEventless()
+		t, anc, leaf, ok := i.selectEventless()
 		if !ok {
 			return res
 		}
@@ -156,7 +156,7 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		if steps > maxMicrosteps {
 			return microstepOverflow(res, i.current)
 		}
-		sub := i.commit(ctx, t, i.current, anc, i.entity, i.eventData(t.On), i.seedTrace("always"))
+		sub := i.commitEventless(ctx, t, anc, leaf)
 		res.Effects = append(res.Effects, sub.Effects...)
 		absorbMicrosteps(&res.Trace, sub.Trace)
 		res.NewState = i.current
@@ -166,6 +166,68 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 			return res
 		}
 	}
+}
+
+// commitEventless dispatches one selected eventless ("always") transition. A
+// transition resident inside an active parallel region is routed through the
+// region commit path (applyRegionTransition), which advances only that region's
+// leaf and leaves the sibling regions' leaves in place; otherwise it goes through
+// the whole-configuration commit path. Routing region-resident eventless
+// transitions through commit would replace the entire configuration and drop the
+// sibling region leaves (the K5/T1b corruption).
+//
+// leaf is the active configuration leaf the transition was found on (its source
+// in the live config); anc is the ancestor node the transition is declared on.
+func (i *Instance[S, E, C]) commitEventless(ctx context.Context, t *Transition[S, E, C], anc, leaf S) FireResult[S] {
+	if parallel, r, ok := i.regionOwning(leaf); ok {
+		tr := i.seedTrace("always")
+		tr.MatchedAt = i.machine.label(anc)
+		eff, err := i.applyRegionTransition(parallel, r, leaf, t, i.eventData(t.On), &tr)
+		if err != nil {
+			tr.Outcome = regionErrOutcome(err)
+			return FireResult[S]{NewState: i.current, Effects: eff, Trace: tr, Err: err}
+		}
+		tr.Outcome = OutcomeSuccess
+		return FireResult[S]{NewState: i.current, Effects: eff, Trace: tr}
+	}
+	return i.commit(ctx, t, leaf, anc, i.entity, i.eventData(t.On), i.seedTrace("always"))
+}
+
+// regionOwning returns the parallel state and region that directly contain the
+// given active leaf, when the leaf is inside an active parallel state. It walks
+// the leaf's ancestor chain to the region boundary — the first node whose region
+// name is set — and confirms that boundary's parent is an active parallel state
+// (a parallel currently holding leaves in two or more of its regions). A leaf
+// outside any active parallel returns ok=false.
+func (i *Instance[S, E, C]) regionOwning(leaf S) (parallel S, r *Region[S, E, C], ok bool) {
+	m := i.machine
+	parent, found := i.activeParallelAncestor()
+	if !found {
+		var zero S
+		return zero, nil, false
+	}
+	cur := leaf
+	for {
+		cn, resolved := m.resolveNode(cur)
+		if !resolved || !cn.hasParent {
+			break
+		}
+		if cn.region != "" && cn.parent == parent {
+			pn, pok := m.resolveNode(parent)
+			if !pok {
+				break
+			}
+			for ri := range pn.state.Regions {
+				if pn.state.Regions[ri].Name == cn.region {
+					return parent, &pn.state.Regions[ri], true
+				}
+			}
+			break
+		}
+		cur = cn.parent
+	}
+	var zero S
+	return zero, nil, false
 }
 
 // marshalEventPayload renders the structured, JSON form of the event value driving
@@ -198,27 +260,40 @@ func (i *Instance[S, E, C]) seedTrace(event string) Trace {
 }
 
 // selectEventless finds one enabled eventless ("always") transition for the
-// current configuration, resolved child-first and bubbling up through ancestors;
-// the first whose guards all pass is returned with the ancestor it was found on.
-func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc S, ok bool) {
+// current configuration. It scans every active leaf in the configuration — not
+// only config[0]'s spine — so an eventless transition resident in a non-first
+// parallel region is selected rather than starved (the K5/T1a fix). Each leaf is
+// resolved child-first, bubbling up through its ancestors; the first transition
+// whose guards all pass is returned with the ancestor it was declared on (anc)
+// and the active configuration leaf it was found under (leaf), the latter so the
+// caller can route a region-resident transition through the region commit path.
+//
+// Leaves are scanned in configuration order, which is region-declaration order
+// for an orthogonal configuration. Selection returns a single transition, so one
+// macrostep microstep fires exactly one eventless transition; multiple regions'
+// eventless transitions settle across successive microsteps in declaration
+// order, preserving the run-to-completion determinism contract.
+func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool) {
 	m := i.machine
-	for _, a := range m.ancestors(i.current) {
-		n, found := m.resolveNode(a)
-		if !found {
-			continue
-		}
-		for ti := range n.state.Transitions {
-			cand := &n.state.Transitions[ti]
-			if !cand.EventLess {
+	for _, l := range i.config {
+		for _, a := range m.ancestors(l) {
+			n, found := m.resolveNode(a)
+			if !found {
 				continue
 			}
-			if i.guardsPass(cand) {
-				return cand, a, true
+			for ti := range n.state.Transitions {
+				cand := &n.state.Transitions[ti]
+				if !cand.EventLess {
+					continue
+				}
+				if i.guardsPass(cand) {
+					return cand, a, l, true
+				}
 			}
 		}
 	}
 	var zero S
-	return nil, zero, false
+	return nil, zero, zero, false
 }
 
 // guardsPass reports whether every guard on a transition currently passes. A
