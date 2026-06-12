@@ -184,6 +184,43 @@ type Region[S comparable, E comparable, C any] struct {
 	Name         string           `json:"name"`
 	States       []State[S, E, C] `json:"states,omitempty"`
 	InitialChild *S               `json:"initialChild,omitempty"`
+
+	// Meta is the reserved extension namespace at region granularity: studio
+	// layout, documentation, and codegen hints live here, mirroring the Meta map
+	// every other IR node carries. The kernel never inspects it; it round-trips
+	// verbatim.
+	Meta map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// regionKnownKeys is the set of JSON keys Region models; anything else is captured
+// into extra and preserved verbatim on round-trip.
+var regionKnownKeys = map[string]struct{}{
+	"name": {}, "states": {}, "initialChild": {}, "meta": {},
+}
+
+// MarshalJSON encodes a Region, merging its preserved unknown keys back in with
+// stable key ordering.
+func (r Region[S, E, C]) MarshalJSON() ([]byte, error) {
+	type alias Region[S, E, C]
+	return marshalWithExtra(alias(r), r.extra)
+}
+
+// UnmarshalJSON decodes a Region and captures any unknown keys into extra so they
+// survive re-serialization.
+func (r *Region[S, E, C]) UnmarshalJSON(data []byte) error {
+	type alias Region[S, E, C]
+	var a alias
+	extra, err := captureExtra(data, &a, regionKnownKeys)
+	if err != nil {
+		return err
+	}
+	*r = Region[S, E, C](a)
+	r.extra = extra
+	return nil
 }
 
 // Transition is a directed edge.

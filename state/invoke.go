@@ -1,5 +1,7 @@
 package state
 
+import "encoding/json"
+
 // This file defines the invoked-services (`invoke`) contract: the declarative
 // shape an invoked service takes on a state, the effects the kernel emits so a
 // host runtime can run the service, and the entry/exit effect emission that
@@ -67,6 +69,44 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// by a well-known name. It is meaningful only for an ActorKindMachine
 	// invocation and serializes for lossless round-trip.
 	SystemID string `json:"systemId,omitempty"`
+
+	// Meta is the reserved extension namespace at invocation granularity:
+	// documentation, tags, and codegen hints live here, mirroring the Meta map
+	// every other IR node carries. The kernel never inspects it; it round-trips
+	// verbatim.
+	Meta map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// invocationKnownKeys is the set of JSON keys Invocation models; anything else is
+// captured into extra and preserved verbatim on round-trip.
+var invocationKnownKeys = map[string]struct{}{
+	"id": {}, "src": {}, "input": {}, "onDone": {}, "onError": {},
+	"kind": {}, "systemId": {}, "meta": {},
+}
+
+// MarshalJSON encodes an Invocation, merging its preserved unknown keys back in
+// with stable key ordering.
+func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
+	type alias Invocation[S, E, C]
+	return marshalWithExtra(alias(inv), inv.extra)
+}
+
+// UnmarshalJSON decodes an Invocation and captures any unknown keys into extra so
+// they survive re-serialization.
+func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
+	type alias Invocation[S, E, C]
+	var a alias
+	extra, err := captureExtra(data, &a, invocationKnownKeys)
+	if err != nil {
+		return err
+	}
+	*inv = Invocation[S, E, C](a)
+	inv.extra = extra
+	return nil
 }
 
 // StartService is the effect the kernel emits when an instance enters a state

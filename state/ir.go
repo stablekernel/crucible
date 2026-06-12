@@ -137,11 +137,21 @@ func deepCopyStates[S comparable, E comparable, C any](in []State[S, E, C]) []St
 			out[i].Transitions[ti].Meta = cloneMeta(in[i].Transitions[ti].Meta)
 			out[i].Transitions[ti].extra = cloneRawExtra(in[i].Transitions[ti].extra)
 		}
+		if in[i].Invoke != nil {
+			out[i].Invoke = make([]Invocation[S, E, C], len(in[i].Invoke))
+			for ix := range in[i].Invoke {
+				out[i].Invoke[ix] = in[i].Invoke[ix]
+				out[i].Invoke[ix].Meta = cloneMeta(in[i].Invoke[ix].Meta)
+				out[i].Invoke[ix].extra = cloneRawExtra(in[i].Invoke[ix].extra)
+			}
+		}
 		out[i].Children = deepCopyStates(in[i].Children)
 		if in[i].Regions != nil {
 			out[i].Regions = make([]Region[S, E, C], len(in[i].Regions))
 			for r := range in[i].Regions {
 				out[i].Regions[r] = in[i].Regions[r]
+				out[i].Regions[r].Meta = cloneMeta(in[i].Regions[r].Meta)
+				out[i].Regions[r].extra = cloneRawExtra(in[i].Regions[r].extra)
 				out[i].Regions[r].States = deepCopyStates(in[i].Regions[r].States)
 			}
 		}

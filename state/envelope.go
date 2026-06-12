@@ -27,6 +27,37 @@ type IOSpec struct {
 	Description string `json:"description,omitempty"`
 	// Meta is the reserved extension namespace for this spec.
 	Meta map[string]any `json:"meta,omitempty"`
+
+	// extra preserves unknown JSON keys a newer producer emitted so they survive a
+	// load -> save cycle (forward-compat). Never inspected by the kernel.
+	extra map[string]json.RawMessage
+}
+
+// ioSpecKnownKeys is the set of JSON keys IOSpec models; anything else is captured
+// into extra and preserved verbatim on round-trip.
+var ioSpecKnownKeys = map[string]struct{}{
+	"schema": {}, "description": {}, "meta": {},
+}
+
+// MarshalJSON encodes an IOSpec, merging its preserved unknown keys back in with
+// stable key ordering.
+func (s IOSpec) MarshalJSON() ([]byte, error) {
+	type alias IOSpec
+	return marshalWithExtra(alias(s), s.extra)
+}
+
+// UnmarshalJSON decodes an IOSpec and captures any unknown keys into extra so they
+// survive re-serialization.
+func (s *IOSpec) UnmarshalJSON(data []byte) error {
+	type alias IOSpec
+	var a alias
+	extra, err := captureExtra(data, &a, ioSpecKnownKeys)
+	if err != nil {
+		return err
+	}
+	*s = IOSpec(a)
+	s.extra = extra
+	return nil
 }
 
 // schemaVersionAtLeastMajor reports whether got declares a major version greater
