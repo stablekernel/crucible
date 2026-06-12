@@ -44,6 +44,30 @@ func (i *Instance[S, E, C]) activeParallelAncestor() (S, bool) {
 	return best, found
 }
 
+// enclosingActiveParallel returns the nearest ancestor of `parallel` that is
+// itself an active parallel state (orthogonally active in the live config),
+// supporting the outward bubble for nested parallels: when no region of an inner
+// parallel handles an event, the search continues in the enclosing parallel's
+// sibling regions. The walk starts above `parallel` (its own entry is skipped)
+// and returns the first active parallel ancestor, if any.
+func (i *Instance[S, E, C]) enclosingActiveParallel(parallel S) (S, bool) {
+	m := i.machine
+	for _, anc := range m.ancestors(parallel) {
+		if anc == parallel {
+			continue // skip self; we want a strictly enclosing parallel
+		}
+		n, ok := m.resolveNode(anc)
+		if !ok {
+			continue
+		}
+		if isParallel(n.state) && i.parallelActive(anc) {
+			return anc, true
+		}
+	}
+	var zero S
+	return zero, false
+}
+
 // fireParallel broadcasts the event to every region of an active parallel state.
 // Each region resolves independently child-first within the region; effects
 // concatenate in region-declaration order; a per-region "done" arrival and the
@@ -85,10 +109,22 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 	}
 
 	if !anyHandled {
-		// No region consumed the event: offer it to the parallel state and its
-		// ancestors as a cross-cutting transition, carrying the same resolved payload
-		// (the regions did not consume it, so a cross-cutting Assign — e.g. an actor
-		// onDone that exits the parallel state — still sees the done result).
+		// No region of THIS parallel consumed the event. When this parallel is
+		// itself nested inside an enclosing active parallel, the event must bubble
+		// OUTWARD to the enclosing parallel's regions before falling back to a
+		// cross-cutting transition: a handler may live in an outer sibling region
+		// (e.g. y1 -> y2 in the enclosing parallel's second region) while this inner
+		// parallel is active. Broadcasting to the enclosing parallel re-offers the
+		// event to every outer region; the outer region containing this parallel
+		// only re-checks its own spine (this parallel's leaves already declined), so
+		// no inner region is double-delivered.
+		if outer, ok := i.enclosingActiveParallel(parallel); ok {
+			return i.fireParallel(ctx, outer, event, tr)
+		}
+		// No enclosing active parallel: offer the event to the parallel state and
+		// its ancestors as a cross-cutting transition, carrying the same resolved
+		// payload (the regions did not consume it, so a cross-cutting Assign — e.g.
+		// an actor onDone that exits the parallel state — still sees the done result).
 		return i.fireFromState(ctx, parallel, event, eventData, tr)
 	}
 
@@ -345,6 +381,94 @@ func (i *Instance[S, E, C]) replaceRegionLeaf(r *Region[S, E, C], old S, repl []
 		i.current = i.config[0]
 	}
 	_ = r
+}
+
+// exitActionChain expands the structural exit cascade into the full ordered set
+// of states whose OnExit actions/assigns must run when the cascade exits a
+// parallel superstate. The structural cascade (computed from the matched state's
+// spine) names only one leaf chain; a cross-cutting transition out of a parallel
+// state abandons every region's active leaf, so each region leaf's OnExit must
+// run too — and in the locked order: innermost-leaf-first within each region,
+// regions in declaration order, then the parallel state's own OnExit after its
+// children.
+//
+// For every structural exit state that is an active parallel (holds leaves in
+// two or more of its regions), the active-leaf spine of each region is inserted
+// — innermost-first up to but excluding the parallel — ahead of the parallel
+// itself. Non-parallel exits pass through unchanged, so a flat or single-spine
+// exit cascade is returned identically (no allocation beyond the copy). A
+// region leaf already present in the structural exits (the matched state's own
+// region spine) is not duplicated.
+func (i *Instance[S, E, C]) exitActionChain(exits []S) []S {
+	m := i.machine
+
+	// Fast path: no exited state is an active parallel, so the structural cascade
+	// already names every OnExit-bearing state. This is every flat/compound exit.
+	anyParallel := false
+	for _, s := range exits {
+		if n, ok := m.resolveNode(s); ok && isParallel(n.state) && i.parallelActive(s) {
+			anyParallel = true
+			break
+		}
+	}
+	if !anyParallel {
+		return exits
+	}
+
+	seen := make(map[S]bool, len(exits))
+	for _, s := range exits {
+		seen[s] = true
+	}
+
+	out := make([]S, 0, len(exits)+len(i.config))
+	for _, s := range exits {
+		n, ok := m.resolveNode(s)
+		if ok && isParallel(n.state) && i.parallelActive(s) {
+			// Emit each region's active-leaf spine (innermost-first, up to but
+			// excluding the parallel) before the parallel's own OnExit, regions in
+			// declaration order.
+			for ri := range n.state.Regions {
+				leaf, found := i.activeLeafIn(n.state.Regions[ri].Name, s)
+				if !found {
+					continue
+				}
+				for _, anc := range m.ancestors(leaf) {
+					if anc == s {
+						break // do not cross the region boundary into the parallel
+					}
+					if seen[anc] {
+						continue
+					}
+					seen[anc] = true
+					out = append(out, anc)
+				}
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// parallelActive reports whether the parallel state currently holds active
+// leaves in two or more of its regions, i.e. it is orthogonally active in the
+// live configuration. A parallel state with only one region populated (or none)
+// is not treated as active for exit-set expansion.
+func (i *Instance[S, E, C]) parallelActive(parallel S) bool {
+	m := i.machine
+	n, ok := m.resolveNode(parallel)
+	if !ok || !isParallel(n.state) {
+		return false
+	}
+	count := 0
+	for ri := range n.state.Regions {
+		if _, found := i.activeLeafIn(n.state.Regions[ri].Name, parallel); found {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // settleInteriorDone runs the OnDone of every compound INTERIOR to a region that

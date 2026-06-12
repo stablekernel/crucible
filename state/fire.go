@@ -648,7 +648,14 @@ func (i *Instance[S, E, C]) commit(
 
 	// Exit actions then exit assigns: innermost -> outermost. Each state's exit
 	// actions read cur (pre-assign), then its exit assigns fold cur.
-	for _, s := range exits {
+	//
+	// A cross-cutting transition that exits a parallel superstate names only the
+	// matched state's spine in the structural cascade; the orthogonal regions'
+	// active leaves leave the configuration too and must run their OnExit actions.
+	// exitActionChain interleaves each exited parallel's active region-leaf spines
+	// (region-declaration order, innermost-leaf-first) before the parallel state's
+	// own OnExit, so the full exit-action set runs in the locked order.
+	for _, s := range i.exitActionChain(exits) {
 		tr.recordExit(m.label(s))
 		n, ok := m.resolveNode(s)
 		if !ok {
