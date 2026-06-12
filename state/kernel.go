@@ -1282,11 +1282,23 @@ func (b *Builder[S, E, C]) openTransition() {
 	b.curTransition = &sd.state.Transitions[len(sd.state.Transitions)-1]
 }
 
+// requireTransitionCursor panics with an actionable construction error when no
+// transition cursor is open. A cursor-consuming DSL method (GoTo/When/Do/...) is
+// only meaningful after an opener (On/OnAny/Always/After/Transition); a preceding
+// State()/GoTo() that closed the cursor would otherwise make the call a silent
+// no-op, so this turns that footgun into a loud programmer error.
+func (b *Builder[S, E, C]) requireTransitionCursor(method string) {
+	if b.curTransition == nil {
+		panic(fmt.Sprintf("crucible/state: %s called with no open transition; "+
+			"chain it after On/OnAny/Always/After/Transition "+
+			"(a preceding State()/GoTo() closed the cursor)", method))
+	}
+}
+
 // GoTo sets the target of the most-recent transition.
 func (b *Builder[S, E, C]) GoTo(to S) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.To = to
-	}
+	b.requireTransitionCursor("GoTo")
+	b.curTransition.To = to
 	return b
 }
 
@@ -1325,9 +1337,8 @@ func (b *Builder[S, E, C]) After(delay time.Duration) *Builder[S, E, C] {
 // runs the full exit/entry cascade of its target. This is the DSL form of the
 // v5 `reenter: true`.
 func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Reenter = true
-	}
+	b.requireTransitionCursor("Reenter")
+	b.curTransition.Reenter = true
 	return b
 }
 
@@ -1336,9 +1347,8 @@ func (b *Builder[S, E, C]) Reenter() *Builder[S, E, C] {
 // macrostep by the run-to-completion loop, before Fire returns. This is the DSL
 // form of raising an internal event.
 func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Raise = append(b.curTransition.Raise, events...)
-	}
+	b.requireTransitionCursor("Raise")
+	b.curTransition.Raise = append(b.curTransition.Raise, events...)
 	return b
 }
 
@@ -1350,18 +1360,16 @@ func (b *Builder[S, E, C]) Raise(events ...E) *Builder[S, E, C] {
 // index. Canceling an unknown id is a host-side no-op. The built-in needs no
 // host registration, mirroring the stateIn guard built-in.
 func (b *Builder[S, E, C]) Cancel(id string) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Effects = append(b.curTransition.Effects,
-			Ref{Name: cancelBuiltinName, Params: map[string]any{cancelIDParam: id}})
-	}
+	b.requireTransitionCursor("Cancel")
+	b.curTransition.Effects = append(b.curTransition.Effects,
+		Ref{Name: cancelBuiltinName, Params: map[string]any{cancelIDParam: id}})
 	return b
 }
 
 // When attaches a named guard ref with params to the most-recent transition.
 func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Guards = append(b.curTransition.Guards, Ref{Name: guardName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("When")
+	b.curTransition.Guards = append(b.curTransition.Guards, Ref{Name: guardName, Params: firstParams(params)})
 	return b
 }
 
@@ -1372,18 +1380,16 @@ func (b *Builder[S, E, C]) When(guardName string, params ...map[string]any) *Bui
 // pass. Use When for the common single-guard case and WhenExpr when a transition
 // needs composition or stateIn.
 func (b *Builder[S, E, C]) WhenExpr(expr GuardNode[S]) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		e := expr
-		b.curTransition.GuardExpr = &e
-	}
+	b.requireTransitionCursor("WhenExpr")
+	e := expr
+	b.curTransition.GuardExpr = &e
 	return b
 }
 
 // Do attaches a named action ref with params to the most-recent transition.
 func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Effects = append(b.curTransition.Effects, Ref{Name: actionName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("Do")
+	b.curTransition.Effects = append(b.curTransition.Effects, Ref{Name: actionName, Params: firstParams(params)})
 	return b
 }
 
@@ -1395,9 +1401,8 @@ func (b *Builder[S, E, C]) Do(actionName string, params ...map[string]any) *Buil
 // Registry.Reducer); this WIRES a registered reducer by name onto the transition,
 // mirroring how When wires a Guard and Do wires an Action.
 func (b *Builder[S, E, C]) Assign(assignName string, params ...map[string]any) *Builder[S, E, C] {
-	if b.curTransition != nil {
-		b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
-	}
+	b.requireTransitionCursor("Assign")
+	b.curTransition.Assigns = append(b.curTransition.Assigns, Ref{Name: assignName, Params: firstParams(params)})
 	return b
 }
 
