@@ -1,6 +1,7 @@
 package evolution
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,10 +35,40 @@ const (
 	KindMachineRenamed       ChangeKind = "machine_renamed"
 	KindFinalChanged         ChangeKind = "final_changed"
 
+	// KindTransitionReordered marks a state whose transition list was reordered
+	// without changing the multiset of branches. Order decides which branch fires
+	// first, so a pure reorder is behavior-changing and breaking.
+	KindTransitionReordered ChangeKind = "transition_reordered"
+	// KindGuardStructureChanged marks a composite guard expression whose operator
+	// structure changed (e.g. And -> Or, or an added Not) even when its leaf-ref
+	// set is unchanged. The boolean shape decides enablement, so it is breaking.
+	KindGuardStructureChanged ChangeKind = "guard_structure_changed"
+	// KindInitialChildChanged marks a compound state or region whose InitialChild
+	// (default descent target) changed, including nil<->set. It changes where an
+	// instance lands on entry, so it is breaking.
+	KindInitialChildChanged ChangeKind = "initial_child_changed"
+	// KindHistoryChanged marks a state whose HistoryType or HistoryDefault changed.
+	// History semantics decide re-entry behavior, so the flip is breaking.
+	KindHistoryChanged ChangeKind = "history_changed"
+	// KindContextSchemaChanged marks a context schema field added, removed, or
+	// retyped. The data model is part of the machine contract, so it is breaking.
+	KindContextSchemaChanged ChangeKind = "context_schema_changed"
+	// KindEventlessChanged marks an added eventless (Always) edge, or a paired
+	// transition whose EventLess flag flipped. Eventless edges change
+	// run-to-completion behavior, so they are breaking rather than additive.
+	KindEventlessChanged ChangeKind = "eventless_changed"
+
 	// KindUnknown marks a delta the differ has no explicit rule for. It is always
 	// breaking and is flagged for human review, per the Evolution Guide's
 	// "unknown -> breaking" default.
 	KindUnknown ChangeKind = "unknown"
+
+	// KindUnknownStructuralDelta is the fail-safe backstop: it marks a residual
+	// structural difference on a paired transition that none of the modeled rules
+	// accounts for (e.g. Forbidden, Wildcard, Internal, Reenter, Raise, or a future
+	// field). It forces a major bump so an unmodeled IR addition over-reports
+	// rather than silently classifying as a patch.
+	KindUnknownStructuralDelta ChangeKind = "unknown_structural_delta"
 )
 
 // Change is a single classified difference between two machine definitions.
@@ -174,6 +205,8 @@ func Diff[S comparable, E comparable, C any](old, updated *state.IR[S, E, C]) Re
 		})
 	}
 
+	d.diffContextSchema(old.Context, updated.Context)
+
 	d.diffStates("", old.States, updated.States)
 
 	sort.SliceStable(r.Changes, func(i, j int) bool {
@@ -193,6 +226,89 @@ type differ[S comparable, E comparable, C any] struct {
 }
 
 func (r *Report) add(c Change) { r.Changes = append(r.Changes, c) }
+
+// diffContextSchema compares the IR-level context schemas. A field added,
+// removed, or retyped (recursively, by name) changes the machine's data
+// contract and is breaking. Either side may be nil (no schema declared).
+func (d *differ[S, E, C]) diffContextSchema(oldCtx, newCtx *state.ContextSchema) {
+	oldFields := contextFields(oldCtx)
+	newFields := contextFields(newCtx)
+	if schemaFieldsEqual(oldFields, newFields) {
+		return
+	}
+	d.r.add(Change{
+		Kind:        KindContextSchemaChanged,
+		Path:        "<context>",
+		Description: "context schema changed (field added, removed, or retyped); the machine's data contract breaks",
+		Breaking:    true,
+	})
+}
+
+// contextFields returns the top-level fields of a (possibly nil) schema.
+func contextFields(c *state.ContextSchema) []state.SchemaField {
+	if c == nil {
+		return nil
+	}
+	return c.Fields
+}
+
+// schemaFieldsEqual reports whether two field slices describe the same shape,
+// matching by name and comparing kind, nullability, enum values, and nested
+// shape recursively. Order is not significant.
+func schemaFieldsEqual(a, b []state.SchemaField) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	byName := make(map[string]state.SchemaField, len(b))
+	for _, f := range b {
+		byName[f.Name] = f
+	}
+	for _, fa := range a {
+		fb, ok := byName[fa.Name]
+		if !ok || !schemaFieldEqual(fa, fb) {
+			return false
+		}
+	}
+	return true
+}
+
+// schemaFieldEqual reports whether two named fields describe the same type.
+func schemaFieldEqual(a, b state.SchemaField) bool {
+	if a.Kind != b.Kind || a.Nullable != b.Nullable {
+		return false
+	}
+	if !stringsEqual(a.Enum, b.Enum) {
+		return false
+	}
+	if !schemaFieldsEqual(a.Fields, b.Fields) {
+		return false
+	}
+	if !schemaPtrEqual(a.Elem, b.Elem) || !schemaPtrEqual(a.Key, b.Key) {
+		return false
+	}
+	return true
+}
+
+// schemaPtrEqual compares two optional nested SchemaField pointers.
+func schemaPtrEqual(a, b *state.SchemaField) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return schemaFieldEqual(*a, *b)
+}
+
+// stringsEqual reports whether two string slices are element-wise equal.
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // diffStates compares two sibling state slices under the given dotted path
 // prefix, recursing into children and regions.
@@ -245,6 +361,22 @@ func (d *differ[S, E, C]) diffState(path string, os, ns state.State[S, E, C]) {
 			Breaking:    true,
 		})
 	}
+	if oldIC, newIC := ptrStr(os.InitialChild), ptrStr(ns.InitialChild); oldIC != newIC {
+		d.r.add(Change{
+			Kind:        KindInitialChildChanged,
+			Path:        path,
+			Description: fmt.Sprintf("InitialChild %s -> %s; the compound descends into a different default child", oldIC, newIC),
+			Breaking:    true,
+		})
+	}
+	if os.HistoryType != ns.HistoryType || ptrStr(os.HistoryDefault) != ptrStr(ns.HistoryDefault) {
+		d.r.add(Change{
+			Kind:        KindHistoryChanged,
+			Path:        path,
+			Description: fmt.Sprintf("history changed (type %v -> %v, default %s -> %s); re-entry behavior differs", os.HistoryType, ns.HistoryType, ptrStr(os.HistoryDefault), ptrStr(ns.HistoryDefault)),
+			Breaking:    true,
+		})
+	}
 
 	d.diffTransitions(path, os.Transitions, ns.Transitions)
 
@@ -275,6 +407,14 @@ func (d *differ[S, E, C]) diffRegions(prefix string, oldRegions, newRegions []st
 				Breaking:    true,
 			})
 			continue
+		}
+		if oldIC, newIC := ptrStr(or.InitialChild), ptrStr(nr.InitialChild); oldIC != newIC {
+			d.r.add(Change{
+				Kind:        KindInitialChildChanged,
+				Path:        path,
+				Description: fmt.Sprintf("region InitialChild %s -> %s; the region enters a different default child", oldIC, newIC),
+				Breaking:    true,
+			})
 		}
 		d.diffStates(path, or.States, nr.States)
 	}
@@ -315,6 +455,8 @@ type transitionKey struct {
 // reported as added or removed, surfacing a breaking change that the old (From,
 // On)-only key silently hid.
 func (d *differ[S, E, C]) diffTransitions(statePath string, oldTr, newTr []state.Transition[S, E, C]) {
+	d.diffTransitionOrder(statePath, oldTr, newTr)
+
 	oldGroups := groupTransitions(oldTr)
 	newGroups := groupTransitions(newTr)
 
@@ -330,6 +472,33 @@ func (d *differ[S, E, C]) diffTransitions(statePath string, oldTr, newTr []state
 		tpath := statePath + "/" + key.on
 		d.diffTransitionGroup(tpath, key, nil, newBranches)
 	}
+}
+
+// diffTransitionOrder reports a breaking reorder when a state's transition list
+// holds the same multiset of branches but in a different order. Order decides
+// which branch fires first within a state, so a pure reorder is behavior-
+// changing. It compares the ordered sequence of per-branch identity tokens
+// (From, On, guard signature); when the sorted multisets match but the in-order
+// sequences differ, the only change is order. Genuine adds/removes yield
+// differing multisets and are skipped here (they are reported by the group diff).
+func (d *differ[S, E, C]) diffTransitionOrder(statePath string, oldTr, newTr []state.Transition[S, E, C]) {
+	oldSeq := transitionTokens(oldTr)
+	newSeq := transitionTokens(newTr)
+	if len(oldSeq) != len(newSeq) {
+		return // add/remove changes the multiset; handled by the group diff.
+	}
+	if !multisetEqual(oldSeq, newSeq) {
+		return // not the same set of branches; not a pure reorder.
+	}
+	if sequenceEqual(oldSeq, newSeq) {
+		return // identical order.
+	}
+	d.r.add(Change{
+		Kind:        KindTransitionReordered,
+		Path:        statePath,
+		Description: "transition order changed with the same branch set; a different branch now fires first",
+		Breaking:    true,
+	})
 }
 
 // diffTransitionGroup diffs the branches sharing one (From, On) key.
@@ -368,6 +537,17 @@ func (d *differ[S, E, C]) diffTransitionGroup(
 		if matched[guardSignature(nt)] {
 			continue
 		}
+		if nt.EventLess {
+			// An added eventless (Always) edge changes run-to-completion behavior,
+			// so it is breaking rather than an additive transition_added.
+			d.r.add(Change{
+				Kind:        KindEventlessChanged,
+				Path:        tpath,
+				Description: fmt.Sprintf("new eventless (Always) edge on %q; it fires automatically and changes run-to-completion behavior", key.on),
+				Breaking:    true,
+			})
+			continue
+		}
 		d.r.add(Change{
 			Kind:        KindTransitionAdded,
 			Path:        tpath,
@@ -397,11 +577,88 @@ func (d *differ[S, E, C]) diffTransition(tpath string, ot, nt state.Transition[S
 		})
 	}
 
+	if ot.EventLess != nt.EventLess {
+		d.r.add(Change{
+			Kind:        KindEventlessChanged,
+			Path:        tpath,
+			Description: fmt.Sprintf("EventLess %v -> %v; changes whether the edge fires automatically (run-to-completion)", ot.EventLess, nt.EventLess),
+			Breaking:    true,
+		})
+	}
+
 	// A composite guard expression's named-ref and stateIn leaves count as guard
 	// requirements for evolution classification: adding one tightens the
 	// transition (flagged-additive), removing one loosens it.
 	d.diffRefs(tpath, "guard", guardRefs(ot), guardRefs(nt), KindGuardAdded, KindGuardRemoved)
 	d.diffRefs(tpath, "effect", ot.Effects, nt.Effects, KindEffectAdded, KindEffectRemoved)
+
+	// The leaf-ref diff above is operator-blind: And(a,b) and Or(a,b) share a leaf
+	// set yet behave differently. Compare a canonical structural serialization of
+	// the guard expression so a reshaped combinator tree (And<->Or, an added Not)
+	// is caught even when the leaf set is unchanged. A pure leaf add/remove already
+	// reported by diffRefs is suppressed by canonicalizing leaves to a sorted set.
+	if guardStructure(ot.GuardExpr) != guardStructure(nt.GuardExpr) {
+		d.r.add(Change{
+			Kind:        KindGuardStructureChanged,
+			Path:        tpath,
+			Description: "guard expression structure changed (combinator reshaped, e.g. And<->Or or an added Not); enablement differs",
+			Breaking:    true,
+		})
+	}
+
+	d.diffUnknownStructuralDelta(tpath, ot, nt)
+}
+
+// diffUnknownStructuralDelta is the fail-safe backstop. Every structural field
+// the differ models explicitly (From, To, On, Guards, Effects, WaitMode,
+// GuardExpr, EventLess) is zeroed on both transitions, then the residuals are
+// JSON-marshaled and compared. Any remaining difference — Forbidden, Wildcard,
+// Internal, Reenter, Raise, or a field a future IR adds — trips this breaking
+// change so unmodeled deltas over-report rather than silently classifying as a
+// patch. Zeroing the understood fields keeps the backstop from double-firing on a
+// difference a specific rule already reported. Marshaling failures are ignored;
+// they cannot happen for the IR's JSON-safe transition shape, and the package's
+// no-panic contract forbids surfacing them here.
+func (d *differ[S, E, C]) diffUnknownStructuralDelta(tpath string, ot, nt state.Transition[S, E, C]) {
+	if residualEqual(ot, nt) {
+		return
+	}
+	d.r.add(Change{
+		Kind:        KindUnknownStructuralDelta,
+		Path:        tpath,
+		Description: "[FLAGGED: unmodeled structural difference] a transition field the differ has no specific rule for changed; treated as breaking so future IR additions fail safe",
+		Breaking:    true,
+	})
+}
+
+// residualEqual reports whether two transitions are equal once the fields the
+// differ understands are zeroed out, leaving only the residual structural shape.
+func residualEqual[S comparable, E comparable, C any](ot, nt state.Transition[S, E, C]) bool {
+	oj, err1 := json.Marshal(zeroUnderstood(ot))
+	nj, err2 := json.Marshal(zeroUnderstood(nt))
+	if err1 != nil || err2 != nil {
+		// Marshaling cannot fail for the IR's JSON-safe transition; if it somehow
+		// did we cannot prove equality, so fall through to "differ" (over-report).
+		return false
+	}
+	return string(oj) == string(nj)
+}
+
+// zeroUnderstood returns a copy of the transition with every field the differ
+// models explicitly reset to its zero value, so only residual (unmodeled) fields
+// remain to be compared by the backstop.
+func zeroUnderstood[S comparable, E comparable, C any](t state.Transition[S, E, C]) state.Transition[S, E, C] {
+	var zeroS S
+	var zeroE E
+	t.From = zeroS
+	t.To = zeroS
+	t.On = zeroE
+	t.Guards = nil
+	t.Effects = nil
+	t.WaitMode = 0
+	t.GuardExpr = nil
+	t.EventLess = false
+	return t
 }
 
 // diffRefs compares two sets of named Refs (guards or effects) on a transition.
@@ -494,6 +751,110 @@ func refNameSet(refs []state.Ref) map[string]struct{} {
 		m[r.Name] = struct{}{}
 	}
 	return m
+}
+
+// ptrStr renders an optional state pointer as a stable string, "<nil>" when unset,
+// so nil<->set transitions register as a difference.
+func ptrStr[S comparable](p *S) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return str(*p)
+}
+
+// transitionTokens renders each transition to its ordered identity token
+// (From | On | guard signature), preserving declaration order, so the sequence
+// can be compared for a pure reorder.
+func transitionTokens[S comparable, E comparable, C any](trs []state.Transition[S, E, C]) []string {
+	tokens := make([]string, 0, len(trs))
+	for _, t := range trs {
+		tokens = append(tokens, str(t.From)+"|"+str(t.On)+"|"+guardSignature(t))
+	}
+	return tokens
+}
+
+// multisetEqual reports whether two token slices contain the same elements with
+// the same multiplicities, ignoring order.
+func multisetEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, s := range a {
+		counts[s]++
+	}
+	for _, s := range b {
+		counts[s]--
+		if counts[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// sequenceEqual reports whether two token slices are equal element-wise in order.
+func sequenceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// guardStructure renders a guard expression tree to a canonical, order-significant
+// string capturing Op, Kind, Ref name, stateIn target, field Path, literal, and
+// children recursively. It is operator-aware (unlike guardSignature, which folds
+// only the leaf set), so And(a,b) and Or(a,b) produce different structures while
+// reordering siblings of the same combinator is intentionally significant because
+// it can change short-circuit behavior. A nil expression renders empty.
+func guardStructure[S comparable](g *state.GuardNode[S]) string {
+	if g == nil {
+		return ""
+	}
+	var b strings.Builder
+	writeGuardStructure(&b, *g)
+	return b.String()
+}
+
+// writeGuardStructure appends one node's canonical structure to b, recursing into
+// children. The form is "(op:kind ref=.. in=.. path=.. lit=.. set=[..] [children])".
+func writeGuardStructure[S comparable](b *strings.Builder, g state.GuardNode[S]) {
+	b.WriteByte('(')
+	b.WriteString(string(g.Op))
+	b.WriteByte(':')
+	b.WriteString(string(g.Kind))
+	if g.Ref != nil {
+		b.WriteString(" ref=")
+		b.WriteString(g.Ref.Name)
+	}
+	if g.In != nil {
+		b.WriteString(" in=")
+		b.WriteString(str(*g.In))
+	}
+	if g.Path != "" {
+		b.WriteString(" path=")
+		b.WriteString(g.Path)
+	}
+	if g.Lit != nil {
+		fmt.Fprintf(b, " lit=%v:%v", g.Lit.Type, g.Lit.Value)
+	}
+	for i, l := range g.Set {
+		if i == 0 {
+			b.WriteString(" set=[")
+		}
+		fmt.Fprintf(b, "%v:%v,", l.Type, l.Value)
+		if i == len(g.Set)-1 {
+			b.WriteByte(']')
+		}
+	}
+	for _, c := range g.Children {
+		writeGuardStructure(b, c)
+	}
+	b.WriteByte(')')
 }
 
 func initialStr[S comparable, E comparable, C any](ir *state.IR[S, E, C]) string {
