@@ -9,6 +9,139 @@ A machine definition is treated as a schema: see the
 counts as an additive (minor) versus breaking (major) change. Use the
 `state/evolution` package to classify a machine change and decide the bump.
 
+## [Unreleased] — v1.0.0 release candidate
+
+Freeze-ready, pending human sign-off. This release candidate resolves the v1.0
+freeze-readiness gap analysis: the parallel-region commit path now matches the
+documented semantics, the serialized IR round-trips losslessly, and the frozen
+public surface is locked. It is intentionally **not tagged**; the data model,
+serialized IR, context model, effect envelope, and emission-ordering contract are
+ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
+`verify` subpackages ship as advisory (not part of the frozen contract).
+
+### Fixed
+
+- A `Raise` declared on a region-internal transition is now delivered instead of
+  silently dropped (kernel parallel-region commit path).
+- A region-internal transition targeting a same-region history pseudostate now
+  resolves history correctly instead of leaving the pseudostate permanently stuck as
+  an active leaf.
+- A compound nested inside a parallel region now emits its done event and fires
+  `OnDone` when its leaf reaches final.
+- Region transition and entry actions now observe the threaded, exit-assign-folded
+  context, consistent with the main commit path.
+- Eventless (`Always`) transitions now fire in every active parallel region and no
+  longer collapse a sibling region's configuration.
+- Exiting a parallel state now runs every active region leaf's `OnExit` actions
+  innermost-first, in declaration order; an event handled only by a sibling region
+  of an outer parallel is now delivered through nested parallels correctly.
+- A panicking host action is recovered into a typed `ActionPanicError` instead of
+  crashing `Fire`.
+- An event matched by a guard-failed candidate inside a region now bubbles to the
+  parallel-state-level handler instead of causing the fire to fail silently.
+- The raised-event queue is reset when a macrostep errors, so a queued event no
+  longer leaks into the next `Fire`.
+- Effects are emitted only on a fully successful `Fire`; a failed fire emits no
+  effects (transactional effect emission on the main commit path).
+- `Snapshot`/`Restore` preserves bounded-history (`WithHistory(n)`) retention
+  instead of reverting to unbounded.
+- `SnapshotActors` refuses a non-quiesced actor tree with a typed
+  `NonQuiescentActorError` instead of silently dropping queued messages.
+- `Trace.AssignsApplied` is aggregated across all microsteps of a macrostep instead
+  of reporting only the triggering microstep's assigns.
+- `Region`, `Invocation`, and `IOSpec` IR nodes now preserve unknown JSON fields and
+  `Meta` losslessly, making the lossless round-trip guarantee true for every
+  IR-reachable node type.
+- `GuardPanicError` and `AssignPanicError` now `Unwrap` to the recovered error, and
+  `SnapshotError` exposes its cause, so `errors.As`/`errors.Is` can reach a wrapped
+  sentinel through any of them.
+- `SchemaOf` returns an honest `SchemaAny` for interface, func, chan, and complex
+  types instead of coercing them to `SchemaString`.
+- Builder cursor consumers (`When`, `Do`, `Assign`, `Raise`, `GoTo`, and friends)
+  now panic with an actionable construction-time message when no transition is open,
+  instead of silently dropping the call.
+- `analysis` honors wildcard (`OnAny`) edges and excludes forbidden (`Forbid` /
+  `ForbidAny`) edges from reachability and dead-end analysis, removing false
+  unreachable and dead-end findings.
+- `evolution` now detects transition order/priority, guard-operator structure,
+  initial-child, history, context-schema, and eventless-edge changes, and classifies
+  any unmodeled structural difference as breaking (fail-safe), closing silent
+  under-reporting of behavior-changing edits.
+- `conformance` compares effects order-sensitively and payload-aware, and captures
+  trace and final context, so it no longer passes a reordering or wrong-payload
+  regression.
+- The pointer-context determinism diagnostic is advisory and is not rejected under
+  `Quench(Strict())`; pointer context remains a supported escape hatch.
+
+### Added
+
+- Typed errors `ActionPanicError`, `RegionEscapeError`, `HistoryCrossRegionError`,
+  and `NonQuiescentActorError`; `Quench` now rejects a region-escaping transition
+  target and a cross-region history target at build time.
+- `WithRestoreInspector` and `WithRestoreLogger` restore options to re-attach
+  observability after `Restore`.
+- `SchemaAny` schema kind; `Cause` field on `SnapshotError`.
+- A v1.0 interface-surface freeze: `ContextView` is sealed (crucible-only) while
+  `Clock`, `ContextCodec`, `Snapshotter`, and `ActorInstance` are documented as
+  frozen, host-implementable interfaces grown post-v1 via optional interfaces, with
+  compile-time conformance assertions.
+- `analysis` finding kinds `KindUndefinedTarget` and `KindInternalError`.
+- `conformance` `WithSnapshotSink` option and `AssertEffectsPayloads`.
+- `verify` kind-specific `Finding` accessors (`IsReachable`, `Holds`, `Violated`,
+  `Covered`).
+- An advisory pointer-context determinism diagnostic surfaced through Temper/Assay.
+
+### Changed
+
+- `WaitMode`, `HistoryType`, and `ActorKind` integer wire values are documented as
+  frozen and append-only; `JournalRandom` is specified to ride
+  `JournalEntry.Payload`.
+
+### Documentation
+
+- Stability banners: `analysis`, `evolution`, `conformance`, `verify`, and
+  `verify/symbolic` are documented as advisory (not part of the frozen contract);
+  `expr` documents its guard-expression semantics and deterministic evaluation
+  environment as part of the v1.0 contract.
+- `verify` docs corrected to state that bounded simulation enumerates
+  configurations (not traces), the covering suite is a structural guarantee, and
+  only the holding verdict is exact.
+- Documented that `Instance` is not safe for concurrent use; that timer absolute
+  deadlines are a host concern (`ResumeEffects` re-arms at the full declared delay
+  while `durable` persists deadlines); the guard eval-error asymmetry (eventless
+  guards fail closed, event-driven guards fail loud); the v1.0 stability scope; and
+  the known limitation that entering a compound via initial descent onto a final
+  leaf does not raise that compound's done event.
+- `Trace.PoliciesEvaluated` documented as reserved (always empty in v1.0).
+
+### Tests
+
+- Exhaustive symbolic op-table regression tests over every guard operator (the only
+  unsoundness-capable code path).
+- Seeded property tests for snapshot resume-equivalence and parallel-region
+  determinism.
+- Regression tests porting the parallel-region kernel probes: Raise-in-region,
+  history-into-region, interior-compound done, sibling-region eventless and exit,
+  nested-parallel delivery, and a simultaneous-region-completion pin.
+
+### Deferred to a future release (with reason)
+
+- Entering a compound via initial descent directly onto a final leaf does not raise
+  that compound's done event (documented known limitation; additively fixable, but
+  emission-changing, so deferred to an opt-in minor).
+- The transactional-effects fix is scoped to the main commit path; the region
+  commit path retains partial-emit-on-error behavior at the freeze.
+- `verify.Finding.Reachable` polarity reshape (verify is advisory; additive
+  kind-specific accessors are provided instead of a breaking field change).
+- `conformance` `Assertion.Expected`/`Event` payload reshape and auto-derived effect
+  assertions in generated goldens (advisory; needs a host entity/codec, which would
+  be a breaking change).
+- Snapshot-carried absolute timer deadlines (`Pending.TimerDeadlines`) — documented
+  as a host concern in v1.0; additive in a later release.
+- Post-v1.0 performance items: lazy hot-path trace-string construction, ref-slice
+  copy-on-write, trace-history bounding, and random-IR fixpoint and
+  eventless-termination fuzzing.
+
 ## [1.0.0]
 
 The first stable release. The 0.2.0 to 1.0.0 step finalizes the breaking changes
