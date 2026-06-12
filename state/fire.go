@@ -329,6 +329,7 @@ func absorbMicrosteps(dst *Trace, sub Trace) {
 	dst.Microsteps = append(dst.Microsteps, sub.Microsteps...)
 	dst.GuardsEvaluated = append(dst.GuardsEvaluated, sub.GuardsEvaluated...)
 	dst.EffectsEmitted = append(dst.EffectsEmitted, sub.EffectsEmitted...)
+	dst.AssignsApplied = append(dst.AssignsApplied, sub.AssignsApplied...)
 	dst.ExitedStates = append(dst.ExitedStates, sub.ExitedStates...)
 	dst.EnteredStates = append(dst.EnteredStates, sub.EnteredStates...)
 }
