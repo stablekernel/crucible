@@ -13,9 +13,15 @@ func isZero[S comparable](s S) bool {
 }
 
 // Diagnostic severities used by lint/Temper/Quench.
+//
+// diagInfo is an advisory severity: it is surfaced in Temper/Assay output for a
+// host to inspect, but the Strict-promotion logic never escalates it to an error
+// (unlike diagWarning, which Strict promotes). It marks a supported-but-noteworthy
+// configuration, such as the pointer-context escape hatch.
 const (
 	diagError   = "error"
 	diagWarning = "warning"
+	diagInfo    = "info"
 )
 
 // diagnostic is the internal lint finding; it carries the public Diagnostic
@@ -133,13 +139,16 @@ func (b *Builder[S, E, C]) lint() []diagnostic {
 
 	// Pointer context (C is a pointer type) forfeits clean-replay determinism: a
 	// bound action that mutates through the pointer escapes the value-semantics
-	// contract, so replaying a trace can diverge. This is a soft warning, not a
-	// hard error — a pointer context still builds and fires; Strict mode rejects
-	// it. It is type-level (no source position), mirroring the CurrentStateFn
-	// warning above.
+	// contract, so replaying a trace can diverge. A value context is preferred, but
+	// a pointer context is a documented, SUPPORTED escape hatch (see doc.go): it
+	// builds and fires, and is reported only as an advisory (diagInfo) diagnostic.
+	// The advisory is surfaced in Temper/Assay output for inspection but is NOT
+	// rejected — even under Strict, which escalates only diagWarning, not diagInfo.
+	// It is type-level (no source position), mirroring the CurrentStateFn warning
+	// above.
 	if reflect.TypeOf((*C)(nil)).Elem().Kind() == reflect.Pointer {
 		diags = append(diags, diagnostic{Diagnostic: Diagnostic{
-			Severity: diagWarning,
+			Severity: diagInfo,
 			Message:  "pointer context (C is a pointer type) forfeits clean-replay determinism; prefer a value context",
 		}})
 	}

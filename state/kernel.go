@@ -711,8 +711,10 @@ type FireFunc[S comparable, E comparable, C any] func(ctx context.Context, event
 // surfaced before Quench. Consumers pattern-match on it, so its field names are
 // stable.
 type Diagnostic struct {
-	// Severity is the finding's level ("warning" | "error"); under Strict, Quench
-	// rejects any finding, otherwise only "error".
+	// Severity is the finding's level ("info" | "warning" | "error"). Quench
+	// rejects "error" always and "warning" under Strict; "info" is advisory and is
+	// never escalated, even under Strict (e.g. the supported pointer-context escape
+	// hatch).
 	Severity string
 	// Message is the human-readable description of the finding.
 	Message string

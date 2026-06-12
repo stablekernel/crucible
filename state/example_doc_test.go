@@ -118,11 +118,11 @@ func buildDocMachine() *state.Machine[DocState, DocEvent, *Document] {
 		Do("emit", state.P{"event": "published"}).
 		Transition(Draft).On(Archive).GoTo(Archived).
 		Transition(Submitted).On(Archive).GoTo(Archived).
-		// Quench without Strict: *Document is a pointer context, which now raises
-		// the soft clean-replay determinism warning. Strict would turn that warning
-		// into a panic; this shared fixture only needs a well-formed, well-built
-		// machine, so it builds plainly.
-		Quench()
+		// Quench under Strict: *Document is a pointer context, which surfaces the
+		// clean-replay determinism diagnostic. That diagnostic is advisory (diagInfo)
+		// and is never escalated — even under Strict — because pointer context is a
+		// supported escape hatch, so this Strict build is clean.
+		Quench(state.Strict())
 }
 
 func strptr(s string) *string { return &s }
