@@ -116,9 +116,19 @@ func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S]
 	// snapshot is simply discarded on success.
 	txn := i.beginTxn()
 
-	res := i.fireOnce(ctx, event)
-	if res.Err == nil {
-		res = i.runToCompletion(ctx, res)
+	// Honor cancellation at the macrostep boundary before any sub-step runs: a Fire
+	// driven with an already-canceled or already-expired context is a clean no-op.
+	// The cancellation cause is surfaced raw on res.Err and flows through the same
+	// transactional-rollback branch as a failed Fire below, so the instance is left
+	// at its pre-Fire configuration with no leaked effects.
+	res := FireResult[S]{NewState: i.current, Trace: i.seedTrace(fmt.Sprint(event))}
+	if err := ctx.Err(); err != nil {
+		res.Err = err
+	} else {
+		res = i.fireOnce(ctx, event)
+		if res.Err == nil {
+			res = i.runToCompletion(ctx, res)
+		}
 	}
 	if res.Err != nil {
 		i.rollback(txn)
@@ -207,6 +217,18 @@ func (i *Instance[S, E, C]) rollback(txn fireTxn[S, E, C]) {
 func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[S]) FireResult[S] {
 	steps := 0
 	for {
+		// Honor cancellation at the microstep boundary, the same "poll between steps"
+		// granularity WaitFor uses: a context canceled or expired between microsteps
+		// stops the run-to-completion loop and surfaces the cancellation cause. fireCore
+		// routes a non-nil res.Err through its transactional rollback, so the partially
+		// settled macrostep is unwound to its pre-Fire configuration with no leaked
+		// effects. An in-flight microstep is never torn apart — the check only fires at
+		// a boundary, between completed microsteps.
+		if err := ctx.Err(); err != nil {
+			res.Err = err
+			return res
+		}
+
 		// Internal (raised) events take priority and are processed FIFO.
 		if len(i.raised) > 0 {
 			ev := i.raised[0]

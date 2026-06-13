@@ -21,6 +21,16 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 
 ### Fixed
 
+- `Fire` now honors context cancellation at microstep boundaries. It checks the
+  context before the triggering transition and between every run-to-completion
+  microstep — the same granularity `WaitFor` polls at — but never mid-microstep, so
+  a single in-flight cascade always settles before the next boundary check. A context
+  that is canceled or past its deadline at a boundary aborts the macrostep and
+  surfaces `context.Canceled` / `context.DeadlineExceeded` on `FireResult.Err`
+  (matchable with `errors.Is`). The abort routes through the same transactional
+  rollback as a failed `Fire`, so a canceled `Fire` is a clean no-op: the instance is
+  left at its pre-Fire configuration and context, and `FireResult.Effects` is nil.
+  Previously a canceled or expired context still ran the full macrostep.
 - A failed `Fire` is now fully transactional on the instance's internal state: when
   an action or assign errors or panics partway through a macrostep, the active
   configuration, current leaf, context, and recorded history all roll back to their
