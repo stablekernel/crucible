@@ -23,8 +23,10 @@ sub.Receive(ctx, h) // each message: route → load → Fire → emit → persis
 
 The handler runs one declared step:
 
-    decode → route to (key, event) → load instance → Fire(event) →
-        emit effects → persist new state → ack
+```mermaid
+flowchart LR
+    decode --> route["route to (key, event)"] --> load["load instance"] --> fire["Fire(event)"] --> emit["emit effects"] --> persist["persist new state"] --> ack
+```
 
 The ack comes only after a successful durable `Store.Save`
 (ack-after-durable-commit).
