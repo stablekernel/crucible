@@ -510,7 +510,7 @@ func (s *ActorSystem[S, E, C]) Tick(ctx context.Context, id string) []FireResult
 
 		done, output, panicErr := deliverFireGuarded(ctx, inst, env.event)
 		if panicErr != nil {
-			if p, ok := panicErr.(*ErrActorPanic); ok {
+			if p, ok := panicErr.(*ActorPanicError); ok {
 				p.ActorID = id
 			}
 			// A child that panicked while stepping is a failure: settle it as an error
