@@ -395,3 +395,30 @@ type UnknownEffectKindError struct {
 func (e *UnknownEffectKindError) Error() string {
 	return fmt.Sprintf("crucible/state: unknown effect kind %q (not registered for dispatch)", e.Kind)
 }
+
+// ActorPanicError is the typed failure raised when a child-machine actor panics
+// while it steps an event. The ActorSystem recovers the panic so it never crashes
+// the host driver, wraps the recovered value here, and settles the actor as a
+// failure — routing its onError, or escalating to the parent when none is wired.
+// When the recovered value is itself an error, Unwrap exposes it so errors.Is /
+// errors.As can reach the inner cause.
+type ActorPanicError struct {
+	// ActorID is the registry id of the actor that panicked.
+	ActorID string
+	// Recovered is the recovered panic value, rendered for the error message.
+	Recovered any
+}
+
+// Error renders the recovered actor panic.
+func (e *ActorPanicError) Error() string {
+	return fmt.Sprintf("crucible/state: actor %q panicked: %v", e.ActorID, e.Recovered)
+}
+
+// Unwrap exposes the recovered value when it is an error, so errors.Is / errors.As
+// can traverse to the inner cause; it returns nil for non-error panic values.
+func (e *ActorPanicError) Unwrap() error {
+	if err, ok := e.Recovered.(error); ok {
+		return err
+	}
+	return nil
+}

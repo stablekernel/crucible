@@ -165,9 +165,9 @@ func TestActorEscalation_ChildPanic_NoOnError_Escalates(t *testing.T) {
 	if esc == nil {
 		t.Fatal("child panic was swallowed; LastEscalation = nil")
 	}
-	var pErr *state.ErrActorPanic
+	var pErr *state.ActorPanicError
 	if !errors.As(esc, &pErr) {
-		t.Fatalf("escalation cause is not *ErrActorPanic: %v", esc)
+		t.Fatalf("escalation cause is not *ActorPanicError: %v", esc)
 	}
 	if pErr.ActorID != id {
 		t.Fatalf("panic ActorID = %q, want %q", pErr.ActorID, id)
@@ -413,4 +413,103 @@ func TestActorEscalation_UnboundSrc_NoOnError_Escalates(t *testing.T) {
 	if !errors.As(esc, &unbound) {
 		t.Fatalf("escalation cause is not *UnboundActorError: %v", esc)
 	}
+}
+
+// TestActorPanicError_TypeAndUnwrap asserts the conformance of ActorPanicError with
+// its sibling panic error types: the type is discoverable via errors.As, and Unwrap
+// exposes an underlying error cause when the panic value is itself an error.
+func TestActorPanicError_TypeAndUnwrap(t *testing.T) {
+	t.Run("errors.As finds ActorPanicError in escalation chain", func(t *testing.T) {
+		sys, _, id := startSupervising(t, noErrorParent(), panicChildBehavior())
+		ctx := context.Background()
+
+		ref, ok := sys.Ref(id)
+		if !ok {
+			t.Fatalf("no ref for actor %q", id)
+		}
+		sys.Deliver(ctx, ref, "boom")
+
+		esc := sys.LastEscalation()
+		if esc == nil {
+			t.Fatal("LastEscalation is nil; child panic was swallowed")
+		}
+
+		var pErr *state.ActorPanicError
+		if !errors.As(esc, &pErr) {
+			t.Fatalf("errors.As(*ActorPanicError) returned false; escalation = %v", esc)
+		}
+		if pErr.ActorID == "" {
+			t.Fatal("ActorPanicError.ActorID is empty; back-fill did not run")
+		}
+	})
+
+	t.Run("Unwrap returns nil when panic value is not an error", func(t *testing.T) {
+		// panic("child blew up") — a string, not an error.
+		sys, _, id := startSupervising(t, noErrorParent(), panicChildBehavior())
+		ctx := context.Background()
+
+		ref, ok := sys.Ref(id)
+		if !ok {
+			t.Fatalf("no ref for actor %q", id)
+		}
+		sys.Deliver(ctx, ref, "boom")
+
+		esc := sys.LastEscalation()
+		if esc == nil {
+			t.Fatal("LastEscalation is nil")
+		}
+		var pErr *state.ActorPanicError
+		if !errors.As(esc, &pErr) {
+			t.Fatalf("errors.As(*ActorPanicError) = false")
+		}
+		// The panic value is the string "child blew up", not an error — Unwrap must return nil.
+		if pErr.Unwrap() != nil {
+			t.Fatalf("Unwrap() = %v, want nil for non-error panic value", pErr.Unwrap())
+		}
+	})
+
+	t.Run("Unwrap reaches inner error when panic value is an error", func(t *testing.T) {
+		// Build a child that panics with an error value so we can verify Unwrap traversal.
+		inner := errors.New("inner cause")
+		cm := state.Forge[string, string, *childEntity]("child").
+			Action("errboom", func(state.ActionCtx[*childEntity]) (state.Effect, error) {
+				panic(inner)
+			}).
+			State("working").
+			State("blow").OnEntry("errboom").
+			State("done").Final().
+			Initial("working").
+			Transition("working").On("boom").GoTo("blow").
+			Quench()
+		behavior := func(map[string]any) (state.ActorInstance, error) {
+			inst := cm.Cast(&childEntity{}, state.WithInitialState("working"))
+			return state.NewActor(inst, nil), nil
+		}
+
+		sys, _, id := startSupervising(t, noErrorParent(), behavior)
+		ctx := context.Background()
+
+		ref, ok := sys.Ref(id)
+		if !ok {
+			t.Fatalf("no ref for actor %q", id)
+		}
+		sys.Deliver(ctx, ref, "boom")
+
+		esc := sys.LastEscalation()
+		if esc == nil {
+			t.Fatal("LastEscalation is nil")
+		}
+
+		var pErr *state.ActorPanicError
+		if !errors.As(esc, &pErr) {
+			t.Fatalf("errors.As(*ActorPanicError) = false")
+		}
+		// Unwrap must surface the inner error so errors.Is can traverse to it.
+		if !errors.Is(pErr, inner) {
+			t.Fatalf("errors.Is(pErr, inner) = false; Unwrap did not expose inner error")
+		}
+		if unwrapped := pErr.Unwrap(); unwrapped != inner {
+			t.Fatalf("Unwrap() = %v, want %v", unwrapped, inner)
+		}
+	})
 }
