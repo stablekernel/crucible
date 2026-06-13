@@ -148,10 +148,13 @@ func TestSelfTransition(t *testing.T) {
 	}
 }
 
-// TestActionError_AdvancesStateRecordsEffectError asserts the locked decision:
-// state advances before actions run; a failing action records OutcomeEffectError
-// and the typed *ActionFailedError, with the state already advanced.
-func TestActionError_AdvancesStateRecordsEffectError(t *testing.T) {
+// TestActionError_RollsBackRecordsEffectError asserts that a failing transition
+// action records OutcomeEffectError and the typed *ActionFailedError, and that the
+// failed Fire is transactional: the configuration rolls back to the source state
+// rather than leaking the half-advanced target. The configuration still advances in
+// place during the macrostep (so entry actions and the done cascade observe it), but
+// a failure discards that advance, so NewState reports the original state.
+func TestActionError_RollsBackRecordsEffectError(t *testing.T) {
 	type s = int
 	type e = int
 	const a s = 0
@@ -178,8 +181,8 @@ func TestActionError_AdvancesStateRecordsEffectError(t *testing.T) {
 	if !errors.Is(res.Err, boom) {
 		t.Fatalf("err does not unwrap to boom: %v", res.Err)
 	}
-	if res.NewState != b {
-		t.Fatalf("state = %v, want b (advanced before action)", res.NewState)
+	if res.NewState != a {
+		t.Fatalf("state = %v, want a (failed Fire rolls back the advanced configuration)", res.NewState)
 	}
 	if res.Trace.Outcome != state.OutcomeEffectError {
 		t.Fatalf("outcome = %v, want OutcomeEffectError", res.Trace.Outcome)

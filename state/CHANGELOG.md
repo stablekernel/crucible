@@ -21,6 +21,17 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 
 ### Fixed
 
+- A failed `Fire` is now fully transactional on the instance's internal state: when
+  an action or assign errors or panics partway through a macrostep, the active
+  configuration, current leaf, context, and recorded history all roll back to their
+  pre-Fire values, `FireResult.NewState` reports the original state rather than the
+  abandoned target, and a snapshot taken afterward is identical to one never Fired.
+  This extends the existing effect-emission transactionality to the configuration —
+  previously a failed `Fire` left the configuration half-advanced. The successful
+  path is unchanged: the configuration still advances in place during the macrostep
+  so entry actions, the done cascade, and the run-to-completion loop observe it. A
+  partial parallel-region commit (an earlier region committing before a later region
+  fails) rolls back with the rest of the macrostep.
 - A `Raise` declared on a region-internal transition is now delivered instead of
   silently dropped (kernel parallel-region commit path).
 - A region-internal transition targeting a same-region history pseudostate now

@@ -105,11 +105,69 @@ const maxMicrosteps = 10_000
 // Trace microsteps. The internal queue is local to this call, so Fire stays
 // pure: no clock, no IO.
 func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S] {
+	// Snapshot the live internal state a macrostep mutates before any commit runs.
+	// A failed Fire (the triggering transition or any run-to-completion sub-step)
+	// must be a no-op on the instance's persisted state: configuration, current
+	// leaf, context, and recorded history all roll back together — matching the
+	// already-transactional context and effects so a snapshot taken after a failed
+	// Fire is identical to one never Fired. The successful path is untouched: the
+	// configuration still advances in place during the macrostep (entry actions,
+	// the done cascade, and the RTC loop read the advancing configuration), and the
+	// snapshot is simply discarded on success.
+	txn := i.beginTxn()
+
 	res := i.fireOnce(ctx, event)
-	if res.Err != nil {
-		return res
+	if res.Err == nil {
+		res = i.runToCompletion(ctx, res)
 	}
-	return i.runToCompletion(ctx, res)
+	if res.Err != nil {
+		i.rollback(txn)
+		res.NewState = i.current
+	}
+	return res
+}
+
+// fireTxn captures the live, macrostep-mutable fields of an Instance so a failed
+// Fire can restore them, making a failed macrostep a no-op on the instance's
+// persisted internal state. It holds the configuration, current leaf, context,
+// recorded history maps, and the internal-event queue — every field a commit
+// writes before it can fail.
+type fireTxn[S comparable, E comparable, C any] struct {
+	current        S
+	config         []S
+	entity         C
+	historyShallow map[S]S
+	historyDeep    map[S][]S
+	raised         []E
+}
+
+// beginTxn snapshots the instance's macrostep-mutable state before a Fire runs. The
+// configuration, history maps, and queue are copied (not aliased) so an in-place
+// mutation during the macrostep cannot corrupt the saved snapshot; the context and
+// current leaf are values. It allocates only the small per-macrostep snapshot and
+// never touches a clock or IO, so Fire stays pure.
+func (i *Instance[S, E, C]) beginTxn() fireTxn[S, E, C] {
+	return fireTxn[S, E, C]{
+		current:        i.current,
+		config:         append([]S(nil), i.config...),
+		entity:         i.entity,
+		historyShallow: copyMap(i.historyShallow),
+		historyDeep:    copyLeafMap(i.historyDeep),
+		raised:         append([]E(nil), i.raised...),
+	}
+}
+
+// rollback restores the instance to the state captured by beginTxn, discarding every
+// configuration, context, and history mutation a failed macrostep applied. Effects
+// are already suppressed on the failure path (the NTE contract), so after rollback
+// the instance is byte-for-byte identical to its pre-Fire state.
+func (i *Instance[S, E, C]) rollback(txn fireTxn[S, E, C]) {
+	i.current = txn.current
+	i.config = txn.config
+	i.entity = txn.entity
+	i.historyShallow = txn.historyShallow
+	i.historyDeep = txn.historyDeep
+	i.raised = txn.raised
 }
 
 // runToCompletion settles the macrostep after the triggering transition: it
@@ -643,10 +701,13 @@ func forbids[S comparable, E comparable, C any](s *State[S, E, C], event E) bool
 	return false
 }
 
-// commit advances the configuration (before running actions, per the locked
-// decision) and runs the exit cascade, the transition's bound actions, and the
-// entry cascade — building effects and recording the trace. matchedAt is the
-// ancestor whose transition fired (equal to the source leaf for a flat machine).
+// commit advances the configuration in place (before running actions, so entry
+// actions and the done cascade observe the advancing configuration) and runs the
+// exit cascade, the transition's bound actions, and the entry cascade — building
+// effects and recording the trace. matchedAt is the ancestor whose transition fired
+// (equal to the source leaf for a flat machine). A failure returns early with the
+// configuration left advanced; fireCore's transaction rolls it back so the failed
+// Fire is a no-op on the instance's persisted state.
 func (i *Instance[S, E, C]) commit(
 	ctx context.Context,
 	t *Transition[S, E, C],
@@ -678,11 +739,12 @@ func (i *Instance[S, E, C]) commit(
 		effects, errName, err := i.runActions(t.Effects, cur, &tr)
 		if err != nil {
 			tr.Outcome = OutcomeEffectError
-			// Effects are emitted only on a fully-successful Fire (the NTE
+			// Effects are emitted only on a fully-successful Fire (the
 			// transactionality contract): a failed Fire returns no partial effects so
 			// a host replaying it cannot double-apply the ones that ran before the
-			// error. Config is intentionally not rolled back (out of scope); only the
-			// effect emission is transactional.
+			// error. An internal transition leaves the configuration unchanged, so
+			// only the context fold is at stake here; fireCore's transaction rolls it
+			// back along with the rest of the macrostep on failure.
 			return FireResult[S]{
 				NewState: i.current, Effects: nil, Trace: tr,
 				Err: &ActionFailedError{
