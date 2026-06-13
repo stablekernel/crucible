@@ -40,6 +40,57 @@ in the documentation site:
 
 ### **[stablekernel.github.io/crucible](https://stablekernel.github.io/crucible/)**
 
+## Architecture
+
+Three core modules form the **ingest → drive → emit** spine: `source` brings
+events in, `state` decides what happens, and `sink` fans the resulting effects
+out. Each is a thin seam you can adopt on its own, and none imports another.
+
+```mermaid
+flowchart LR
+    streams[(external streams)] -->|source| engine[state engine]
+    engine -->|sink| destinations[(destinations)]
+```
+
+### `state` — the statechart engine
+
+A stdlib-only statechart engine with no injected IO. Machines are pure: a `Fire`
+folds an event into a new instance and emits effects as plain data, leaving
+persistence and dispatch to the host.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Working: Start [guard]
+    Working --> Working: Progress / emit effect
+    Working --> Done: Finish
+    Working --> Idle: Reset
+    Done --> [*]
+```
+
+### `source` — the ingress seam
+
+Consumes external streams (Kafka, JetStream, Redis, CDC, and more) and drives a
+machine, with the ack tied to a durable transition so redelivery is safe.
+
+```mermaid
+flowchart LR
+    stream[(stream)] --> decode[decode / codec] --> route["route to (key, event)"] --> fire["Fire on instance"] --> commit[durable commit] --> ack[ack]
+```
+
+### `sink` — the egress seam
+
+Fans emitted effects out to many destinations through a `Manifold`,
+fire-and-forget; one outlet's failure never stops the rest.
+
+```mermaid
+flowchart LR
+    effect[emitted effect] --> manifold[Manifold]
+    manifold --> a[destination A]
+    manifold --> b[destination B]
+    manifold --> c[destination C]
+```
+
 ## Modules
 
 Each module is independently versioned (per-module SemVer) and carries its own

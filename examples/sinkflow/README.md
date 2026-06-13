@@ -7,11 +7,12 @@ one `log/slog` logger. It is the proof that `state`, `sink`, and `telemetry`
 compose through the [`sink/bridge`](../../sink/bridge) seam without any core
 importing another.
 
-```
-order machine ──(bridge.Middleware)──▶ Manifold ──┬─▶ analytics  (delivered)
-   Fire(Prepare)                                   ├─▶ audit      (delivered)
-   Fire(Dispatch)  ── warehouse rejects ──▶        └─▶ warehouse  (fails on Dispatch)
-   Fire(Deliver)
+```mermaid
+flowchart LR
+    M["order machine<br/>Fire(Prepare / Dispatch / Deliver)"] -->|bridge.Middleware| MAN[Manifold]
+    MAN --> A["analytics<br/>(delivered)"]
+    MAN --> AU["audit<br/>(delivered)"]
+    MAN --> W["warehouse<br/>(rejects Dispatch)"]
 ```
 
 What the test asserts (`sinkflow_test.go`), all hermetic and deterministic:

@@ -14,21 +14,40 @@ into your own domain.
 
 An `Order` moves through these stages:
 
+```mermaid
+stateDiagram-v2
+    [*] --> Placed
+    Placed --> Authorizing: Submit
+    Authorizing --> Rejected: decline
+    Authorizing --> Active: success [admit guard]
+
+    state Active {
+        [*] --> Cooking
+        Cooking --> AwaitingCourier
+        AwaitingCourier --> EnRoute
+        --
+        [*] --> OnTime
+        OnTime --> Overdue: after(SLA)
+    }
+
+    Active --> Settling: DroppedOff
+    Active --> Refunding: Cancel
+    Settling --> Delivered: always
+    Refunding --> Canceled: refund result
+
+    Rejected --> [*]
+    Delivered --> [*]
+    Canceled --> [*]
 ```
-Placed --Submit--> Authorizing
-  Authorizing invokes the payment "authorize" service.
-    on decline --> Rejected (terminal)
-    on success [admit guard] --> Active
-Active  (parallel superstate)
-  ├─ Fulfillment region: Cooking --> AwaitingCourier --> EnRoute
-  │     Cooking supervises the kitchen actor (it plates the meal).
-  │     EnRoute  supervises the courier actor (it delivers).
-  └─ Watchdog region:    OnTime --after(SLA)--> Overdue (records a breach)
-  Active --DroppedOff--> Settling   (courier completion exits the parallel state)
-  Active --Cancel-----> Refunding   (the compensation saga)
-Settling --always--> Delivered (terminal)   (captures the payment hold)
-Refunding invokes "refund"; on its result --> Canceled (terminal)
-```
+
+`Authorizing` invokes the payment `authorize` service. `Active` is a parallel
+superstate with two concurrent regions: a **Fulfillment** region
+(`Cooking → AwaitingCourier → EnRoute`, where `Cooking` supervises the kitchen
+actor and `EnRoute` the courier actor) and a **Watchdog** region (`OnTime`, which
+trips to `Overdue` and records a breach `after(SLA)`). `DroppedOff` exits the
+parallel state into `Settling`, which captures the payment hold and always lands
+in `Delivered`. `Cancel` routes into `Refunding`, the compensation saga, which
+invokes `refund` and ends in `Canceled`.
 
 Run it through the host `Rig` (the example's wiring of the Scheduler, ServiceRunner,
 and ActorSystem); see `rig.go`, or embed the pieces directly.
