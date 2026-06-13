@@ -38,13 +38,19 @@
 // at dispatch, never silently dropped. Effects stay data the host applies — the
 // kernel never executes them.
 //
-// Effect emission is transactional with respect to the step's outcome: a Fire's
-// effects are emitted (returned in FireResult.Effects) only on a fully-successful
-// Fire. A Fire that fails partway through its cascade — an action or assign that
-// errors or panics — returns the error with NO effects, so a host replaying a
-// failed Fire cannot double-apply the effects that ran before the error. (The
-// configuration is not rolled back on failure; only effect emission is made
-// transactional, which is what a replay observes.)
+// A Fire is transactional with respect to the step's outcome: it commits to the
+// instance's internal state only on a fully-successful step. A Fire that fails
+// partway through its cascade — an action or assign that errors or panics —
+// returns the error and is a no-op on the instance's persisted state. The active
+// configuration, current leaf, context, and recorded history all roll back to their
+// pre-Fire values, and no effects are emitted (returned in FireResult.Effects), so
+// a host replaying a failed Fire cannot double-apply the effects that ran before the
+// error, and FireResult.NewState reports the original state rather than the abandoned
+// target. The configuration still advances in place during a successful macrostep
+// (entry actions, the done cascade, and the run-to-completion loop observe the
+// advancing configuration); a failure discards that advance. The one thing a failed
+// Fire cannot undo is a real-world side effect a host already applied from an effect
+// emitted by an earlier, successful step — those are outside the kernel's pure state.
 //
 // # The definition IR is the spec
 //
