@@ -174,6 +174,19 @@
 // event and eventless step, plus per-region markers) as it happened. FireResult's
 // Effects slice carries the same effects, in the same order, as data.
 //
+// Fire honors context cancellation at microstep boundaries. It checks ctx before
+// the triggering transition runs and again between every run-to-completion
+// microstep — the same "polls between steps" granularity WaitFor uses — but never
+// mid-microstep: a single in-flight microstep (its exit/transition/entry cascade
+// and the actions within it) always runs to completion before the next boundary
+// check. A context that is canceled or past its deadline at any boundary aborts the
+// macrostep and surfaces the cancellation cause (context.Canceled or
+// context.DeadlineExceeded) on FireResult.Err, where errors.Is can match it. The
+// abort routes through the same transactional rollback as a failed Fire, so a
+// canceled Fire is a clean no-op on persisted state: the instance is left at its
+// pre-Fire configuration and context, FireResult.NewState reports the original
+// state, and FireResult.Effects is nil — no partially settled microstep leaks out.
+//
 // The ordering is structural, not incidental. Every emission, fold, and cascade
 // walk iterates declaration-ordered slices — states, transitions, regions,
 // children, refs — never a Go map. The kernel's maps (node and state indices, the
