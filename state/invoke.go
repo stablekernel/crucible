@@ -233,11 +233,17 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 // contract. A flat or single-spine instance reports its single starting state's
 // services; a parallel initial configuration reports every active region's.
 //
-// The effects are computed once at Cast — when the initial configuration's entry
-// semantics run — and buffered on the instance, so StartEffects returns them
-// exactly once rather than recomputing over the live configuration.
+// StartEffects recomputes over the live configuration on every call, so it is
+// correct on both Cast (configuration is the initial leaves) and Restore
+// (configuration is the restored leaves). The durable runner relies on this:
+// after Recover sets up the restored configuration, StartEffects yields exactly
+// the invoke/actor starts of the resumed state(s).
 func (i *Instance[S, E, C]) StartEffects() []Effect {
-	return i.initialStartEffects
+	var tr Trace
+	cfg := i.Configuration()
+	out := i.invokeEffectsOnEntry(cfg, &tr)
+	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	return out
 }
 
 // InitialEffects returns every effect produced while entering the initial
@@ -247,8 +253,23 @@ func (i *Instance[S, E, C]) StartEffects() []Effect {
 // subset), InitialEffects is the full initial-entry effect stream a host absorbs
 // once, right after Cast, to apply the starting state's effects without an event.
 // It is a pure read of the buffer computed at Cast.
+//
+// Hosts using the durable runner SHOULD NOT call InitialEffects alongside
+// StartEffects for the same instance: StartEffects already covers the
+// invoke/actor subset of the initial effects and is the correct hook for
+// service/actor lifecycle, so absorbing both would double-fire those starts.
 func (i *Instance[S, E, C]) InitialEffects() []Effect {
 	return i.initialEffects
+}
+
+// InitialErr returns any error encountered while entering the initial
+// configuration at Cast: a failed OnEntry action, a failed OnEntryAssign
+// reducer, or a microstep-overflow in the initial eventless run-to-completion
+// loop. Cast cannot return an error without breaking its signature, so hosts
+// that need to detect initial-entry failures must call InitialErr immediately
+// after Cast. A nil return means the initial entry settled without error.
+func (i *Instance[S, E, C]) InitialErr() error {
+	return i.initialErr
 }
 
 // invocationID resolves the identifier for an invocation: its explicit ID when

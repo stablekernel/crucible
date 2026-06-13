@@ -1754,10 +1754,6 @@ type Instance[S comparable, E comparable, C any] struct {
 	// configuration. It is computed exactly once by settleInitial and surfaced via
 	// InitialEffects so a host arms the starting state's effects without an event.
 	initialEffects []Effect
-	// initialStartEffects buffers only the invoke/actor start effects from the
-	// initial configuration, the subset StartEffects returns. It is the exactly-once
-	// source for StartEffects, which no longer recomputes over the live config.
-	initialStartEffects []Effect
 	// initialErr records any action/assign failure encountered while entering the
 	// initial configuration at Cast, so a host can surface a misconfigured initial
 	// state. It is nil on a clean entry.
