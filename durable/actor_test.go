@@ -488,6 +488,87 @@ func TestActor_CrashAfterSettle_ResumeContinues(t *testing.T) {
 	}
 }
 
+// idleActorMachine is a minimal single-actor parent whose initial state "idle"
+// invokes one child and waits: the child's onDone ("childDone") drives idle ->
+// done. Nothing settles the actor at Start, so a crash-and-recover lands back in
+// "idle" with the child still in flight — the case that depends on StartEffects
+// re-spawning the restored configuration's actor so a post-recover DeliverToActor
+// finds it.
+func idleActorMachine() *state.Machine[string, string, actorCtx] {
+	return state.Forge[string, string, actorCtx]("idler").
+		Reducer("note", func(in state.AssignCtx[actorCtx]) actorCtx {
+			c := in.Entity
+			if o, ok := in.Event.(string); ok {
+				c.Notes = append(c.Notes, o)
+			}
+			return c
+		}).
+		Actor("spawnChild").
+		State("idle").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childFail")).
+		State("done").Final().
+		State("failed").Final().
+		Initial("idle").
+		Transition("idle").On("childDone").GoTo("done").Assign("note").
+		Transition("idle").On("childFail").GoTo("failed").
+		Quench()
+}
+
+// TestActor_RecoverWithInvoke_DeliverAfterRecover proves StartEffects re-spawns a
+// restored configuration's actor on Recover. The machine starts in "idle" with an
+// invoked child that is never settled before the crash; a fresh process recovers
+// (which must re-spawn the still-running child) and a DeliverToActor to the
+// recovered handle drives the child's onDone, advancing idle -> done. If Recover
+// did not re-arm StartEffects, the child would not be running and the delivery
+// would find no actor — exactly the regression this guards.
+func TestActor_RecoverWithInvoke_DeliverAfterRecover(t *testing.T) {
+	ctx := context.Background()
+	var runs int64
+	m := idleActorMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("idle-1")
+
+	palette := map[string]state.ActorBehavior{"spawnChild": counterChild(&runs)}
+	runner := durable.NewRunner(m, store,
+		durable.WithActorPalette[string, string, actorCtx](palette))
+	h, err := runner.Start(ctx, id, actorCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := h.Instance().Current(); got != "idle" {
+		t.Fatalf("after Start, want idle, got %q", got)
+	}
+	// Simulate a crash here: drop the live handle. The child was spawned at Start
+	// but never driven, so the persisted configuration is still "idle".
+
+	rh, err := durable.Recover(ctx, idleActorMachine(), store, id,
+		durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+			"spawnChild": counterChild(&runs),
+		}))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := rh.Instance().Current(); got != "idle" {
+		t.Fatalf("resumed at %q, want idle", got)
+	}
+
+	// The recovered configuration's actor must be re-spawned: deliver to it and
+	// assert it lands and drives the parent's onDone.
+	ref, ok := rh.ActorRef(state.ActorID("idler", "idle", 0))
+	if !ok {
+		t.Fatalf("no ref for re-spawned child after resume")
+	}
+	delivered, err := rh.DeliverToActor(ctx, ref, "finish")
+	if err != nil {
+		t.Fatalf("DeliverToActor after resume: %v", err)
+	}
+	if !delivered {
+		t.Fatalf("DeliverToActor reported the re-spawned actor was not running")
+	}
+	if got := rh.Instance().Current(); got != "done" {
+		t.Fatalf("after delivering to re-spawned child, want done, got %q", got)
+	}
+}
+
 // TestActor_DeliverToActor_NoPalette asserts DeliverToActor reports an error when no
 // actor palette was wired, so a misconfigured host fails loudly rather than silently
 // skipping the actor.
