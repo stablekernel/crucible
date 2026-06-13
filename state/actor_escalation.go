@@ -203,11 +203,11 @@ func (s *ActorSystem[S, E, C]) parentOf(childID string) string {
 	return ""
 }
 
-// ErrActorPanic is the typed failure raised when a child-machine actor panics
+// ActorPanicError is the typed failure raised when a child-machine actor panics
 // while it steps an event. The ActorSystem recovers the panic so it never crashes
 // the host driver, wraps the recovered value here, and settles the actor as a
 // failure — routing its onError, or escalating to the parent when none is wired.
-type ErrActorPanic struct {
+type ActorPanicError struct {
 	// ActorID is the registry id of the actor that panicked.
 	ActorID string
 	// Value is the recovered panic value, rendered for the error message.
@@ -215,19 +215,19 @@ type ErrActorPanic struct {
 }
 
 // Error renders the recovered actor panic.
-func (e *ErrActorPanic) Error() string {
+func (e *ActorPanicError) Error() string {
 	return fmt.Sprintf("crucible/state: actor %q panicked: %v", e.ActorID, e.Value)
 }
 
 // deliverFireGuarded fires event through inst, recovering any panic the actor raises
 // while it steps so a panicking child never crashes the host driver. On a clean
 // step it returns the actor's done flag and output with a nil error; on a panic it
-// returns a non-nil *ErrActorPanic carrying the recovered value, which the caller
+// returns a non-nil *ActorPanicError carrying the recovered value, which the caller
 // settles as a failure (routing onError or escalating).
 func deliverFireGuarded(ctx context.Context, inst ActorInstance, event any) (done bool, output any, panicErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			done, output, panicErr = false, nil, &ErrActorPanic{Value: r}
+			done, output, panicErr = false, nil, &ActorPanicError{Value: r}
 		}
 	}()
 	done, output = inst.DeliverFire(ctx, event)
@@ -235,13 +235,13 @@ func deliverFireGuarded(ctx context.Context, inst ActorInstance, event any) (don
 	// recovers a panicking host action/guard/assign into a typed error rather than
 	// letting it unwind, so a child failure surfaces here instead of as a Go panic.
 	// Treat it as a failure so it settles (routing onError or escalating). A panic
-	// recovered into an *ActionPanicError is re-rendered as an *ErrActorPanic
+	// recovered into an *ActionPanicError is re-rendered as an *ActorPanicError
 	// carrying the original recovered value, preserving the panic-failure surface.
 	if fe, ok := inst.(fireErrer); ok {
 		if err := fe.FireErr(); err != nil {
 			var ap *ActionPanicError
 			if errors.As(err, &ap) {
-				return false, nil, &ErrActorPanic{Value: ap.Recovered}
+				return false, nil, &ActorPanicError{Value: ap.Recovered}
 			}
 			return false, nil, err
 		}

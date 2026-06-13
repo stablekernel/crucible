@@ -96,6 +96,10 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 
 ### Changed
 
+- **BREAKING: the actor-panic error type `ErrActorPanic` is renamed `ActorPanicError`.**
+  The `Err*` prefix is the Go convention for sentinel error values, not for struct
+  types a caller inspects with `errors.As`; this completes the `Err*` → `*Error`
+  struct-error rename so `*ActorPanicError` matches the rest of the typed errors.
 - `WaitMode`, `HistoryType`, and `ActorKind` integer wire values are documented as
   frozen and append-only; `JournalRandom` is specified to ride
   `JournalEntry.Payload`.

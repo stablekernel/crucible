@@ -165,9 +165,9 @@ func TestActorEscalation_ChildPanic_NoOnError_Escalates(t *testing.T) {
 	if esc == nil {
 		t.Fatal("child panic was swallowed; LastEscalation = nil")
 	}
-	var pErr *state.ErrActorPanic
+	var pErr *state.ActorPanicError
 	if !errors.As(esc, &pErr) {
-		t.Fatalf("escalation cause is not *ErrActorPanic: %v", esc)
+		t.Fatalf("escalation cause is not *ActorPanicError: %v", esc)
 	}
 	if pErr.ActorID != id {
 		t.Fatalf("panic ActorID = %q, want %q", pErr.ActorID, id)
