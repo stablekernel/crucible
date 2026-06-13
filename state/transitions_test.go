@@ -170,10 +170,14 @@ func TestReenter_SelfTransitionRunsExitEntry(t *testing.T) {
 		return provide(b.Initial("s"))
 	}
 
-	// Internal (default): effects run, no exit/entry of the source.
+	// Internal (default): effects run, no exit/entry of the source. The initial
+	// state's OnEntry runs at Cast (the entry Fire never observes), so reset notes
+	// after Cast to isolate the self-transition's own behavior.
 	mi := build(false)
 	ei := &trec{}
-	resi := mi.Cast(ei, state.WithInitialState("s")).Fire(context.Background(), "ping")
+	insti := mi.Cast(ei, state.WithInitialState("s"))
+	ei.notes = nil
+	resi := insti.Fire(context.Background(), "ping")
 	if resi.Err != nil {
 		t.Fatalf("internal Fire err = %v", resi.Err)
 	}
@@ -185,10 +189,13 @@ func TestReenter_SelfTransitionRunsExitEntry(t *testing.T) {
 			resi.Trace.ExitedStates, resi.Trace.EnteredStates)
 	}
 
-	// Reenter: exit then entry of the source run around the effects.
+	// Reenter: exit then entry of the source run around the effects. Reset notes
+	// after Cast so the initial-entry OnEntry does not precede the assertion.
 	mr := build(true)
 	er := &trec{}
-	resr := mr.Cast(er, state.WithInitialState("s"), state.WithFullTrace[string]()).Fire(context.Background(), "ping")
+	instr := mr.Cast(er, state.WithInitialState("s"), state.WithFullTrace[string]())
+	er.notes = nil
+	resr := instr.Fire(context.Background(), "ping")
 	if resr.Err != nil {
 		t.Fatalf("reenter Fire err = %v", resr.Err)
 	}

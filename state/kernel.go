@@ -1668,6 +1668,12 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	} else {
 		inst.config = []S{current}
 	}
+	// Run the initial configuration's entry semantics — onentry actions/assigns,
+	// after-arming, invoke/actor starts, eventless settling, and initial->final
+	// done — so the starting state behaves like every state Fire enters. The
+	// resulting effects are buffered on the instance (InitialEffects/StartEffects);
+	// SCXML requires this entry to run before the first external event.
+	inst.settleInitial(current)
 	return inst
 }
 
@@ -1742,6 +1748,20 @@ type Instance[S comparable, E comparable, C any] struct {
 	// with no WithLogger never logs, so the pure Fire step performs no IO when one
 	// is absent. Wired with WithLogger at Cast.
 	logger *slog.Logger
+	// initialEffects buffers every effect produced while entering the initial
+	// configuration at Cast — OnEntry actions, after-arming, invoke/actor starts,
+	// and any eventless run-to-completion that settles the first stable
+	// configuration. It is computed exactly once by settleInitial and surfaced via
+	// InitialEffects so a host arms the starting state's effects without an event.
+	initialEffects []Effect
+	// initialStartEffects buffers only the invoke/actor start effects from the
+	// initial configuration, the subset StartEffects returns. It is the exactly-once
+	// source for StartEffects, which no longer recomputes over the live config.
+	initialStartEffects []Effect
+	// initialErr records any action/assign failure encountered while entering the
+	// initial configuration at Cast, so a host can surface a misconfigured initial
+	// state. It is nil on a clean entry.
+	initialErr error
 	// The actor model's per-instance mailbox lives on the host ActorSystem, which
 	// runs this instance as a child actor and routes events into its mailbox; the
 	// pure Fire step neither owns a mailbox nor sends messages. InFinal reports when

@@ -232,12 +232,23 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 // configuration and emits no IO, consistent with the kernel's effects-as-data
 // contract. A flat or single-spine instance reports its single starting state's
 // services; a parallel initial configuration reports every active region's.
+//
+// The effects are computed once at Cast — when the initial configuration's entry
+// semantics run — and buffered on the instance, so StartEffects returns them
+// exactly once rather than recomputing over the live configuration.
 func (i *Instance[S, E, C]) StartEffects() []Effect {
-	var tr Trace
-	cfg := i.Configuration()
-	out := i.invokeEffectsOnEntry(cfg, &tr)
-	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
-	return out
+	return i.initialStartEffects
+}
+
+// InitialEffects returns every effect produced while entering the initial
+// configuration at Cast: OnEntry actions, `after` arming, invoke/actor starts,
+// and any effects from eventless transitions that settled the first stable
+// configuration. Unlike StartEffects (which returns only the invoke/actor start
+// subset), InitialEffects is the full initial-entry effect stream a host absorbs
+// once, right after Cast, to apply the starting state's effects without an event.
+// It is a pure read of the buffer computed at Cast.
+func (i *Instance[S, E, C]) InitialEffects() []Effect {
+	return i.initialEffects
 }
 
 // invocationID resolves the identifier for an invocation: its explicit ID when

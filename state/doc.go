@@ -279,18 +279,20 @@
 // release; depend on them as tooling, not as a frozen contract. The frozen core
 // kernel never imports them.
 //
-// # Known limitations
+// # Initial configuration entry
 //
-// One confirmed SCXML divergence is deferred in v1.0, documented here so it is a
-// conscious gap rather than a silent one: entering a compound state via INITIAL
-// DESCENT that lands directly on a FINAL leaf does NOT currently raise that
-// compound's done / OnDone. The done settlement runs only on a transition commit, so
-// a DIRECT transition to the final leaf DOES raise the compound's done as expected,
-// but an initial descent (e.g. at Cast, or descending into a freshly-entered
-// compound whose initial child is itself final) lands on the final leaf without
-// settling the enclosing compound's completion. Avoid declaring a compound whose
-// initial child is final when you depend on its OnDone; reach the final leaf by a
-// transition. Closing this gap is a deferred post-1.0 item.
+// Entering the initial configuration at Cast runs the same entry semantics a
+// transition runs when entering those states: OnEntry actions and OnEntryAssign
+// reducers, `after` timer arming, invoke/actor starts, an enclosing compound's
+// done / OnDone when initial descent lands on a final leaf, and any enabled
+// eventless ("always") transition that settles the first stable configuration.
+// The resulting effects are buffered on the instance and read once, right after
+// Cast: InitialEffects returns the full initial-entry effect stream, and
+// StartEffects returns the invoke/actor start subset. A host absorbs them through
+// the same runner it uses for Fire's effects. This closes the prior gap where a
+// compound whose initial child is final did not raise that compound's done at
+// Cast; the initial descent now settles done along the active spine exactly as a
+// transition commit does.
 //
 // # Status
 //
