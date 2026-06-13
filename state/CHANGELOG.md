@@ -28,6 +28,13 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
   an active leaf.
 - A compound nested inside a parallel region now emits its done event and fires
   `OnDone` when its leaf reaches final.
+- Entering the initial configuration at Cast now runs full entry semantics —
+  `OnEntry` actions and `OnEntryAssign` reducers, `after` arming, invoke/actor
+  starts, eventless (`Always`) settling, and an enclosing compound's done /
+  `OnDone` when initial descent lands on a final leaf — instead of only
+  recomputing the invoke/actor starts. The effects are buffered and read once
+  after Cast via `InitialEffects` (full stream) and `StartEffects` (invoke/actor
+  subset).
 - A parallel state that completes inside an enclosing compound now cascades that
   compound's `OnDone` (and any guarded completion transition) up the spine, instead
   of silently dropping it; the parallel's own `OnDone` still fires exactly once.
@@ -112,9 +119,10 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 - Documented that `Instance` is not safe for concurrent use; that timer absolute
   deadlines are a host concern (`ResumeEffects` re-arms at the full declared delay
   while `durable` persists deadlines); the guard eval-error asymmetry (eventless
-  guards fail closed, event-driven guards fail loud); the v1.0 stability scope; and
-  the known limitation that entering a compound via initial descent onto a final
-  leaf does not raise that compound's done event.
+  guards fail closed, event-driven guards fail loud); and the v1.0 stability scope.
+  The initial configuration now runs full entry semantics at Cast, so entering a
+  compound via initial descent onto a final leaf raises that compound's done
+  event.
 - `Trace.PoliciesEvaluated` documented as reserved (always empty in v1.0).
 
 ### Tests
@@ -129,9 +137,6 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 
 ### Deferred to a future release (with reason)
 
-- Entering a compound via initial descent directly onto a final leaf does not raise
-  that compound's done event (documented known limitation; additively fixable, but
-  emission-changing, so deferred to an opt-in minor).
 - The transactional-effects fix is scoped to the main commit path; the region
   commit path retains partial-emit-on-error behavior at the freeze.
 - `verify.Finding.Reachable` polarity reshape (verify is advisory; additive

@@ -168,6 +168,96 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 	}
 }
 
+// settleInitial runs the entry semantics for the initial configuration at Cast,
+// mirroring commit's entry phase for the states entered when descending into
+// `current`. The initial configuration has no from/exit phase and no LCA cutoff,
+// so the entry set is the outermost-first ancestor chain of `current` followed by
+// its descent interior — exactly what commit enters when transitioning to
+// `current`. OnEntry actions run, OnEntryAssign reducers fold the context,
+// `after` timers arm, services and actors start, an enclosing compound whose
+// initial child is final settles its done/OnDone, and any enabled eventless
+// transition runs to completion. Effects are buffered on the instance; the
+// initial trace stays internal. On an action or assign failure the partial
+// effects and the error are buffered and the entity is left uncommitted, matching
+// commit's return-error-without-committing posture.
+func (i *Instance[S, E, C]) settleInitial(current S) {
+	m := i.machine
+
+	// Entry set: outermost-first ancestor chain (incl. current) then the descent
+	// interior. ancestors returns a shared innermost-first cache, so copy before
+	// reversing rather than mutating it.
+	chain := m.ancestors(current)
+	entries := make([]S, 0, len(chain))
+	for k := len(chain) - 1; k >= 0; k-- {
+		entries = append(entries, chain[k])
+	}
+	entries = append(entries, m.descentInterior(current)...)
+
+	tr := i.seedTrace("cast")
+	cur := i.entity
+	var effects []Effect
+
+	// Entry actions then entry assigns, outermost -> innermost, mirroring commit's
+	// loop: OnEntry runActions appends into effects first, then the error is
+	// checked; OnEntryAssign folds cur. The initial configuration has no event, so
+	// eventData is nil (applyAssigns tolerates a nil payload).
+	for _, s := range entries {
+		tr.recordEntry(m.label(s))
+		n, ok := m.resolveNode(s)
+		if !ok {
+			continue
+		}
+		eff, _, err := i.runActions(n.state.OnEntry, cur, &tr)
+		effects = append(effects, eff...)
+		if err != nil {
+			tr.Outcome = OutcomeEffectError
+			i.initialEffects = effects
+			i.initialErr = err
+			return
+		}
+		next, _, aErr := i.applyAssigns(n.state.OnEntryAssign, cur, nil, &tr)
+		if aErr != nil {
+			tr.Outcome = OutcomeAssignFailed
+			i.initialEffects = effects
+			i.initialErr = aErr
+			return
+		}
+		cur = next
+	}
+
+	// Delayed-transition arming for the initial states.
+	effects = append(effects, i.afterEffectsOnEntry(entries, &tr)...)
+
+	// Invoke/actor starts: buffered separately so StartEffects returns exactly the
+	// invoke+actor start effects, and folded into the full initial-effect slice.
+	var start []Effect
+	start = append(start, i.invokeEffectsOnEntry(entries, &tr)...)
+	start = append(start, i.actorEffectsOnEntry(entries, &tr)...)
+	i.initialStartEffects = start
+	effects = append(effects, start...)
+
+	// Initial->final done: descending onto a final leaf settles the enclosing
+	// compound's done/OnDone. For the single-spine initial configuration the
+	// entered final leaf is i.current (== config[0]).
+	doneEff, _, derr := i.settleDone(i.current, cur, &tr)
+	effects = append(effects, doneEff...)
+	if derr != nil {
+		tr.Outcome = OutcomeEffectError
+		i.initialEffects = effects
+		i.initialErr = derr
+		return
+	}
+
+	// Commit the folded context, then run to completion so an enabled eventless
+	// ("always") transition out of the initial configuration settles before the
+	// first external event.
+	i.entity = cur
+	res := FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+	res = i.runToCompletion(context.Background(), res)
+	i.initialEffects = res.Effects
+	i.initialErr = res.Err
+}
+
 // commitEventless dispatches one selected eventless ("always") transition. A
 // transition resident inside an active parallel region is routed through the
 // region commit path (applyRegionTransition), which advances only that region's
