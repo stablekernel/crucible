@@ -52,6 +52,15 @@
 // Fire cannot undo is a real-world side effect a host already applied from an effect
 // emitted by an earlier, successful step — those are outside the kernel's pure state.
 //
+// The rollback restores the context VALUE the kernel holds, not the pointee behind a
+// reference context. Under a value C this is total. Under a pointer or reference C
+// (Machine[S, E, *Order], or a struct holding maps/slices) a reducer that mutates the
+// pointee IN PLACE is not unwound — rollback restores the pointer header the kernel
+// captured, not the data it points at. Keeping in-place mutation out of a reducer
+// (reducers should return new values rather than write through a shared pointer) is
+// the host's responsibility, the same value-context discipline the rest of this
+// kernel assumes.
+//
 // # The definition IR is the spec
 //
 // The canonical machine is a serializable definition IR: pure data, lossless to
