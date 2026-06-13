@@ -228,13 +228,11 @@ func (i *Instance[S, E, C]) settleInitial(current S) {
 	// Delayed-transition arming for the initial states.
 	effects = append(effects, i.afterEffectsOnEntry(entries, &tr)...)
 
-	// Invoke/actor starts: buffered separately so StartEffects returns exactly the
-	// invoke+actor start effects, and folded into the full initial-effect slice.
-	var start []Effect
-	start = append(start, i.invokeEffectsOnEntry(entries, &tr)...)
-	start = append(start, i.actorEffectsOnEntry(entries, &tr)...)
-	i.initialStartEffects = start
-	effects = append(effects, start...)
+	// Invoke/actor starts fold into the full initial-effect slice. StartEffects
+	// recomputes the same set freshly over the live configuration, so no separate
+	// buffer is kept here.
+	effects = append(effects, i.invokeEffectsOnEntry(entries, &tr)...)
+	effects = append(effects, i.actorEffectsOnEntry(entries, &tr)...)
 
 	// Initial->final done: descending onto a final leaf settles the enclosing
 	// compound's done/OnDone. For the single-spine initial configuration the
