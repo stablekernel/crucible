@@ -123,6 +123,15 @@ func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S]
 	if res.Err != nil {
 		i.rollback(txn)
 		res.NewState = i.current
+		// Clear any effects accumulated before the failure. The single-spine commit
+		// path already returns Effects: nil on every failure, but the parallel path
+		// (fireParallel accumulates earlier regions' effects) and the run-to-completion
+		// loop (it appends a sub-step's effects before checking its error) can carry
+		// real effects of earlier, successfully-committed sub-steps. Dropping them here
+		// makes the no-effects-on-failure contract hold uniformly regardless of which
+		// path produced the partial effects, so a host replaying a failed Fire cannot
+		// double-apply them.
+		res.Effects = nil
 	}
 	return res
 }
@@ -131,7 +140,9 @@ func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S]
 // Fire can restore them, making a failed macrostep a no-op on the instance's
 // persisted internal state. It holds the configuration, current leaf, context,
 // recorded history maps, and the internal-event queue — every field a commit
-// writes before it can fail.
+// writes before it can fail. The configuration is aliased (the macrostep reassigns
+// i.config rather than mutating it in place); the history maps and queue are copied
+// only when non-empty (see beginTxn).
 type fireTxn[S comparable, E comparable, C any] struct {
 	current        S
 	config         []S
@@ -141,15 +152,27 @@ type fireTxn[S comparable, E comparable, C any] struct {
 	raised         []E
 }
 
-// beginTxn snapshots the instance's macrostep-mutable state before a Fire runs. The
-// configuration, history maps, and queue are copied (not aliased) so an in-place
-// mutation during the macrostep cannot corrupt the saved snapshot; the context and
-// current leaf are values. It allocates only the small per-macrostep snapshot and
-// never touches a clock or IO, so Fire stays pure.
+// beginTxn snapshots the instance's macrostep-mutable state before a Fire runs. It
+// restores only the instance's PERSISTED state; the transient FireResult.Effects
+// accumulated by a failed macrostep are cleared separately in fireCore.
+//
+// The configuration slice is ALIASED, not copied: the macrostep only ever REASSIGNS
+// i.config to a freshly-built slice (descendToLeaves, a history restore, replaceRegionLeaf,
+// or a literal) and never writes an element of the live backing array in place, so the
+// saved header still points at the pre-Fire leaves after any commit and a rollback that
+// restores it is exact. Aliasing avoids a per-Fire slice allocation on every Fire,
+// including the successful ones that never roll back.
+//
+// The history maps and the raised queue are copied only when NON-EMPTY (copyMap /
+// copyLeafMap / the append return nil for an empty input, allocating nothing). recordHistory
+// writes the live history maps in place, so a non-empty map must be copied to keep the
+// snapshot intact; the steady-state machine carries empty history and an empty queue, so
+// this costs no allocation on the hot path. The context and current leaf are values.
+// beginTxn never touches a clock or IO, so Fire stays pure.
 func (i *Instance[S, E, C]) beginTxn() fireTxn[S, E, C] {
 	return fireTxn[S, E, C]{
 		current:        i.current,
-		config:         append([]S(nil), i.config...),
+		config:         i.config,
 		entity:         i.entity,
 		historyShallow: copyMap(i.historyShallow),
 		historyDeep:    copyLeafMap(i.historyDeep),
@@ -158,9 +181,13 @@ func (i *Instance[S, E, C]) beginTxn() fireTxn[S, E, C] {
 }
 
 // rollback restores the instance to the state captured by beginTxn, discarding every
-// configuration, context, and history mutation a failed macrostep applied. Effects
-// are already suppressed on the failure path (the NTE contract), so after rollback
-// the instance is byte-for-byte identical to its pre-Fire state.
+// configuration, context, and history mutation a failed macrostep applied. It restores
+// only the instance's PERSISTED state; the transient FireResult.Effects accumulated
+// before the failure are cleared by fireCore right after this call (the single-spine
+// commit path returns no effects on failure, but the parallel and run-to-completion
+// paths can carry earlier sub-steps' effects, so that clear is what makes the
+// no-effects-on-failure contract global). After rollback the instance is byte-for-byte
+// identical to its pre-Fire state.
 func (i *Instance[S, E, C]) rollback(txn fireTxn[S, E, C]) {
 	i.current = txn.current
 	i.config = txn.config

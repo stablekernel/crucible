@@ -82,6 +82,14 @@ func TestFire_FailedEntryAction_RollsBackConfiguration(t *testing.T) {
 		t.Fatalf("context balance = %d after a failed Fire; want 1 (unchanged)", got)
 	}
 
+	// (c2) No effects on a failed Fire: the doc contract is absolute — a failed Fire
+	// returns no effects so a host replaying it cannot double-apply the ones that ran
+	// before the error. Snapshot() omits the transient FireResult.Effects, so this is
+	// the only assertion that catches an effect leak.
+	if len(res.Effects) != 0 {
+		t.Fatalf("Effects = %v on a failed Fire; want none (no partial effects emitted)", res.Effects)
+	}
+
 	// (d) Snapshot the post-failure instance: it must equal a snapshot of the
 	// never-Fired control, so nothing split was persisted.
 	gotSnap := inst.Snapshot()
@@ -125,14 +133,19 @@ func TestFire_FailedRegionEntry_RollsBackEarlierRegion(t *testing.T) {
 	boom := errors.New("region entry boom")
 	bump := func(in state.AssignCtx[txnCtx]) txnCtx { c := in.Entity; c.Balance += 10; return c }
 	fail := func(state.ActionCtx[txnCtx]) (state.Effect, error) { return nil, boom }
+	// emit produces a real effect on r1's transition so the earlier region contributes
+	// something to fireParallel's accumulated effects BEFORE r2's entry fails. Without
+	// it r1 emits no effect and the effects-empty assertion could never observe a leak.
+	emit := func(state.ActionCtx[txnCtx]) (state.Effect, error) { return "r1-fired", nil }
 
 	m := state.Forge[string, string, txnCtx]("txn-par").
 		Action("explode", fail).
+		Action("emit", emit).
 		Reducer("bump", bump).
 		SuperState("live").
 		Region("r1").
 		Initial("r1a").
-		SubState("r1a").On("go").GoTo("r1b").Assign("bump").
+		SubState("r1a").On("go").GoTo("r1b").Do("emit").Assign("bump").
 		SubState("r1b").
 		EndRegion().
 		Region("r2").
@@ -165,6 +178,15 @@ func TestFire_FailedRegionEntry_RollsBackEarlierRegion(t *testing.T) {
 	}
 	if got := inst.Entity().Balance; got != 1 {
 		t.Fatalf("context balance = %d after a failed parallel Fire; want 1 (r1 fold rolled back)", got)
+	}
+
+	// No effects on a failed parallel Fire: r1's earlier, already-committed region
+	// transition produced real effects that fireParallel accumulated before r2's entry
+	// failed. The contract is that a failed Fire emits NO effects, so a host cannot
+	// double-apply r1's effects on replay. Snapshot() omits transient FireResult.Effects,
+	// so this assertion is the only thing that catches the parallel/RTC leak.
+	if len(res.Effects) != 0 {
+		t.Fatalf("Effects = %v on a failed parallel Fire; want none (earlier region's effects must not leak)", res.Effects)
 	}
 
 	gotSnap := inst.Snapshot()
