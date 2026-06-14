@@ -98,11 +98,14 @@ stability label.
 
 | Module                | What it is                                                                       | Status       |
 | --------------------- | -------------------------------------------------------------------------------- | ------------ |
-| `state`               | Full-featured, domain-agnostic statechart engine. Stdlib-only, no IO.            | experimental |
-| `state/analysis`      | Static model-checking and path enumeration over a machine's IR.                  | experimental |
-| `state/evolution`     | Diffs two machine definitions and classifies the SemVer bump.                    | experimental |
-| `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | experimental |
-| `state/expr`          | Rich expression tier: CEL-backed guards type-checked against the context schema. | experimental |
+| `state`               | Full-featured, domain-agnostic statechart engine. Stdlib-only, no IO.            | v1.0.0 |
+| `state/analysis`      | Static model-checking and path enumeration over a machine's IR.                  | advisory |
+| `state/evolution`     | Diffs two machine definitions and classifies the SemVer bump.                    | advisory |
+| `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | advisory |
+| `state/verify`        | Decides behavioral properties of a machine and returns a witness event sequence. | advisory |
+| `state/expr`          | Rich expression tier: CEL-backed guards type-checked against the context schema. | stable contract (v0.1.0) |
+| `gen`                 | Eject codegen: turn a machine's IR into typed Go stub source and a registry wiring. | experimental |
+| `cmd/crucible`        | Headless IR CLI: lint, render, diff, validate, and eject a machine's serialized IR. | experimental |
 | `telemetry`           | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.        | experimental |
 | `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
 | `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
@@ -127,16 +130,24 @@ in-memory `source/memsource` test source, each experimental.
 
 ## Status
 
-Early and evolving. `state` is a complete, embeddable statechart engine, covering
-hierarchical, parallel, and final states, history, guard combinators, delayed
-transitions, invoked services, an actor model, snapshots, and JSON
-(de)serialization, backed by its `analysis`, `evolution`, and `conformance`
-packages. `telemetry`, `sink`, and `source` (with all their adapters, codecs, and
+`state` is released at **v1.0.0**: a complete, embeddable statechart engine
+covering hierarchical, parallel, and final states, history, guard combinators,
+delayed transitions, invoked services, an actor model, snapshots, and JSON
+(de)serialization. Its public contract is frozen under v1 SemVer. The
+`analysis`, `evolution`, `conformance`, and `verify` subpackages ship inside
+v1.0 but are **advisory**: they produce diagnostics, and their surfaces sit
+outside the frozen contract and may change in a minor release. `state/expr` is a
+separate module pinned at v0.1.0 whose expression *semantics* are a committed,
+stable contract even though the module version is pre-1.0.
+
+The remaining modules are still evolving and may change before they reach v1:
+`telemetry`, `sink`, and `source` (with all their adapters, codecs, and
 middleware) are released and documented, as are the host-side runtimes over the
 kernel: `durable` (durable execution), `cluster` (distribution and live
 migration), `transport` (the gRPC network transport for cluster), and `wasm`
-(polyglot behaviors). `broker` is planned. Treat every API as experimental until
-it reaches v1.
+(polyglot behaviors). The IR tools `gen` (eject codegen) and `cmd/crucible` (the
+IR CLI) ship unversioned for now, and `broker` is planned. Treat those modules as
+experimental until each reaches its own v1.
 
 ## Roadmap
 
@@ -162,12 +173,16 @@ and forcing nothing third-party on the consumer:
 
 A small set of tools works the IR directly:
 
+- [x] **IR CLI** (`cmd/crucible`): headless IR tooling for CI. Lint reachability and
+  nondeterminism, render diagrams, diff and validate, and classify version diffs
+  straight from a machine's serialized IR, no behavior bound.
+- [x] **Eject codegen** (`gen`): turn a machine's IR into typed Go stub source. Each
+  referenced behavior becomes a panic-bodied stub typed to the exact engine signature,
+  plus a `Provide` function that wires them against the registry, so the host fills in
+  bodies against a contract the compiler already checks.
 - [ ] **Visual editor** _(planned)_: a browser workbench over the IR. Author, simulate,
   and inspect machines, with reachability and version-diff overlays from the existing
   `analysis` and `evolution` packages.
-- [ ] **IR CLI** _(exploring)_: headless IR tooling for CI. Lint reachability and
-  nondeterminism, render diagrams, and classify version diffs straight from a machine's
-  IR.
 
 Durable state and event persistence is tracked separately with the `durable`
 runtime, not here.
