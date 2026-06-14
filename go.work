@@ -16,6 +16,7 @@ use (
 	./e2e
 	./examples/dispatch
 	./examples/fooddelivery
+	./gen
 	./magefiles
 	./sink
 	./sink/bridge
