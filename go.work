@@ -12,6 +12,7 @@ go 1.25.11
 // source modules join the workspace.
 use (
 	./cluster
+	./cmd/crucible
 	./durable
 	./e2e
 	./examples/dispatch
