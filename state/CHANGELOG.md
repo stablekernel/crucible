@@ -106,6 +106,11 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 
 ### Added
 
+- `ForgeFor[C]` convenience constructor: the string-state, string-event form of
+  `Forge`, inferring only the context type `C`. It forwards to
+  `Forge[string, string, C]` and is behaviorally identical, so string-keyed machines
+  no longer spell the redundant `Forge[string, string, C]`. Reach for `Forge[S, E, C]`
+  directly when the state or event identifiers are typed (for example enum) values.
 - Typed errors `ActionPanicError`, `RegionEscapeError`, `HistoryCrossRegionError`,
   and `NonQuiescentActorError`; `Quench` now rejects a region-escaping transition
   target and a cross-region history target at build time.
