@@ -167,7 +167,12 @@ func TestEject_CompilesAndWires(t *testing.T) {
 		t.Fatalf("Eject: %v", err)
 	}
 
-	const stateAbs = "/Users/joshua.temple/go/src/github.com/stablekernel/crucible/.worktrees/gen-eject/state"
+	// Resolve the sibling state module relative to this package so the proof
+	// works from any checkout; the build runs with cwd at the gen package dir.
+	stateAbs, err := filepath.Abs("../state")
+	if err != nil {
+		t.Fatalf("resolve state module path: %v", err)
+	}
 
 	tmp := t.TempDir()
 	gomod := "module genout\n\ngo 1.25.11\n\nrequire github.com/stablekernel/crucible/state v0.0.0\n\nreplace github.com/stablekernel/crucible/state => " + stateAbs + "\n"
