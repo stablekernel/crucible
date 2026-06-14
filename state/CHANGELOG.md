@@ -9,100 +9,15 @@ A machine definition is treated as a schema: see the
 counts as an additive (minor) versus breaking (major) change. Use the
 `state/evolution` package to classify a machine change and decide the bump.
 
-## [Unreleased] — v1.0.0 release candidate
+## [1.0.0] — 2026-06-13
 
-Freeze-ready, pending human sign-off. This release candidate resolves the v1.0
-freeze-readiness gap analysis: the parallel-region commit path now matches the
-documented semantics, the serialized IR round-trips losslessly, and the frozen
-public surface is locked. It is intentionally **not tagged**; the data model,
-serialized IR, context model, effect envelope, and emission-ordering contract are
-ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
-`verify` subpackages ship as advisory (not part of the frozen contract).
-
-### Fixed
-
-- `Fire` now honors context cancellation at microstep boundaries. It checks the
-  context before the triggering transition and between every run-to-completion
-  microstep — the same granularity `WaitFor` polls at — but never mid-microstep, so
-  a single in-flight cascade always settles before the next boundary check. A context
-  that is canceled or past its deadline at a boundary aborts the macrostep and
-  surfaces `context.Canceled` / `context.DeadlineExceeded` on `FireResult.Err`
-  (matchable with `errors.Is`). The abort routes through the same transactional
-  rollback as a failed `Fire`, so a canceled `Fire` is a clean no-op: the instance is
-  left at its pre-Fire configuration and context, and `FireResult.Effects` is nil.
-  Previously a canceled or expired context still ran the full macrostep.
-- A failed `Fire` is now fully transactional on the instance's internal state: when
-  an action or assign errors or panics partway through a macrostep, the active
-  configuration, current leaf, context, and recorded history all roll back to their
-  pre-Fire values, `FireResult.NewState` reports the original state rather than the
-  abandoned target, and a snapshot taken afterward is identical to one never Fired.
-  This extends the existing effect-emission transactionality to the configuration —
-  previously a failed `Fire` left the configuration half-advanced. The successful
-  path is unchanged: the configuration still advances in place during the macrostep
-  so entry actions, the done cascade, and the run-to-completion loop observe it. A
-  partial parallel-region commit (an earlier region committing before a later region
-  fails) rolls back with the rest of the macrostep.
-- A `Raise` declared on a region-internal transition is now delivered instead of
-  silently dropped (kernel parallel-region commit path).
-- A region-internal transition targeting a same-region history pseudostate now
-  resolves history correctly instead of leaving the pseudostate permanently stuck as
-  an active leaf.
-- A compound nested inside a parallel region now emits its done event and fires
-  `OnDone` when its leaf reaches final.
-- Entering the initial configuration at Cast now runs full entry semantics —
-  `OnEntry` actions and `OnEntryAssign` reducers, `after` arming, invoke/actor
-  starts, eventless (`Always`) settling, and an enclosing compound's done /
-  `OnDone` when initial descent lands on a final leaf — instead of only
-  recomputing the invoke/actor starts. The effects are buffered and read once
-  after Cast via `InitialEffects` (full stream) and `StartEffects` (invoke/actor
-  subset).
-- A parallel state that completes inside an enclosing compound now cascades that
-  compound's `OnDone` (and any guarded completion transition) up the spine, instead
-  of silently dropping it; the parallel's own `OnDone` still fires exactly once.
-- Region transition and entry actions now observe the threaded, exit-assign-folded
-  context, consistent with the main commit path.
-- Eventless (`Always`) transitions now fire in every active parallel region and no
-  longer collapse a sibling region's configuration.
-- Exiting a parallel state now runs every active region leaf's `OnExit` actions
-  innermost-first, in declaration order; an event handled only by a sibling region
-  of an outer parallel is now delivered through nested parallels correctly.
-- A panicking host action is recovered into a typed `ActionPanicError` instead of
-  crashing `Fire`.
-- An event matched by a guard-failed candidate inside a region now bubbles to the
-  parallel-state-level handler instead of causing the fire to fail silently.
-- The raised-event queue is reset when a macrostep errors, so a queued event no
-  longer leaks into the next `Fire`.
-- Effects are emitted only on a fully successful `Fire`; a failed fire emits no
-  effects (transactional effect emission on the main commit path).
-- `Snapshot`/`Restore` preserves bounded-history (`WithHistory(n)`) retention
-  instead of reverting to unbounded.
-- `SnapshotActors` refuses a non-quiesced actor tree with a typed
-  `NonQuiescentActorError` instead of silently dropping queued messages.
-- `Trace.AssignsApplied` is aggregated across all microsteps of a macrostep instead
-  of reporting only the triggering microstep's assigns.
-- `Region`, `Invocation`, and `IOSpec` IR nodes now preserve unknown JSON fields and
-  `Meta` losslessly, making the lossless round-trip guarantee true for every
-  IR-reachable node type.
-- `GuardPanicError` and `AssignPanicError` now `Unwrap` to the recovered error, and
-  `SnapshotError` exposes its cause, so `errors.As`/`errors.Is` can reach a wrapped
-  sentinel through any of them.
-- `SchemaOf` returns an honest `SchemaAny` for interface, func, chan, and complex
-  types instead of coercing them to `SchemaString`.
-- Builder cursor consumers (`When`, `Do`, `Assign`, `Raise`, `GoTo`, and friends)
-  now panic with an actionable construction-time message when no transition is open,
-  instead of silently dropping the call.
-- `analysis` honors wildcard (`OnAny`) edges and excludes forbidden (`Forbid` /
-  `ForbidAny`) edges from reachability and dead-end analysis, removing false
-  unreachable and dead-end findings.
-- `evolution` now detects transition order/priority, guard-operator structure,
-  initial-child, history, context-schema, and eventless-edge changes, and classifies
-  any unmodeled structural difference as breaking (fail-safe), closing silent
-  under-reporting of behavior-changing edits.
-- `conformance` compares effects order-sensitively and payload-aware, and captures
-  trace and final context, so it no longer passes a reordering or wrong-payload
-  regression.
-- The pointer-context determinism diagnostic is advisory and is not rejected under
-  `Quench(Strict())`; pointer context remains a supported escape hatch.
+The first stable release. It freezes the data model, the serialized IR, the
+context model, the effect envelope, and the emission-ordering contract: from
+1.0.0 onward, new capabilities arrive as additive packages, modules, and options
+rather than breaking changes. The parallel-region commit path matches the
+documented semantics, the serialized IR round-trips losslessly, and the public
+surface is locked. The `analysis`, `evolution`, `conformance`, and `verify`
+subpackages ship as advisory and are not part of the frozen contract.
 
 ### Added
 
@@ -133,96 +48,6 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
   `Describe(...).Examples(...)` builder methods, and per-parameter examples ride
   `ParamSpec.Examples` via `ParamSpec`. All three are additive and `omitempty`: a
   descriptor or parameter that declares none serializes byte-identically to before.
-
-### Changed
-
-- `WaitMode`, `HistoryType`, and `ActorKind` integer wire values are documented as
-  frozen and append-only; `JournalRandom` is specified to ride
-  `JournalEntry.Payload`.
-
-### Documentation
-
-- Stability banners: `analysis`, `evolution`, `conformance`, `verify`, and
-  `verify/symbolic` are documented as advisory (not part of the frozen contract);
-  `expr` documents its guard-expression semantics and deterministic evaluation
-  environment as part of the v1.0 contract.
-- `verify` docs corrected to state that bounded simulation enumerates
-  configurations (not traces), the covering suite is a structural guarantee, and
-  only the holding verdict is exact.
-- Documented that `Instance` is not safe for concurrent use; that timer absolute
-  deadlines are a host concern (`ResumeEffects` re-arms at the full declared delay
-  while `durable` persists deadlines); the guard eval-error asymmetry (eventless
-  guards fail closed, event-driven guards fail loud); and the v1.0 stability scope.
-  The initial configuration now runs full entry semantics at Cast, so entering a
-  compound via initial descent onto a final leaf raises that compound's done
-  event.
-- `Trace.PoliciesEvaluated` documented as reserved (always empty in v1.0).
-
-### Tests
-
-- Exhaustive symbolic op-table regression tests over every guard operator (the only
-  unsoundness-capable code path).
-- Seeded property tests for snapshot resume-equivalence and parallel-region
-  determinism.
-- Regression tests porting the parallel-region kernel probes: Raise-in-region,
-  history-into-region, interior-compound done, sibling-region eventless and exit,
-  nested-parallel delivery, and a simultaneous-region-completion pin.
-
-### Deferred to a future release (with reason)
-
-- The transactional-effects fix is scoped to the main commit path; the region
-  commit path retains partial-emit-on-error behavior at the freeze.
-- `verify.Finding.Reachable` polarity reshape (verify is advisory; additive
-  kind-specific accessors are provided instead of a breaking field change).
-- `conformance` `Assertion.Expected`/`Event` payload reshape and auto-derived effect
-  assertions in generated goldens (advisory; needs a host entity/codec, which would
-  be a breaking change).
-- Snapshot-carried absolute timer deadlines (`Pending.TimerDeadlines`) — documented
-  as a host concern in v1.0; additive in a later release.
-- Post-v1.0 performance items: lazy hot-path trace-string construction, ref-slice
-  copy-on-write, trace-history bounding, and random-IR fixpoint and
-  eventless-termination fuzzing.
-
-### Deferred additive API surface (post-1.0, non-breaking)
-
-These are deliberate v1.0 boundaries, not oversights. Each lands later as a purely
-additive change — a new builder method, a new option on an existing variadic tail,
-or a new optional IR field — so adopting it never breaks a v1 caller. The freeze
-locks today's surface precisely so these can be added without a major bump.
-
-- Payload-carrying `Raise`: the raised internal-event queue is runtime-internal
-  today, so a transition raises an event without data. A future builder method
-  carries a payload, backed by an additive optional field on the IR transition;
-  the existing `Raise []E` slice is unchanged.
-- Multi-target transitions: a single transition targets one state via `To`. A
-  future `.ToAll(...)` builder, backed by an optional `Targets` IR field, expresses
-  a fan-out; `To` keeps its current single-target meaning.
-- `context.Context` on `Verify` / `PlanPath` / `Cast` / `Restore` and the snapshot
-  codecs: these take no `context.Context` at v1. A future `WithContext` option on
-  each existing option tail threads cancellation and deadlines without changing a
-  signature. (`RestoreActors` already takes a `context.Context`.)
-- Relaxing `SnapshotActors`' non-quiesced refusal: it refuses to snapshot a
-  non-quiesced actor system by design. A future `SnapshotActorsOption` lets a host
-  opt into a defined non-quiesced capture; the strict refusal stays the default.
-- Finer Inspector cadence: the Inspector fires once per macrostep — that
-  once-per-macrostep cadence is the documented v1 contract. A future additive
-  `InspectKind` exposes per-microstep events for callers that want them; existing
-  inspectors keep their macrostep cadence.
-- A metrics `Meter` seam: there is no metrics hook at v1. A future `WithMeter`
-  option attaches a meter through the existing option tail, alongside the structured
-  logger and inspector seams.
-
-## [1.0.0]
-
-The first stable release. The 0.2.0 to 1.0.0 step finalizes the breaking changes
-listed under Changed below, after which the data model and contracts are fixed: a
-machine definition, its serialized IR, the context model, the effect envelope, and
-the emission-ordering contract are frozen so that, from 1.0.0 onward, future
-capabilities arrive as additive packages, modules, and options rather than breaking
-changes. See the "Performance baseline (v1.0.0)" note at the end of this section for
-the representative hot-path numbers.
-
-### Added
 
 - Versioned IR envelope. A definition's serialized form now carries an explicit
   `schemaVersion` (stamped by `ToJSON`, currently `"1.0"` via
@@ -616,6 +441,10 @@ the representative hot-path numbers.
 
 ### Changed
 
+- `WaitMode`, `HistoryType`, and `ActorKind` integer wire values are documented as
+  frozen and append-only; `JournalRandom` is specified to ride
+  `JournalEntry.Payload`.
+
 - **BREAKING: context is now value-semantic; actions no longer mutate context.**
   The context model is frozen: a context value `C` flows through the step as data,
   guards and actions observe it through a read-only projection, and the *only*
@@ -670,16 +499,20 @@ the representative hot-path numbers.
   all struct types with no sentinel vars. `ErrInvalidTransition`, `ErrGuardFailed`,
   `ErrGuardPanic`, `ErrAssignPanic`, `ErrPolicyDenied`, `ErrUndeclaredState`,
   `ErrUnboundRef`, `ErrActionFailed`, `ErrMicrostepOverflow`, `ErrNoPath`,
-  `ErrNoInitialState`, `ErrUnknownBuiltin`, `ErrUnboundActor`, `ErrUnsupportedSchema`,
-  `ErrUnknownEffectKind`, and `MultiRegionErr` become `InvalidTransitionError`,
+  `ErrNoInitialState`, `ErrUnknownBuiltin`, `ErrUnboundActor`, `ErrActorPanic`,
+  `ErrUnsupportedSchema`, `ErrUnknownEffectKind`, and `MultiRegionErr` become
+  `InvalidTransitionError`,
   `GuardFailedError`, `GuardPanicError`, `AssignPanicError`, `PolicyDeniedError`,
   `UndeclaredStateError`, `UnboundRefError`, `ActionFailedError`,
   `MicrostepOverflowError`, `NoPathError`, `NoInitialStateError`,
-  `UnknownBuiltinError`, `UnboundActorError`, `UnsupportedSchemaError`,
+  `UnknownBuiltinError`, `UnboundActorError`, `ActorPanicError`,
+  `UnsupportedSchemaError`,
   `UnknownEffectKindError`, and `MultiRegionError`, matching the already-correct
   `WaitTimeoutError`, `SnapshotError`, `SnapshotVersionError`, and `VerifyError`.
-  Behavior and fields are unchanged; update the type name at each `errors.As`
-  target, type switch, and struct literal.
+  `ActorPanicError` also gains an `Unwrap()` returning the recovered panic value,
+  so `errors.As`/`errors.Is` reach the underlying cause. Behavior and fields are
+  otherwise unchanged; update the type name at each `errors.As` target, type
+  switch, and struct literal.
 - The determinism and ordering contract is now explicit and frozen: emission
   order is exit → transition → entry across the cascade, declaration order within
   a set, fixed parallel-region order, and the run-to-completion interleave for
@@ -687,6 +520,91 @@ the representative hot-path numbers.
   journal or replay built on top stays stable.
 
 ### Fixed
+
+- `Fire` now honors context cancellation at microstep boundaries. It checks the
+  context before the triggering transition and between every run-to-completion
+  microstep — the same granularity `WaitFor` polls at — but never mid-microstep, so
+  a single in-flight cascade always settles before the next boundary check. A context
+  that is canceled or past its deadline at a boundary aborts the macrostep and
+  surfaces `context.Canceled` / `context.DeadlineExceeded` on `FireResult.Err`
+  (matchable with `errors.Is`). The abort routes through the same transactional
+  rollback as a failed `Fire`, so a canceled `Fire` is a clean no-op: the instance is
+  left at its pre-Fire configuration and context, and `FireResult.Effects` is nil.
+  Previously a canceled or expired context still ran the full macrostep.
+- A failed `Fire` is now fully transactional on the instance's internal state: when
+  an action or assign errors or panics partway through a macrostep, the active
+  configuration, current leaf, context, and recorded history all roll back to their
+  pre-Fire values, `FireResult.NewState` reports the original state rather than the
+  abandoned target, and a snapshot taken afterward is identical to one never Fired.
+  This extends the existing effect-emission transactionality to the configuration —
+  previously a failed `Fire` left the configuration half-advanced. The successful
+  path is unchanged: the configuration still advances in place during the macrostep
+  so entry actions, the done cascade, and the run-to-completion loop observe it. A
+  partial parallel-region commit (an earlier region committing before a later region
+  fails) rolls back with the rest of the macrostep.
+- A `Raise` declared on a region-internal transition is now delivered instead of
+  silently dropped (kernel parallel-region commit path).
+- A region-internal transition targeting a same-region history pseudostate now
+  resolves history correctly instead of leaving the pseudostate permanently stuck as
+  an active leaf.
+- A compound nested inside a parallel region now emits its done event and fires
+  `OnDone` when its leaf reaches final.
+- Entering the initial configuration at Cast now runs full entry semantics —
+  `OnEntry` actions and `OnEntryAssign` reducers, `after` arming, invoke/actor
+  starts, eventless (`Always`) settling, and an enclosing compound's done /
+  `OnDone` when initial descent lands on a final leaf — instead of only
+  recomputing the invoke/actor starts. The effects are buffered and read once
+  after Cast via `InitialEffects` (full stream) and `StartEffects` (invoke/actor
+  subset), and `InitialErr()` surfaces any error raised while entering the initial
+  configuration so a host can detect an initial-entry failure immediately after
+  Cast.
+- A parallel state that completes inside an enclosing compound now cascades that
+  compound's `OnDone` (and any guarded completion transition) up the spine, instead
+  of silently dropping it; the parallel's own `OnDone` still fires exactly once.
+- Region transition and entry actions now observe the threaded, exit-assign-folded
+  context, consistent with the main commit path.
+- Eventless (`Always`) transitions now fire in every active parallel region and no
+  longer collapse a sibling region's configuration.
+- Exiting a parallel state now runs every active region leaf's `OnExit` actions
+  innermost-first, in declaration order; an event handled only by a sibling region
+  of an outer parallel is now delivered through nested parallels correctly.
+- A panicking host action is recovered into a typed `ActionPanicError` instead of
+  crashing `Fire`.
+- An event matched by a guard-failed candidate inside a region now bubbles to the
+  parallel-state-level handler instead of causing the fire to fail silently.
+- The raised-event queue is reset when a macrostep errors, so a queued event no
+  longer leaks into the next `Fire`.
+- Effects are emitted only on a fully successful `Fire`; a failed fire emits no
+  effects (transactional effect emission on the main commit path).
+- `Snapshot`/`Restore` preserves bounded-history (`WithHistory(n)`) retention
+  instead of reverting to unbounded.
+- `SnapshotActors` refuses a non-quiesced actor tree with a typed
+  `NonQuiescentActorError` instead of silently dropping queued messages.
+- `Trace.AssignsApplied` is aggregated across all microsteps of a macrostep instead
+  of reporting only the triggering microstep's assigns.
+- `Region`, `Invocation`, and `IOSpec` IR nodes now preserve unknown JSON fields and
+  `Meta` losslessly, making the lossless round-trip guarantee true for every
+  IR-reachable node type.
+- `GuardPanicError` and `AssignPanicError` now `Unwrap` to the recovered error, and
+  `SnapshotError` exposes its cause, so `errors.As`/`errors.Is` can reach a wrapped
+  sentinel through any of them.
+- `SchemaOf` returns an honest `SchemaAny` for interface, func, chan, and complex
+  types instead of coercing them to `SchemaString`.
+- Builder cursor consumers (`When`, `Do`, `Assign`, `Raise`, `GoTo`, and friends)
+  now panic with an actionable construction-time message when no transition is open,
+  instead of silently dropping the call.
+- `analysis` honors wildcard (`OnAny`) edges and excludes forbidden (`Forbid` /
+  `ForbidAny`) edges from reachability and dead-end analysis, removing false
+  unreachable and dead-end findings.
+- `evolution` now detects transition order/priority, guard-operator structure,
+  initial-child, history, context-schema, and eventless-edge changes, and classifies
+  any unmodeled structural difference as breaking (fail-safe), closing silent
+  under-reporting of behavior-changing edits.
+- `conformance` compares effects order-sensitively and payload-aware, and captures
+  trace and final context, so it no longer passes a reordering or wrong-payload
+  regression.
+- The pointer-context determinism diagnostic is advisory and is not rejected under
+  `Quench(Strict())`; pointer context remains a supported escape hatch.
 
 - `Cast` returns the typed `*InvalidTransitionError` consistently for an event that
   matches no transition, including inside parallel regions, so a caller can
@@ -701,6 +619,37 @@ the representative hot-path numbers.
   the normal entry/exit cascade, for every state entered within a region
   (including nested compounds). `Fire` stays pure: the fix emits effect data, it
   does not run timers/services/actors in the kernel.
+
+### Documentation
+
+- Stability banners: `analysis`, `evolution`, `conformance`, `verify`, and
+  `verify/symbolic` are documented as advisory (not part of the frozen contract);
+  `expr` documents its guard-expression semantics and deterministic evaluation
+  environment as part of the v1.0 contract.
+- `verify` docs corrected to state that bounded simulation enumerates
+  configurations (not traces), the covering suite is a structural guarantee, and
+  only the holding verdict is exact.
+- Documented that `Instance` is not safe for concurrent use; that timer absolute
+  deadlines are a host concern (`ResumeEffects` re-arms at the full declared delay
+  while `durable` persists deadlines); the guard eval-error asymmetry (eventless
+  guards fail closed, event-driven guards fail loud); and the v1.0 stability scope.
+  The initial configuration now runs full entry semantics at Cast, so entering a
+  compound via initial descent onto a final leaf raises that compound's done
+  event.
+- `Trace.PoliciesEvaluated` documented as reserved (always empty in v1.0).
+
+### Tests
+
+- Exhaustive symbolic op-table regression tests over every guard operator (the only
+  unsoundness-capable code path).
+- Seeded property tests for snapshot resume-equivalence and parallel-region
+  determinism.
+- Regression tests porting the parallel-region kernel probes: Raise-in-region,
+  history-into-region, interior-compound done, sibling-region eventless and exit,
+  nested-parallel delivery, and a simultaneous-region-completion pin.
+- A wire/API freeze guard that pins the serialized JSON shapes of the v1 IR and
+  effect envelopes and the exported public API signatures, so an accidental change
+  to a frozen wire form or surface fails the build.
 
 ### Performance baseline (v1.0.0)
 
@@ -719,6 +668,50 @@ fresh trace and effect set as data.
 | `Cascade` | ~1,221 | 1,385 | 43 | entry/exit effect cascade |
 | `SnapshotRestore` | ~28,550 | 15,108 | 121 | snapshot capture + restore |
 | `E2E_ConnectionLifecycle` | ~46,187 | 59,856 | 657 | end-to-end exemplar over the wired host runtime |
+
+### Deferred to a future release (with reason)
+
+- The transactional-effects fix is scoped to the main commit path; the region
+  commit path retains partial-emit-on-error behavior at the freeze.
+- `verify.Finding.Reachable` polarity reshape (verify is advisory; additive
+  kind-specific accessors are provided instead of a breaking field change).
+- `conformance` `Assertion.Expected`/`Event` payload reshape and auto-derived effect
+  assertions in generated goldens (advisory; needs a host entity/codec, which would
+  be a breaking change).
+- Snapshot-carried absolute timer deadlines (`Pending.TimerDeadlines`) — documented
+  as a host concern in v1.0; additive in a later release.
+- Post-v1.0 performance items: lazy hot-path trace-string construction, ref-slice
+  copy-on-write, trace-history bounding, and random-IR fixpoint and
+  eventless-termination fuzzing.
+
+### Deferred additive API surface (post-1.0, non-breaking)
+
+These are deliberate v1.0 boundaries, not oversights. Each lands later as a purely
+additive change — a new builder method, a new option on an existing variadic tail,
+or a new optional IR field — so adopting it never breaks a v1 caller. The freeze
+locks today's surface precisely so these can be added without a major bump.
+
+- Payload-carrying `Raise`: the raised internal-event queue is runtime-internal
+  today, so a transition raises an event without data. A future builder method
+  carries a payload, backed by an additive optional field on the IR transition;
+  the existing `Raise []E` slice is unchanged.
+- Multi-target transitions: a single transition targets one state via `To`. A
+  future `.ToAll(...)` builder, backed by an optional `Targets` IR field, expresses
+  a fan-out; `To` keeps its current single-target meaning.
+- `context.Context` on `Verify` / `PlanPath` / `Cast` / `Restore` and the snapshot
+  codecs: these take no `context.Context` at v1. A future `WithContext` option on
+  each existing option tail threads cancellation and deadlines without changing a
+  signature. (`RestoreActors` already takes a `context.Context`.)
+- Relaxing `SnapshotActors`' non-quiesced refusal: it refuses to snapshot a
+  non-quiesced actor system by design. A future `SnapshotActorsOption` lets a host
+  opt into a defined non-quiesced capture; the strict refusal stays the default.
+- Finer Inspector cadence: the Inspector fires once per macrostep — that
+  once-per-macrostep cadence is the documented v1 contract. A future additive
+  `InspectKind` exposes per-microstep events for callers that want them; existing
+  inspectors keep their macrostep cadence.
+- A metrics `Meter` seam: there is no metrics hook at v1. A future `WithMeter`
+  option attaches a meter through the existing option tail, alongside the structured
+  logger and inspector seams.
 
 ## [0.2.0] - 2026-05-30
 
@@ -1008,6 +1001,6 @@ Initial release of the pure state-machine kernel.
   clock/ID seams for determinism.
 - Reusable conformance harness with golden scenarios.
 
-[1.0.0]: https://github.com/stablekernel/crucible/compare/state/v0.2.0...state/v1.0.0
+[1.0.0]: https://github.com/stablekernel/crucible/compare/state/v0.3.0...state/v1.0.0
 [0.2.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.2.0
 [0.1.0]: https://github.com/stablekernel/crucible/releases/tag/state/v0.1.0
