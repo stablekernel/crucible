@@ -18,7 +18,7 @@ dependency-free, and `expr` depends on `state`, never the reverse.
   `Guard[S, C]` directly when the machine's state identifiers are typed (for example
   enum) values.
 
-## [0.1.0]
+## [0.1.0] - 2026-06-13
 
 First release of the rich guard tier. It compiles guard logic written in CEL
 (the Common Expression Language) against a machine's `ContextSchema`, type-checks
