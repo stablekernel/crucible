@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/sink/redis
 
 go 1.25.11
-
+toolchain go1.26.4
 require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/stablekernel/crucible/sink v0.0.0

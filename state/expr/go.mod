@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/state/expr
 
 go 1.25.11
-
+toolchain go1.26.4
 replace github.com/stablekernel/crucible/state => ../
 
 require (

@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/sink/sql
 
 go 1.25.11
-
+toolchain go1.26.4
 require (
 	github.com/stablekernel/crucible/sink v0.0.0
 	modernc.org/sqlite v1.51.0

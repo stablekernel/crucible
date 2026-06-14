@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/sink/sqs
 
 go 1.25.11
-
+toolchain go1.26.4
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.9
 	github.com/aws/aws-sdk-go-v2/config v1.32.20
