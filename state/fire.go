@@ -121,9 +121,13 @@ func (i *Instance[S, E, C]) fireCore(ctx context.Context, event E) FireResult[S]
 	// The cancellation cause is surfaced raw on res.Err and flows through the same
 	// transactional-rollback branch as a failed Fire below, so the instance is left
 	// at its pre-Fire configuration with no leaked effects.
-	res := FireResult[S]{NewState: i.current, Trace: i.seedTrace(fmt.Sprint(event))}
+	//
+	// The seed Trace (with its fmt.Sprint(event) and label lookups) is built only on
+	// this early-return path: on the normal path fireOnce produces and returns its own
+	// trace, so seeding one here just to discard it would tax every successful Fire.
+	var res FireResult[S]
 	if err := ctx.Err(); err != nil {
-		res.Err = err
+		res = FireResult[S]{NewState: i.current, Err: err, Trace: i.seedTrace(fmt.Sprint(event))}
 	} else {
 		res = i.fireOnce(ctx, event)
 		if res.Err == nil {
@@ -173,21 +177,33 @@ type fireTxn[S comparable, E comparable, C any] struct {
 // restores it is exact. Aliasing avoids a per-Fire slice allocation on every Fire,
 // including the successful ones that never roll back.
 //
-// The history maps and the raised queue are copied only when NON-EMPTY (copyMap /
-// copyLeafMap / the append return nil for an empty input, allocating nothing). recordHistory
-// writes the live history maps in place, so a non-empty map must be copied to keep the
-// snapshot intact; the steady-state machine carries empty history and an empty queue, so
-// this costs no allocation on the hot path. The context and current leaf are values.
-// beginTxn never touches a clock or IO, so Fire stays pure.
+// The history maps and the raised queue are copied only when NON-EMPTY. The empty
+// checks are inlined here rather than delegated to copyMap/copyLeafMap so the common
+// hot path (a steady-state machine carries empty history and an empty queue) makes no
+// copy-helper call at all — those helpers hold loops and do not inline, so calling
+// them every Fire just to have them return nil taxes every successful Fire. The result
+// is identical: copyMap/copyLeafMap return nil for an empty input and append onto a nil
+// slice from an empty source allocates nothing, so a snapshot built here is byte-for-byte
+// what the unconditional form produced. recordHistory writes the live history maps in
+// place, so a non-empty map must still be copied to keep the snapshot intact. The
+// configuration slice is the only field left aliased (see above); the context and current
+// leaf are values. beginTxn never touches a clock or IO, so Fire stays pure.
 func (i *Instance[S, E, C]) beginTxn() fireTxn[S, E, C] {
-	return fireTxn[S, E, C]{
-		current:        i.current,
-		config:         i.config,
-		entity:         i.entity,
-		historyShallow: copyMap(i.historyShallow),
-		historyDeep:    copyLeafMap(i.historyDeep),
-		raised:         append([]E(nil), i.raised...),
+	txn := fireTxn[S, E, C]{
+		current: i.current,
+		config:  i.config,
+		entity:  i.entity,
 	}
+	if len(i.historyShallow) > 0 {
+		txn.historyShallow = copyMap(i.historyShallow)
+	}
+	if len(i.historyDeep) > 0 {
+		txn.historyDeep = copyLeafMap(i.historyDeep)
+	}
+	if len(i.raised) > 0 {
+		txn.raised = append([]E(nil), i.raised...)
+	}
+	return txn
 }
 
 // rollback restores the instance to the state captured by beginTxn, discarding every
