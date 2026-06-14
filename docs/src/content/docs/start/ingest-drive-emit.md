@@ -31,26 +31,19 @@ A toy turnstile that emits an `Opened` effect when it unlocks. The effect is pur
 data; the machine performs no IO.
 
 ```go
-type Gate string  // S
-type Signal string // E
 type Turnstile struct{ Coins int } // C
-
-const (
-	Locked   Gate = "Locked"
-	Unlocked Gate = "Unlocked"
-)
-
-const Coin Signal = "Coin"
 
 type Opened struct{ Coins int }
 
-machine := state.Forge[Gate, Signal, Turnstile]("turnstile").
+// State and event identifiers are plain strings, so ForgeFor fixes S and E to
+// string and leaves only the context type to spell.
+machine := state.ForgeFor[Turnstile]("turnstile").
 	// An action returns an effect (pure data) for the transition to emit.
 	Action("announceOpen", func(a state.ActionCtx[Turnstile]) (state.Effect, error) {
 		return Opened{Coins: a.Entity.Coins}, nil
 	}).
-	Initial(Locked).
-	Transition(Locked).On(Coin).GoTo(Unlocked).Do("announceOpen").
+	Initial("Locked").
+	Transition("Locked").On("Coin").GoTo("Unlocked").Do("announceOpen").
 	Quench()
 ```
 
@@ -72,11 +65,11 @@ manifold := sink.NewManifold(sink.WithOutlets(sink.OutletFunc(
 )))
 
 // Durable instance state for the bridge (in-memory for a single process).
-store := statemachine.NewMemStore[string, Gate, Signal, Turnstile]()
+store := statemachine.NewMemStore[string, string, string, Turnstile]()
 
 // Route a message to its instance key and the event to fire.
-router := func(m source.Message) (string, Signal, error) {
-	return m.Headers().Get("turnstile-id"), Coin, nil
+router := func(m source.Message) (string, string, error) {
+	return m.Headers().Get("turnstile-id"), "Coin", nil
 }
 
 handler := statemachine.Drive(machine, store, router,

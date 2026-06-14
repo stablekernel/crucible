@@ -17,9 +17,9 @@ goroutines and reuse for the lifetime of your process. You forge and quench it
 once:
 
 ```go
-m := state.Forge[Gate, Signal, Turnstile]("turnstile").
-    Initial(Locked).
-    Transition(Locked).On(Coin).GoTo(Unlocked).
+m := state.ForgeFor[Turnstile]("turnstile").
+    Initial("Locked").
+    Transition("Locked").On("Coin").GoTo("Unlocked").
     Quench() // *Machine, immutable, share freely
 ```
 
