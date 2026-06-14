@@ -74,6 +74,11 @@ type ParamSpec struct {
 	// Enum lists the allowed values when Type is EnumParam; it is empty for every
 	// other type.
 	Enum []string `json:"enum,omitempty"`
+	// Examples lists sample values a UI can offer for this parameter — a
+	// prefill or "did you mean" hint distinct from Default (the value used when
+	// the parameter is omitted) and from Enum (the closed set of legal values).
+	// It is empty unless the registration declares examples.
+	Examples []any `json:"examples,omitempty"`
 }
 
 // Descriptor is the serializable palette entry for one registered implementation.
@@ -86,7 +91,16 @@ type Descriptor struct {
 	Kind        DescriptorKind `json:"kind"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	Params      []ParamSpec    `json:"params,omitempty"`
+	// Category is an optional grouping label a UI uses to organize behaviors in
+	// the palette (e.g. "guards", "side-effects", "lifecycle"). It is free-form
+	// and absent unless the registration declares one.
+	Category string `json:"category,omitempty"`
+	// Examples lists optional example usages of the behavior as a whole — short
+	// snippets a UI can show as documentation, distinct from ParamSpec.Examples
+	// (which gives sample values for one parameter). It is empty unless the
+	// registration declares examples.
+	Examples []string    `json:"examples,omitempty"`
+	Params   []ParamSpec `json:"params,omitempty"`
 	// Reads and Writes are optional type hints naming the entity fields the
 	// implementation reads from or writes to, for a UI that surfaces data flow.
 	Reads  []string `json:"reads,omitempty"`
@@ -172,15 +186,18 @@ func BindingTransportOf(d Descriptor) string {
 // registration method supplies.
 type describeSpec struct {
 	description string
+	category    string
+	examples    []string
 	params      []ParamSpec
 	reads       []string
 	writes      []string
 }
 
 // DescribeBuilder fluently accumulates a registration's descriptor metadata —
-// its description, parameter schema, and read/write hints. Obtain one with
-// Describe, chain Param / OptionalParam / Reads / Writes, and pass it as the
-// trailing option to a registration (Guard / Action / Service / Actor). A
+// its description, category, example usages, parameter schema, and read/write
+// hints. Obtain one with Describe, chain Category / Examples / Param /
+// OptionalParam / Reads / Writes, and pass it as the trailing option to a
+// registration (Guard / Action / Service / Actor). A
 // DescribeBuilder is itself a DescribeOption, so it drops straight into the
 // options tail.
 type DescribeBuilder struct {
@@ -233,6 +250,21 @@ func (d *DescribeBuilder) EnumParam(name string, allowed ...string) *DescribeBui
 	return d
 }
 
+// Category sets the grouping label a UI uses to organize this behavior in the
+// palette (e.g. "guards", "side-effects", "lifecycle"). The last call wins.
+func (d *DescribeBuilder) Category(category string) *DescribeBuilder {
+	d.spec.category = category
+	return d
+}
+
+// Examples records example usages of the behavior as a whole — short snippets a
+// UI can show as documentation. Successive calls accumulate. For sample values of
+// a single parameter, set ParamSpec.Examples via ParamSpec instead.
+func (d *DescribeBuilder) Examples(examples ...string) *DescribeBuilder {
+	d.spec.examples = append(d.spec.examples, examples...)
+	return d
+}
+
 // Reads records the entity fields the implementation reads, a data-flow hint for
 // a UI. Successive calls accumulate.
 func (d *DescribeBuilder) Reads(fields ...string) *DescribeBuilder {
@@ -282,6 +314,8 @@ func descriptorFrom(kind DescriptorKind, name string, spec describeSpec) Descrip
 		Kind:        kind,
 		Name:        name,
 		Description: spec.description,
+		Category:    spec.category,
+		Examples:    append([]string(nil), spec.examples...),
 		Params:      append([]ParamSpec(nil), spec.params...),
 		Reads:       append([]string(nil), spec.reads...),
 		Writes:      append([]string(nil), spec.writes...),
