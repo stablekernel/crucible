@@ -417,4 +417,20 @@
 // Trace records a structured EventPayload alongside the human Event label so a
 // recorded event stream replays the exact event — the journal/durable-execution
 // seam the deterministic step makes sound.
+//
+// # Deferred additive surface
+//
+// Some capabilities are deliberately out of scope at v1.0 and reserved for a later
+// release as purely ADDITIVE, non-breaking work — each arrives as a new builder
+// method, a new option on an existing variadic tail, or a new optional IR field,
+// so adopting it never breaks a v1 caller. These are intentional boundaries, not
+// oversights: a payload-carrying raise, multi-target transitions (a .ToAll builder
+// over an optional Targets field, leaving To single-target), a context.Context
+// option on Verify/PlanPath/Cast/Restore and the snapshot codecs (RestoreActors
+// already takes one), an opt-in to snapshot a non-quiesced actor tree (today
+// SnapshotActors refuses with a typed error), a finer per-microstep Inspector
+// cadence (the v1 contract fires the Inspector once per macrostep), and a metrics
+// Meter seam alongside the logger and inspector seams. The frozen v1 surface is
+// locked precisely so these land without a major bump; the module CHANGELOG tracks
+// the full list.
 package state
