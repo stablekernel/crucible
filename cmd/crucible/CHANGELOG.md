@@ -1,11 +1,17 @@
 # Changelog
 
-All notable changes to the crucible CLI are documented here. This module is
+All notable changes to the crucible CLI are documented here. The format is based
+on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this module
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). It is
 versioned independently of the `state` module.
 
-## 0.1.0
+## [Unreleased]
+
+## [0.1.0] - 2026-06-13
 
 Initial release.
+
+### Added
 
 - `lint` runs static analysis over an IR and exits non-zero on findings.
 - `render` emits a Mermaid or DOT diagram of a machine.
@@ -14,3 +20,6 @@ Initial release.
 - `eject` generates typed Go behavior stubs from an IR.
 - `version` (and `-version`) prints the CLI version.
 - Commands read an IR file path or `-` for stdin.
+
+[Unreleased]: https://github.com/stablekernel/crucible/compare/cmd/crucible/v0.1.0...HEAD
+[0.1.0]: https://github.com/stablekernel/crucible/releases/tag/cmd/crucible/v0.1.0

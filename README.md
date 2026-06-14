@@ -104,8 +104,8 @@ stability label.
 | `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | advisory |
 | `state/verify`        | Decides behavioral properties of a machine and returns a witness event sequence. | advisory |
 | `state/expr`          | Rich expression tier: CEL-backed guards type-checked against the context schema. | stable contract (v0.1.0) |
-| `gen`                 | Eject codegen: turn a machine's IR into typed Go stub source and a registry wiring. | experimental |
-| `cmd/crucible`        | Headless IR CLI: lint, render, diff, validate, and eject a machine's serialized IR. | experimental |
+| `gen`                 | Eject codegen: turn a machine's IR into typed Go stub source and a registry wiring. | v0.1.0 |
+| `cmd/crucible`        | Headless IR CLI: lint, render, diff, validate, and eject a machine's serialized IR. | v0.1.0 |
 | `telemetry`           | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.        | experimental |
 | `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
 | `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
@@ -140,14 +140,17 @@ outside the frozen contract and may change in a minor release. `state/expr` is a
 separate module pinned at v0.1.0 whose expression *semantics* are a committed,
 stable contract even though the module version is pre-1.0.
 
+The IR tools `gen` (eject codegen) and `cmd/crucible` (the IR CLI) are released
+at **v0.1.0**, versioned independently of `state` and free to move at their own
+pace.
+
 The remaining modules are still evolving and may change before they reach v1:
 `telemetry`, `sink`, and `source` (with all their adapters, codecs, and
 middleware) are released and documented, as are the host-side runtimes over the
 kernel: `durable` (durable execution), `cluster` (distribution and live
 migration), `transport` (the gRPC network transport for cluster), and `wasm`
-(polyglot behaviors). The IR tools `gen` (eject codegen) and `cmd/crucible` (the
-IR CLI) ship unversioned for now, and `broker` is planned. Treat those modules as
-experimental until each reaches its own v1.
+(polyglot behaviors). `broker` is planned. Treat those modules as experimental
+until each reaches its own v1.
 
 ## Roadmap
 

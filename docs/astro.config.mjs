@@ -107,6 +107,12 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Tooling',
+          // The headless IR CLI and the eject codegen: reason about and
+          // scaffold from a machine's serialized IR without running it.
+          items: [{ autogenerate: { directory: 'tooling' } }],
+        },
+        {
           label: 'Reference',
           // Generated API reference for every module by `tools/docsgen`
           // (gomarkdoc) at build time; gitignored. New packages appear
