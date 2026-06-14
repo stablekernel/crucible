@@ -815,7 +815,12 @@ type irEnvelope struct {
 	extra   map[string]json.RawMessage
 }
 
-// Forge opens a builder.
+// Forge opens a builder. The state, event, and context type parameters are all
+// explicit because name is the only value argument, so none of them are inferable
+// from the call. When the state and event identifiers are plain strings — the
+// common case — reach for ForgeFor, which fixes S and E to string and leaves only
+// the context type C to spell. Use Forge directly when S or E are typed (for
+// example enum) identifiers.
 func Forge[S comparable, E comparable, C any](name string, opts ...ForgeOption) *Builder[S, E, C] {
 	cfg := forgeConfig{}
 	for _, o := range opts {
@@ -827,6 +832,16 @@ func Forge[S comparable, E comparable, C any](name string, opts ...ForgeOption) 
 		stateIndex: map[S]*stateDef[S, E, C]{},
 		envelope:   irEnvelope{version: cfg.version, id: cfg.id},
 	}
+}
+
+// ForgeFor opens a builder for a machine whose state and event identifiers are
+// strings, inferring only the context type C. It is the convenience form of Forge
+// for the common case; use Forge[S, E, C] directly when S or E are typed (for
+// example enum) identifiers. ForgeFor forwards to Forge[string, string, C] with the
+// same name and options, so the two are behaviorally identical and freely
+// interchangeable on string-typed machines.
+func ForgeFor[C any](name string, opts ...ForgeOption) *Builder[string, string, C] {
+	return Forge[string, string, C](name, opts...)
 }
 
 // Guard registers a named guard into the builder's palette. An optional Describe
