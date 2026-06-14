@@ -126,6 +126,13 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
 - `verify` kind-specific `Finding` accessors (`IsReachable`, `Holds`, `Violated`,
   `Covered`).
 - An advisory pointer-context determinism diagnostic surfaced through Temper/Assay.
+- Palette completeness for builder UIs: `Descriptor.Category` (an optional grouping
+  label such as "guards" or "side-effects"), `Descriptor.Examples` (optional example
+  usages of a behavior), and `ParamSpec.Examples` (optional sample values for a single
+  parameter). They are set through the new `Describe(...).Category(...)` and
+  `Describe(...).Examples(...)` builder methods, and per-parameter examples ride
+  `ParamSpec.Examples` via `ParamSpec`. All three are additive and `omitempty`: a
+  descriptor or parameter that declares none serializes byte-identically to before.
 
 ### Changed
 
