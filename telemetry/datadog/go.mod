@@ -2,6 +2,8 @@ module github.com/stablekernel/crucible/telemetry/datadog
 
 go 1.25.11
 
+toolchain go1.26.4
+
 require (
 	github.com/DataDog/datadog-go/v5 v5.8.3
 	github.com/DataDog/dd-trace-go/v2 v2.8.2
