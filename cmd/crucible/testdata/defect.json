@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","name":"withdefect","states":[{"name":"a","transitions":[{"from":"a","to":"b","on":"go"}]},{"name":"b","isFinal":true},{"name":"orphan","transitions":[{"from":"orphan","to":"orphan","on":"noop"}]}],"initial":"a","hasInitial":true}
