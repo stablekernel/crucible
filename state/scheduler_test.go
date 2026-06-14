@@ -14,7 +14,7 @@ import (
 // plain "leave" event exits "armed" early (to "idle"), so a test can exercise
 // auto-cancel-on-exit. The "fired" state itself arms nothing.
 func afterMachine() *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("timed").
+	return state.ForgeFor[*trec]("timed").
 		Action("entry", noteAction("entry")).
 		Action("exit", noteAction("exit")).
 		State("idle").
@@ -115,7 +115,7 @@ func TestAfter_CanceledOnExit(t *testing.T) {
 // registration of the built-in action.
 func TestAfter_ExplicitCancel(t *testing.T) {
 	id := state.ScheduleID("explicit", "armed", 0)
-	m := state.Forge[string, string, *trec]("explicit").
+	m := state.ForgeFor[*trec]("explicit").
 		State("idle").
 		State("armed").
 		State("done").

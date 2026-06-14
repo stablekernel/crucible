@@ -11,7 +11,7 @@ import (
 // guarded by the supplied Core expressions, with the ctx schema attached.
 func overlapMachine(t *testing.T, ga, gb state.GuardNode[string]) *state.Machine[string, string, ctx] {
 	t.Helper()
-	return state.Forge[string, string, ctx]("m").
+	return state.ForgeFor[ctx]("m").
 		WithContextSchema(state.SchemaOf[ctx]()).
 		State("s").
 		Transition("s").On("go").GoTo("a").WhenExpr(ga).
@@ -61,7 +61,7 @@ func TestOverlaps_OverlappingGuardsAreReported(t *testing.T) {
 // would shuffle between runs and break golden assertions.
 func TestOverlaps_DeterministicOrder(t *testing.T) {
 	build := func() *state.Machine[string, string, ctx] {
-		return state.Forge[string, string, ctx]("multi").
+		return state.ForgeFor[ctx]("multi").
 			WithContextSchema(state.SchemaOf[ctx]()).
 			Guard("g", func(state.GuardCtx[ctx]) bool { return true }).
 			State("s").
@@ -106,7 +106,7 @@ func TestOverlaps_OpaqueGuardsAreConservativelyReported(t *testing.T) {
 	// Named-ref guards are opaque to the analyzer, so it cannot prove them disjoint
 	// and reports the pair — a false positive is the safe direction for
 	// nondeterminism detection.
-	def := state.Forge[string, string, ctx]("m").
+	def := state.ForgeFor[ctx]("m").
 		WithContextSchema(state.SchemaOf[ctx]()).
 		Guard("ga", func(state.GuardCtx[ctx]) bool { return true }).
 		Guard("gb", func(state.GuardCtx[ctx]) bool { return true }).

@@ -28,7 +28,7 @@ func TestFire_FailedExitCascade_EmitsNoEffects(t *testing.T) {
 	}
 	fail := func(state.ActionCtx[nteCtx]) (state.Effect, error) { return nil, boom }
 
-	m := state.Forge[string, string, nteCtx]("nte").
+	m := state.ForgeFor[nteCtx]("nte").
 		Action("e1", emit("e1")).
 		Action("explode", fail).
 		State("off").
@@ -69,7 +69,7 @@ func TestFire_SuccessfulCascade_EmitsAllEffects(t *testing.T) {
 		return func(state.ActionCtx[nteCtx]) (state.Effect, error) { return s, nil }
 	}
 
-	m := state.Forge[string, string, nteCtx]("nte-ok").
+	m := state.ForgeFor[nteCtx]("nte-ok").
 		Action("e1", emit("e1")).
 		Action("ek", emit("ek")).
 		State("off").

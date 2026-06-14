@@ -41,7 +41,7 @@ func hasDeterminismWarning(diags []Diagnostic) bool {
 // promotes to an error) and that the advisory is still surfaced in Temper.
 func TestQuench_PointerContext_StrictDoesNotEscalate(t *testing.T) {
 	build := func() *Builder[string, string, *ptrCtxEntity] {
-		return Forge[string, string, *ptrCtxEntity]("ptr").
+		return ForgeFor[*ptrCtxEntity]("ptr").
 			State("a").
 			State("b").
 			Initial("a").
@@ -71,7 +71,7 @@ func TestQuench_PointerContext_StrictDoesNotEscalate(t *testing.T) {
 func TestQuench_Strict_StillEscalatesGenuineWarning(t *testing.T) {
 	// Value context so the pointer advisory is absent; omit CurrentStateFn so the
 	// only finding is the missing-CurrentStateFn warning.
-	b := Forge[string, string, valCtxEntity]("val").
+	b := ForgeFor[valCtxEntity]("val").
 		State("a").
 		State("b").
 		Initial("a").
@@ -88,7 +88,7 @@ func TestQuench_Strict_StillEscalatesGenuineWarning(t *testing.T) {
 // TestTemper_PointerContext_EmitsDeterminismWarning asserts a pointer-C machine
 // surfaces the soft determinism warning, still builds without Strict, and fires.
 func TestTemper_PointerContext_EmitsDeterminismWarning(t *testing.T) {
-	b := Forge[string, string, *ptrCtxEntity]("ptr").
+	b := ForgeFor[*ptrCtxEntity]("ptr").
 		State("a").
 		State("b").
 		Initial("a").
@@ -122,7 +122,7 @@ func TestTemper_PointerContext_EmitsDeterminismWarning(t *testing.T) {
 // TestTemper_ValueContext_NoDeterminismWarning asserts a value-C machine does not
 // emit the pointer-context determinism warning.
 func TestTemper_ValueContext_NoDeterminismWarning(t *testing.T) {
-	b := Forge[string, string, valCtxEntity]("val").
+	b := ForgeFor[valCtxEntity]("val").
 		State("a").
 		State("b").
 		Initial("a").

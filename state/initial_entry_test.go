@@ -44,7 +44,7 @@ func findSchedule(effects []state.Effect, srcState string) bool {
 // configuration at Cast runs OnEntry actions, applies OnEntryAssign reducers,
 // and settles an enabled eventless ("always") transition, all before any Fire.
 func TestInitial_EntrySemanticsRunAtCast(t *testing.T) {
-	m := state.Forge[string, string, *entryRec]("boot").
+	m := state.ForgeFor[*entryRec]("boot").
 		Action("markEntered", func(ctx state.ActionCtx[*entryRec]) (state.Effect, error) {
 			return markEffect{tag: "entered"}, nil
 		}).
@@ -74,7 +74,7 @@ func TestInitial_EntrySemanticsRunAtCast(t *testing.T) {
 // TestInitial_AfterArmsAtCast asserts that an initial state declaring an `after`
 // transition emits a ScheduleAfter effect at Cast.
 func TestInitial_AfterArmsAtCast(t *testing.T) {
-	m := state.Forge[string, string, *entryRec]("timed").
+	m := state.ForgeFor[*entryRec]("timed").
 		State("waiting").After(50 * time.Millisecond).On("tick").GoTo("done").
 		State("done").
 		Initial("waiting").
@@ -91,7 +91,7 @@ func TestInitial_AfterArmsAtCast(t *testing.T) {
 // child is final raises the compound's OnDone at Cast (initial descent settles
 // done), proving the settleDone target choice for the initial configuration.
 func TestInitial_FinalChildRaisesOnDoneAtCast(t *testing.T) {
-	m := state.Forge[string, string, *entryRec]("flow").
+	m := state.ForgeFor[*entryRec]("flow").
 		Action("markDone", func(ctx state.ActionCtx[*entryRec]) (state.Effect, error) {
 			return markEffect{tag: "done"}, nil
 		}).

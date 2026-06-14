@@ -19,7 +19,7 @@ type basket struct {
 // context, updates it. The reducer reads the triggering event from AssignCtx.Event
 // and its static configuration from AssignCtx.Params.
 func ExampleBuilder_Assign() {
-	m := state.Forge[string, string, basket]("checkout").
+	m := state.ForgeFor[basket]("checkout").
 		Reducer("addItem", func(in state.AssignCtx[basket]) basket {
 			c := in.Entity
 			if price, ok := in.Params["price"].(int); ok {

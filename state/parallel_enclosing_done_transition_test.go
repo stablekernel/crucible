@@ -53,7 +53,7 @@ func TestParallel_EnclosingDoneTransition_TakenOnParallelComplete(t *testing.T) 
 	bump := func(c state.AssignCtx[edtCtx]) edtCtx { c.Entity.done++; return c.Entity }
 	bothDone := func(c state.GuardCtx[edtCtx]) bool { return c.Entity.done >= 2 }
 
-	m := state.Forge[string, string, edtCtx]("par-enclosing-done-transition").
+	m := state.ForgeFor[edtCtx]("par-enclosing-done-transition").
 		Action("Pdone", note("Pdone")).
 		Action("Odone", note("Odone")).
 		Reducer("bump", bump).
@@ -126,7 +126,7 @@ func TestParallel_EnclosingDoneTransition_NotTakenWhileIncomplete(t *testing.T) 
 	bump := func(c state.AssignCtx[edtCtx]) edtCtx { c.Entity.done++; return c.Entity }
 	bothDone := func(c state.GuardCtx[edtCtx]) bool { return c.Entity.done >= 2 }
 
-	m := state.Forge[string, string, edtCtx]("par-enclosing-done-incomplete").
+	m := state.ForgeFor[edtCtx]("par-enclosing-done-incomplete").
 		Action("Pdone", note("Pdone")).
 		Action("Odone", note("Odone")).
 		Reducer("bump", bump).

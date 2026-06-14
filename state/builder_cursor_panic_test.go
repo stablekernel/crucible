@@ -32,7 +32,7 @@ func newCursorBuilder() *Builder[string, string, cursorEntity] {
 	// Transition(a).On(go).GoTo(b) opens then targets a cursor; the following
 	// State("a") call closes it (declareState sets curTransition = nil), so any
 	// cursor-consumer chained after State must panic.
-	return Forge[string, string, cursorEntity]("cursor").
+	return ForgeFor[cursorEntity]("cursor").
 		State("a").
 		State("b").
 		Initial("a").
@@ -76,7 +76,7 @@ func TestBuilderCursor_ConsumerAfterClosedCursor_Panics(t *testing.T) {
 // keeps the cursor open through the consumer methods Tempers without panicking.
 func TestBuilderCursor_ValidChain_DoesNotPanic(t *testing.T) {
 	panicked, msg := recoverContains(t, func() {
-		Forge[string, string, cursorEntity]("ok").
+		ForgeFor[cursorEntity]("ok").
 			Guard("g", func(GuardCtx[cursorEntity]) bool { return true }).
 			State("a").
 			State("b").

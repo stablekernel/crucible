@@ -18,7 +18,7 @@ var errActionBoom = errors.New("action boom")
 // TestActionPanic_OnEntrySurfacesTyped asserts a panicking OnEntry action is
 // recovered into a *ActionPanicError on FireResult.Err rather than crashing Fire.
 func TestActionPanic_OnEntrySurfacesTyped(t *testing.T) {
-	m := state.Forge[string, string, apctx]("ap-entry").
+	m := state.ForgeFor[apctx]("ap-entry").
 		Action("boom", func(state.ActionCtx[apctx]) (state.Effect, error) { panic("kaboom") }).
 		State("from").
 		State("to").OnEntry("boom").
@@ -44,7 +44,7 @@ func TestActionPanic_OnEntrySurfacesTyped(t *testing.T) {
 // TestActionPanic_TransitionActionSurfacesTyped asserts a panicking transition
 // action (Do) is recovered into a *ActionPanicError on FireResult.Err.
 func TestActionPanic_TransitionActionSurfacesTyped(t *testing.T) {
-	m := state.Forge[string, string, apctx]("ap-trans").
+	m := state.ForgeFor[apctx]("ap-trans").
 		Action("boom", func(state.ActionCtx[apctx]) (state.Effect, error) { panic("kaboom") }).
 		State("from").
 		State("to").
@@ -71,7 +71,7 @@ func TestActionPanic_TransitionActionSurfacesTyped(t *testing.T) {
 // sentinel error value, errors.Is reaches that inner error through
 // ActionPanicError.Unwrap, and errors.As still reaches the *ActionPanicError.
 func TestActionPanic_UnwrapsInnerError(t *testing.T) {
-	m := state.Forge[string, string, apctx]("ap-unwrap").
+	m := state.ForgeFor[apctx]("ap-unwrap").
 		Action("boom", func(state.ActionCtx[apctx]) (state.Effect, error) { panic(errActionBoom) }).
 		State("from").
 		State("to").

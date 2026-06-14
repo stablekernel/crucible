@@ -35,7 +35,7 @@ func TestFire_FailedEntryAction_RollsBackConfiguration(t *testing.T) {
 	fail := func(state.ActionCtx[txnCtx]) (state.Effect, error) { return nil, boom }
 
 	build := func() *state.Machine[string, string, txnCtx] {
-		return state.Forge[string, string, txnCtx]("txn").
+		return state.ForgeFor[txnCtx]("txn").
 			Action("explode", fail).
 			Reducer("bump", bump).
 			State("off").
@@ -110,7 +110,7 @@ func TestFire_FailedEntryAction_RollsBackConfiguration(t *testing.T) {
 // build0 casts a no-fail variant of the txn machine for the re-fireability control.
 func build0(t *testing.T) *state.Instance[string, string, txnCtx] {
 	t.Helper()
-	m := state.Forge[string, string, txnCtx]("txn-ok").
+	m := state.ForgeFor[txnCtx]("txn-ok").
 		State("off").
 		Transition("off").On("go").GoTo("target").
 		State("target").
@@ -138,7 +138,7 @@ func TestFire_FailedRegionEntry_RollsBackEarlierRegion(t *testing.T) {
 	// it r1 emits no effect and the effects-empty assertion could never observe a leak.
 	emit := func(state.ActionCtx[txnCtx]) (state.Effect, error) { return "r1-fired", nil }
 
-	m := state.Forge[string, string, txnCtx]("txn-par").
+	m := state.ForgeFor[txnCtx]("txn-par").
 		Action("explode", fail).
 		Action("emit", emit).
 		Reducer("bump", bump).

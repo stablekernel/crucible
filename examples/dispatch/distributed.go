@@ -79,7 +79,7 @@ func workerNode[E comparable](
 // marshals the raw signal it is handed and the worker decodes it — so it is typed with a
 // plain string event for simplicity. tr routes its operations to the workers over gRPC.
 func coordinatorNode(name string, tr *transport.Transport) *cluster.System[string, string, *host] {
-	parent := state.Forge[string, string, *host]("coordinator").
+	parent := state.ForgeFor[*host]("coordinator").
 		State("idle").Initial("idle").Quench().
 		Cast(&host{}, state.WithInitialState("idle"))
 	return cluster.NewSystem(name, state.NewActorSystem(parent), cluster.WithTransport(tr))

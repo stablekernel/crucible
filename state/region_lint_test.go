@@ -37,7 +37,7 @@ func quenchPanic(t *testing.T, build func()) error {
 // and rejected at build time rather than corrupting the configuration at runtime.
 func TestQuench_RejectsRegionEscape(t *testing.T) {
 	err := quenchPanic(t, func() {
-		state.Forge[string, string, rlCtx]("escape").
+		state.ForgeFor[rlCtx]("escape").
 			State("off").
 			Transition("off").On("go").GoTo("par").
 			SuperState("par").
@@ -66,7 +66,7 @@ func TestQuench_RejectsRegionEscape(t *testing.T) {
 // within its region (and one that exits to a region-final) must Quench cleanly.
 func TestQuench_AcceptsInRegionTransition(t *testing.T) {
 	err := quenchPanic(t, func() {
-		state.Forge[string, string, rlCtx]("inregion").
+		state.ForgeFor[rlCtx]("inregion").
 			State("off").
 			Transition("off").On("go").GoTo("par").
 			SuperState("par").
@@ -90,7 +90,7 @@ func TestQuench_AcceptsInRegionTransition(t *testing.T) {
 // elsewhere; only the cross-region history target is ambiguous and refused.
 func TestQuench_RejectsCrossRegionHistoryTarget(t *testing.T) {
 	err := quenchPanic(t, func() {
-		state.Forge[string, string, rlCtx]("xhist").
+		state.ForgeFor[rlCtx]("xhist").
 			State("off").
 			Transition("off").On("go").GoTo("par").
 			SuperState("par").

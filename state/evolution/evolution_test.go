@@ -434,7 +434,7 @@ func TestDiff_NestedChildAdded_Additive(t *testing.T) {
 // TestDiffMachines_AgreesWithDiff drives the Quenched-machine entry point and
 // asserts it classifies a breaking change identically to Diff over the same IRs.
 func TestDiffMachines_AgreesWithDiff(t *testing.T) {
-	oldM := state.Forge[string, string, any]("doc").
+	oldM := state.ForgeFor[any]("doc").
 		State("draft").
 		Transition("draft").On("submit").GoTo("review").
 		State("review").
@@ -443,7 +443,7 @@ func TestDiffMachines_AgreesWithDiff(t *testing.T) {
 		Initial("draft").
 		Quench()
 	// The updated machine drops the review->done transition: a breaking removal.
-	newM := state.Forge[string, string, any]("doc").
+	newM := state.ForgeFor[any]("doc").
 		State("draft").
 		Transition("draft").On("submit").GoTo("review").
 		State("review").
@@ -467,7 +467,7 @@ func TestDiffMachines_AgreesWithDiff(t *testing.T) {
 // reports no change.
 func TestDiffMachines_IdenticalIsEmpty(t *testing.T) {
 	build := func() *state.Machine[string, string, any] {
-		return state.Forge[string, string, any]("doc").
+		return state.ForgeFor[any]("doc").
 			State("draft").
 			Transition("draft").On("submit").GoTo("done").
 			State("done").Final().

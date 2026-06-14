@@ -18,7 +18,7 @@ import (
 // stage, plus a terminal. The branching and the cycle make SimplePaths enumerate
 // many distinct acyclic routes, exercising the depth-first walk's backtracking.
 func buildPathsBenchMachine() *state.Machine[string, string, any] {
-	return state.Forge[string, string, any]("paths-bench").
+	return state.ForgeFor[any]("paths-bench").
 		State("intake").
 		Transition("intake").On("next").GoTo("triage").
 		Transition("intake").On("skip").GoTo("review").

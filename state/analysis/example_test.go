@@ -11,7 +11,7 @@ import (
 // defects: a "lost" state nothing can reach, and a non-final "stuck" state with
 // no way out. The report names both without ever firing an event.
 func ExampleAnalyze() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		Transition("open").On("hold").GoTo("stuck").

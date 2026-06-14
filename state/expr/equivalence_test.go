@@ -94,7 +94,7 @@ func assertEquivalent(t *testing.T, node state.GuardNode[string], ctx fuzzCtx, i
 // type-checks at Quench, scoping the check to schema-attached semantics.
 func evalCoreNode(t *testing.T, node state.GuardNode[string], ctx fuzzCtx) bool {
 	t.Helper()
-	m := state.Forge[string, string, fuzzCtx]("eq").
+	m := state.ForgeFor[fuzzCtx]("eq").
 		WithContextSchema(fuzzSchema()).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

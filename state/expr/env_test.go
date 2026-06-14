@@ -158,7 +158,7 @@ func TestEnv_BadTimeStringErrors(t *testing.T) {
 func fireRichCtx(t *testing.T, reg *state.Registry[richCtx], node state.GuardNode[string], e richCtx) bool {
 	t.Helper()
 	name := node.Ref.Name
-	def := state.Forge[string, string, richCtx]("rc").
+	def := state.ForgeFor[richCtx]("rc").
 		Guard(name, func(state.GuardCtx[richCtx]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

@@ -14,7 +14,7 @@ import (
 // substate's OnEntry action. The "side" region holds a single flat leaf so the
 // parallel state stays active while "work" advances.
 func regionActionErrorMachine(boom error, on string) *state.Machine[string, string, *trec] {
-	f := state.Forge[string, string, *trec]("region-action-error").
+	f := state.ForgeFor[*trec]("region-action-error").
 		Action("fail", func(state.ActionCtx[*trec]) (state.Effect, error) {
 			return nil, boom
 		}).
@@ -97,7 +97,7 @@ func TestRegion_TransitionActionError_PropagatesEffectError(t *testing.T) {
 // *ActionFailedError and the outcome is classified OutcomeEffectError.
 func TestRegion_MultiRegionActionError_AggregatesAndClassifies(t *testing.T) {
 	boom := errors.New("boom")
-	m := state.Forge[string, string, *trec]("region-multi-error").
+	m := state.ForgeFor[*trec]("region-multi-error").
 		Action("fail", func(state.ActionCtx[*trec]) (state.Effect, error) {
 			return nil, boom
 		}).

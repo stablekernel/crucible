@@ -176,7 +176,7 @@ func TestRegistry_AssignBindingRecorded(t *testing.T) {
 // an assign ref with no bound reducer surfaces as a typed *AssignPanicError and
 // leaves the context unchanged, rather than silently dropping the fold.
 func TestEvalAssign_UnboundRefFailsClosed(t *testing.T) {
-	m := Forge[string, string, bindOrder]("x").State("a").Initial("a").Quench()
+	m := ForgeFor[bindOrder]("x").State("a").Initial("a").Quench()
 	next, err := m.evalAssign(Ref{Name: "ghost"}, bindOrder{Amount: 3}, nil)
 	if err == nil {
 		t.Fatal("unbound assign ref should fail")
@@ -311,7 +311,7 @@ func TestBindGuard_BindingErrorYieldsFalse(t *testing.T) {
 // through the same fire-time guard path as a Go-func guard.
 func TestBindGuard_DrivesTransitionThroughFire(t *testing.T) {
 	build := func(amount int) *Instance[string, string, bindOrder] {
-		b := Forge[string, string, bindOrder]("bg")
+		b := ForgeFor[bindOrder]("bg")
 		b.reg.BindGuard("highAmount", stubGuardBinding{pred: func(o bindOrder) bool { return o.Amount >= 50 }})
 		m := b.
 			State("from").

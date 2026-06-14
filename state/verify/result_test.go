@@ -39,7 +39,7 @@ func TestReachable_Union(t *testing.T) {
 // TestVerify_SingleFinalMachine covers the minimal machine: one final state that
 // is also initial.
 func TestVerify_SingleFinalMachine(t *testing.T) {
-	m := state.Forge[string, string, any]("single").
+	m := state.ForgeFor[any]("single").
 		State("only").Final().
 		Initial("only").
 		Quench()

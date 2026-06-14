@@ -11,7 +11,7 @@ import (
 // TestAssign_ValueSemanticsSnapshotRoundTrip asserts a value-C instance whose
 // context was folded by an Assign snapshots and restores to the same context.
 func TestAssign_ValueSemanticsSnapshotRoundTrip(t *testing.T) {
-	m := state.Forge[string, string, acct]("snaproundtrip").
+	m := state.ForgeFor[acct]("snaproundtrip").
 		Reducer("credit", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			c.Balance += 250
@@ -60,7 +60,7 @@ func TestAssign_ValueSemanticsSnapshotRoundTrip(t *testing.T) {
 // the context on every Fire. The number quantifies the copy cost the pointer
 // escape hatch trades away; no optimization is applied (deltas are deferred).
 func BenchmarkAssign_ContextCopyPerStep(b *testing.B) {
-	m := state.Forge[string, string, acct]("benchcopy").
+	m := state.ForgeFor[acct]("benchcopy").
 		Reducer("bump", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			c.Balance++

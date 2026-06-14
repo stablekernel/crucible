@@ -19,7 +19,7 @@ import (
 // timer remains armed (a `poke` re-enters `waiting`, re-arming the same stable
 // scheduleID — idempotent), and the `after` edge fires `elapsed` to `done`.
 func pendingTimerMachine() *state.Machine[string, string, *timerCtx] {
-	return state.Forge[string, string, *timerCtx]("pendingTimer").
+	return state.ForgeFor[*timerCtx]("pendingTimer").
 		Action("markFired", func(c state.ActionCtx[*timerCtx]) (state.Effect, error) {
 			c.Entity.Fired++
 			return nil, nil

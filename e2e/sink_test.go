@@ -81,7 +81,7 @@ func TestE2E_StateTransitionsFanOutThroughSink(t *testing.T) {
 	// One Manifold, one shared tracer, two emulated destinations.
 	m := csink.NewManifold(csink.WithTracer(tr), csink.WithOutlets(analytics, audit))
 
-	machine := state.Forge[string, string, *fulfillment]("fulfillment").
+	machine := state.ForgeFor[*fulfillment]("fulfillment").
 		Use(bridge.Middleware[string, string, *fulfillment](m, bridge.WithTracer(tr))).
 		State("placed").State("packed").State("shipped").
 		Initial("placed").

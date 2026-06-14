@@ -22,7 +22,7 @@ type relayEntity struct{}
 // The transitions are internal self-edges (no GoTo) so the child keeps running and
 // can handle further events; only "finish" moves it to a final state.
 func relayChildMachine() *state.Machine[string, string, *relayEntity] {
-	return state.Forge[string, string, *relayEntity]("relay").
+	return state.ForgeFor[*relayEntity]("relay").
 		State("ready").
 		State("done").Final().
 		Initial("ready").
@@ -54,7 +54,7 @@ func relayBehavior() state.ActorBehavior {
 // The childID is the stable actor id of the invoke on "running"; the parent
 // addresses the child by it via SendTo.
 func commParentMachine(childID string) *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("parent").
+	return state.ForgeFor[*trec]("parent").
 		Action("note", func(c state.ActionCtx[*trec]) (state.Effect, error) {
 			c.Entity.notes = append(c.Entity.notes, "note")
 			return nil, nil
@@ -177,13 +177,13 @@ func TestComm_RespondNoSenderIsNoop(t *testing.T) {
 func TestComm_ForwardDeliversTypedEvent(t *testing.T) {
 	ctx := context.Background()
 	// A forwarder child that, on "ping", forwards "ping" to the "peer" systemId.
-	fwdMachine := state.Forge[string, string, *relayEntity]("fwd").
+	fwdMachine := state.ForgeFor[*relayEntity]("fwd").
 		State("ready").
 		Initial("ready").
 		Transition("ready").On("ping").GoTo("ready").ForwardTo("", state.WithSendToSystemID("peer")).
 		Quench()
 
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		Action("gotPong", func(c state.ActionCtx[*trec]) (state.Effect, error) {
 			c.Entity.notes = append(c.Entity.notes, "pong")
 			return nil, nil
@@ -222,7 +222,7 @@ func TestComm_ForwardDeliversTypedEvent(t *testing.T) {
 // from a transition.
 func TestComm_StopActorStopsActor(t *testing.T) {
 	ctx := context.Background()
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("running").
 		Initial("running").
 		CurrentStateFn(func(*trec) string { return "running" }).
@@ -255,7 +255,7 @@ func TestComm_StopActorStopsActor(t *testing.T) {
 // machine binds against an empty registry (the comm built-ins need no binding).
 func TestComm_IRRoundTrip(t *testing.T) {
 	build := func() *state.Machine[string, string, *trec] {
-		return state.Forge[string, string, *trec]("comms").
+		return state.ForgeFor[*trec]("comms").
 			State("a").
 			State("b").
 			Initial("a").

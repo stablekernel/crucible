@@ -22,7 +22,7 @@ type quiescChildCtx struct {
 
 // buildQuiescChildMachine builds a flat child: idle --advance--> mid --finish--> done.
 func buildQuiescChildMachine() *Machine[string, string, *quiescChildCtx] {
-	return Forge[string, string, *quiescChildCtx]("quiescchild").
+	return ForgeFor[*quiescChildCtx]("quiescchild").
 		Action("step", func(c ActionCtx[*quiescChildCtx]) (Effect, error) {
 			c.Entity.Steps++
 			return nil, nil
@@ -39,7 +39,7 @@ func buildQuiescChildMachine() *Machine[string, string, *quiescChildCtx] {
 // buildQuiescParentMachine builds a parent that invokes the child actor on entry to
 // supervising.
 func buildQuiescParentMachine() *Machine[string, string, map[string]any] {
-	return Forge[string, string, map[string]any]("quiescparent").
+	return ForgeFor[map[string]any]("quiescparent").
 		State("idle").
 		State("supervising").InvokeActor("quiescchild",
 		WithInvokeOnDone("childDone"), WithInvokeOnError("childErr")).

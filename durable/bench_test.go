@@ -11,7 +11,7 @@ import (
 // twoStateMachine returns a minimal two-state machine (idle → done) used
 // across benchmarks to isolate durable overhead from machine complexity.
 func twoStateMachine() *state.Machine[string, string, struct{}] {
-	return state.Forge[string, string, struct{}]("bench").
+	return state.ForgeFor[struct{}]("bench").
 		State("idle").
 		State("done").Final().
 		Initial("idle").

@@ -301,7 +301,7 @@ func TestContextSchema_PreservesUnknownKind(t *testing.T) {
 // context schema, returning the JSON bytes.
 func schemaTestIR(t *testing.T, withSchema bool) []byte {
 	t.Helper()
-	b := state.Forge[string, string, *schemaSample]("ctx-machine")
+	b := state.ForgeFor[*schemaSample]("ctx-machine")
 	if withSchema {
 		b = b.WithContextSchema(state.SchemaOf[schemaSample]())
 	}
@@ -452,7 +452,7 @@ func TestSchemaOf_JSONTagOmitemptyKeepsName(t *testing.T) {
 
 func TestWithContextSchema_DoesNotAliasCaller(t *testing.T) {
 	schema := state.SchemaOf[schemaSample]()
-	b := state.Forge[string, string, *schemaSample]("m").WithContextSchema(schema)
+	b := state.ForgeFor[*schemaSample]("m").WithContextSchema(schema)
 	// Mutate the caller's copy after attaching; the builder must hold a clone.
 	schema.Fields[0].Name = "mutated"
 	m := b.State("idle").Initial("idle").Quench()

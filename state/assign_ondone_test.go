@@ -16,7 +16,7 @@ type svcCtx struct {
 // onDone transition's Assign via AssignCtx.Event (the done-event payload), with
 // no host side channel: the runner re-fires onDone carrying the result.
 func TestAssign_ServiceOnDoneReadsResult(t *testing.T) {
-	m := state.Forge[string, string, svcCtx]("svcassign").
+	m := state.ForgeFor[svcCtx]("svcassign").
 		Service("fetch", func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
 			return "payload", nil
 		}).
@@ -61,7 +61,7 @@ func TestAssign_ServiceOnDoneReadsResult(t *testing.T) {
 // onDone transition's Assign via AssignCtx.Event, with no side channel: the
 // ActorSystem re-fires the parent's onDone carrying the child output.
 func TestAssign_ActorOnDoneReadsResult(t *testing.T) {
-	child := state.Forge[string, string, svcCtx]("childmach").
+	child := state.ForgeFor[svcCtx]("childmach").
 		State("working").
 		State("done").Final().
 		Initial("working").
@@ -74,7 +74,7 @@ func TestAssign_ActorOnDoneReadsResult(t *testing.T) {
 		}), nil
 	}
 
-	parent := state.Forge[string, string, svcCtx]("parentmach").
+	parent := state.ForgeFor[svcCtx]("parentmach").
 		Reducer("recordChild", func(in state.AssignCtx[svcCtx]) svcCtx {
 			c := in.Entity
 			if o, ok := in.Event.(string); ok {
