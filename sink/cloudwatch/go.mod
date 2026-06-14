@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/sink/cloudwatch
 
 go 1.25.11
-
+toolchain go1.26.4
 replace github.com/stablekernel/crucible/sink => ../
 
 replace github.com/stablekernel/crucible/telemetry => ../../telemetry
