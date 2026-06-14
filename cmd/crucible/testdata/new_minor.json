@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","name":"flow","states":[{"name":"a","transitions":[{"from":"a","to":"b","on":"go"},{"from":"a","to":"a","on":"reset"}]},{"name":"b","isFinal":true}],"initial":"a","hasInitial":true}
