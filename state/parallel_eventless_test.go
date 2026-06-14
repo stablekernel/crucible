@@ -26,7 +26,7 @@ func configHas[S comparable](t *testing.T, cfg []S, want S) bool {
 // selection walked only config[0]'s spine, so the second region's b1->b2 was
 // starved and the configuration retained b1.
 func TestSelectEventless_SecondRegion_Settles(t *testing.T) {
-	m := Forge[string, string, eventlessCtx]("t1a").
+	m := ForgeFor[eventlessCtx]("t1a").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").
@@ -60,7 +60,7 @@ func TestSelectEventless_SecondRegion_Settles(t *testing.T) {
 // through the whole-config commit path, which replaced the entire configuration
 // and dropped the sibling leaf.
 func TestSelectEventless_FirstRegion_PreservesSibling(t *testing.T) {
-	m := Forge[string, string, eventlessCtx]("t1b").
+	m := ForgeFor[eventlessCtx]("t1b").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").
@@ -92,7 +92,7 @@ func TestSelectEventless_FirstRegion_PreservesSibling(t *testing.T) {
 // N==1 proves the region path committed the fold rather than discarding it.
 func TestSelectEventless_RegionThreadsContextNoRaise(t *testing.T) {
 	bump := func(c AssignCtx[eventlessCtx]) eventlessCtx { c.Entity.N++; return c.Entity }
-	m := Forge[string, string, eventlessCtx]("t1ctx").
+	m := ForgeFor[eventlessCtx]("t1ctx").
 		Reducer("bump", bump).
 		State("off").
 		Transition("off").On("go").GoTo("par").
@@ -124,7 +124,7 @@ func TestSelectEventless_RegionThreadsContextNoRaise(t *testing.T) {
 // RTC determinism contract. Region a settles first (a1->a2), then region b
 // (b1->b2); both leaves survive.
 func TestSelectEventless_RegionOrderingAcrossMicrosteps(t *testing.T) {
-	m := Forge[string, string, eventlessCtx]("t1order").
+	m := ForgeFor[eventlessCtx]("t1order").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").
@@ -152,7 +152,7 @@ func TestSelectEventless_RegionOrderingAcrossMicrosteps(t *testing.T) {
 // bound with a typed MicrostepOverflowError rather than spin forever. The
 // per-leaf scan must not break the overflow guard.
 func TestSelectEventless_RegionSelfCycleOverflows(t *testing.T) {
-	m := Forge[string, string, eventlessCtx]("t1cycle").
+	m := ForgeFor[eventlessCtx]("t1cycle").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").

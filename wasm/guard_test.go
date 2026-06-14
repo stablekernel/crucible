@@ -29,7 +29,7 @@ func TestGuard_DrivesTransitionThroughFire(t *testing.T) {
 	reg := state.NewRegistry[order]()
 	node := wasm.Guard[string](reg, "approved", mod)
 
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Guard("approved", func(state.GuardCtx[order]) bool { return false }). // stub, overwritten by Provide
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).
@@ -73,7 +73,7 @@ func TestGuard_BrokenModuleBlocksTransition(t *testing.T) {
 
 	reg := state.NewRegistry[order]()
 	node := wasm.Guard[string](reg, "approved", mod)
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Guard("approved", func(state.GuardCtx[order]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

@@ -18,7 +18,7 @@ type migEnt struct {
 // migSource is the machine an instance runs on the source node: a, b, c with
 // a --go--> b.
 func migSource() *state.Machine[string, string, *migEnt] {
-	return state.Forge[string, string, *migEnt]("mig").
+	return state.ForgeFor[*migEnt]("mig").
 		State("a").
 		State("b").
 		State("c").
@@ -29,7 +29,7 @@ func migSource() *state.Machine[string, string, *migEnt] {
 
 // migAdditive adds a state d — a backward-compatible (additive) evolution.
 func migAdditive() *state.Machine[string, string, *migEnt] {
-	return state.Forge[string, string, *migEnt]("mig").
+	return state.ForgeFor[*migEnt]("mig").
 		State("a").
 		State("b").
 		State("c").
@@ -41,7 +41,7 @@ func migAdditive() *state.Machine[string, string, *migEnt] {
 
 // migBreaking removes state c — a breaking evolution.
 func migBreaking() *state.Machine[string, string, *migEnt] {
-	return state.Forge[string, string, *migEnt]("mig").
+	return state.ForgeFor[*migEnt]("mig").
 		State("a").
 		State("b").
 		Initial("a").

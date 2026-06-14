@@ -126,7 +126,7 @@ func TestIntegrationFlowFansToRealDestinations(t *testing.T) {
 		csink.WithOutlets(sqlOutlet, httpOutlet, fileOutlet, failing),
 	)
 
-	machine := state.Forge[string, string, *orderIT]("order").
+	machine := state.ForgeFor[*orderIT]("order").
 		Use(bridge.Middleware[string, string, *orderIT](manifold, bridge.WithTracer(tracer))).
 		State(placedIT).State(preparingIT).State(enRouteIT).State(deliveredIT).
 		Initial(placedIT).

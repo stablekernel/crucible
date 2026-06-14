@@ -36,7 +36,7 @@ func discountMachine(t *testing.T) *state.Machine[string, string, order] {
 	if err := expr.Assign(reg, "discount", `{"total": total * 0.9}`, state.SchemaOf[order]()); err != nil {
 		t.Fatalf("author CEL assign: %v", err)
 	}
-	def := state.Forge[string, string, order]("order").
+	def := state.ForgeFor[order]("order").
 		Reducer("discount", func(in state.AssignCtx[order]) order { return in.Entity }).
 		State("pending").
 		State("paid").
@@ -124,7 +124,7 @@ func approvalMachine(t *testing.T, mod *wasm.Module) *state.Machine[string, stri
 	reg := state.NewRegistry[approvalOrder]()
 	node := wasm.Guard[string](reg, "approved", mod)
 
-	def := state.Forge[string, string, approvalOrder]("approval").
+	def := state.ForgeFor[approvalOrder]("approval").
 		Guard("approved", func(state.GuardCtx[approvalOrder]) bool { return false }). // stub, replaced by Provide
 		State("pending").
 		State("approved").
@@ -206,7 +206,7 @@ func TestE2E_WASMGuardedDurableTransitionSurvivesRecovery(t *testing.T) {
 type pinger struct{}
 
 func pingMachine() *state.Machine[string, string, *pinger] {
-	return state.Forge[string, string, *pinger]("worker").
+	return state.ForgeFor[*pinger]("worker").
 		State("up").
 		Initial("up").
 		Transition("up").On("ping").GoTo("up").
@@ -223,7 +223,7 @@ func pingBehavior() state.ActorBehavior {
 type host struct{}
 
 func hostSystem(node string, opts ...cluster.Option) (*cluster.System[string, string, *host], *state.ActorSystem[string, string, *host]) {
-	parent := state.Forge[string, string, *host]("host").State("idle").Initial("idle").Quench().
+	parent := state.ForgeFor[*host]("host").State("idle").Initial("idle").Quench().
 		Cast(&host{}, state.WithInitialState("idle"))
 	as := state.NewActorSystem(parent).Register("worker", pingBehavior())
 	return cluster.NewSystem(node, as, opts...), as
@@ -290,7 +290,7 @@ type counter struct {
 }
 
 func counterMachine() *state.Machine[string, string, *counter] {
-	return state.Forge[string, string, *counter]("counter").
+	return state.ForgeFor[*counter]("counter").
 		State("a").State("b").State("c").Final().
 		Initial("a").
 		Transition("a").On("next").GoTo("b").

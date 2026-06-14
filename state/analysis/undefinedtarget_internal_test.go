@@ -11,7 +11,7 @@ import (
 // the public Forge+Quench path.
 func buildForbidFixture(t *testing.T) *state.Machine[string, string, any] {
 	t.Helper()
-	return state.Forge[string, string, any]("forbid").
+	return state.ForgeFor[any]("forbid").
 		State("open").
 		Transition("open").On("go").GoTo("stuck").
 		Transition("open").On("done").GoTo("closed").

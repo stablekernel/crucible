@@ -14,7 +14,7 @@ import (
 // reachable; Steps enumerates the recorded ordinals to read across.
 func ExampleStateAt() {
 	ctx := context.Background()
-	m := state.Forge[string, string, *auditCtx]("audit").
+	m := state.ForgeFor[*auditCtx]("audit").
 		Action("bump", func(c state.ActionCtx[*auditCtx]) (state.Effect, error) {
 			c.Entity.Count++
 			return nil, nil

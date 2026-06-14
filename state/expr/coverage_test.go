@@ -290,7 +290,7 @@ func TestEvalGuard_ActivationErrorYieldsFalse(t *testing.T) {
 		t.Fatalf("Guard: %v", err)
 	}
 	name := node.Ref.Name
-	def := state.Forge[string, string, unmarshalable]("u").
+	def := state.ForgeFor[unmarshalable]("u").
 		Guard(name, func(state.GuardCtx[unmarshalable]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

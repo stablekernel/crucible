@@ -26,7 +26,7 @@ import "testing"
 //	└── b   (leaf)
 func directChildTowardMachine(t *testing.T) *Machine[string, string, struct{}] {
 	t.Helper()
-	return Forge[string, string, struct{}]("directchild").
+	return ForgeFor[struct{}]("directchild").
 		SuperState("root").
 		Initial("a").
 		SuperState("a").

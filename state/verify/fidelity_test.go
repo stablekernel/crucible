@@ -172,7 +172,7 @@ func generateMachine(rng *rand.Rand, seed int) *state.Machine[string, string, an
 	for i := range names {
 		names[i] = fmt.Sprintf("s%d", i)
 	}
-	b := state.Forge[string, string, any](fmt.Sprintf("gen%d", seed))
+	b := state.ForgeFor[any](fmt.Sprintf("gen%d", seed))
 	for i, name := range names {
 		b = b.State(name)
 		// Each state gets 0..2 outgoing edges to random (distinct) targets.
@@ -201,7 +201,7 @@ func generateMachine(rng *rand.Rand, seed int) *state.Machine[string, string, an
 // verify_test fixtures; these mirror the same shapes the external tests exercise.
 
 func fxForge(name string) *state.Builder[string, string, any] {
-	return state.Forge[string, string, any](name)
+	return state.ForgeFor[any](name)
 }
 
 func fxLinear() *state.Machine[string, string, any] {

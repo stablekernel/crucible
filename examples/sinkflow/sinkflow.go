@@ -91,7 +91,7 @@ func New(opts NewOptions) *Flow {
 		csink.WithOutlets(analytics, audit, warehouse),
 	)
 
-	machine := state.Forge[string, string, *Order]("order").
+	machine := state.ForgeFor[*Order]("order").
 		Use(bridge.Middleware[string, string, *Order](m, bridge.WithTracer(opts.Tracer))).
 		State(Placed).State(Preparing).State(EnRoute).State(Delivered).
 		Initial(Placed).

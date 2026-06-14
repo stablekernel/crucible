@@ -19,7 +19,7 @@ type gate struct {
 // immutable Machine ready to Cast. A fully specified machine tempers with no
 // findings and quenches without panicking.
 func ExampleBuilder_Quench() {
-	b := state.Forge[string, string, gate]("turnstile").
+	b := state.ForgeFor[gate]("turnstile").
 		Guard("approved", func(c state.GuardCtx[gate]) bool { return c.Entity.approved }).
 		// CurrentStateFn lets the kernel derive the current state from the entity,
 		// which keeps Temper clean (no "missing CurrentStateFn" warning).
@@ -61,7 +61,7 @@ func ExampleBuilder_Quench() {
 func ExampleIR_Provide() {
 	// Author and freeze a machine in code, then serialize its structure. The
 	// guard func itself is not serializable; only its name travels in the JSON.
-	authored := state.Forge[string, string, gate]("turnstile").
+	authored := state.ForgeFor[gate]("turnstile").
 		Guard("approved", func(c state.GuardCtx[gate]) bool { return c.Entity.approved }).
 		State("locked").
 		Transition("locked").On("push").GoTo("open").When("approved").
@@ -107,7 +107,7 @@ type pingPong struct {
 // running child actors and routes their completion back through the parent.
 func ExampleActorSystem() {
 	// The child machine counts pings, then completes on "finish".
-	child := state.Forge[string, string, *pingPong]("counter").
+	child := state.ForgeFor[*pingPong]("counter").
 		Action("count", func(c state.ActionCtx[*pingPong]) (state.Effect, error) {
 			c.Entity.pings++
 			return nil, nil
@@ -120,7 +120,7 @@ func ExampleActorSystem() {
 		Quench()
 
 	// The parent spawns the child on "start" and reacts to its completion.
-	parent := state.Forge[string, string, *pingPong]("supervisor").
+	parent := state.ForgeFor[*pingPong]("supervisor").
 		State("idle").
 		State("active").
 		Initial("idle").

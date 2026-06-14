@@ -20,7 +20,7 @@ func k6note(s string) state.ActionFn[k6ctx] {
 // cross-cutting transition OUT of a parallel state runs the OnExit actions of
 // every active region leaf, not just the parallel state's own OnExit.
 func TestCrossCutExit_RunsAllRegionLeafExitActions(t *testing.T) {
-	m := state.Forge[string, string, k6ctx]("t3").
+	m := state.ForgeFor[k6ctx]("t3").
 		Action("exitA", k6note("exitA")).
 		Action("exitB", k6note("exitB")).
 		Action("exitPar", k6note("exitPar")).
@@ -67,7 +67,7 @@ func TestCrossCutExit_RunsAllRegionLeafExitActions(t *testing.T) {
 // children. The machine nests a compound inside region "a" so the
 // innermost-first ordering within a region is observable.
 func TestCrossCutExit_ExitActionOrder(t *testing.T) {
-	m := state.Forge[string, string, k6ctx]("t3order").
+	m := state.ForgeFor[k6ctx]("t3order").
 		Action("exitLeafA", k6note("exitLeafA")).
 		Action("exitMidA", k6note("exitMidA")).
 		Action("exitB", k6note("exitB")).
@@ -126,7 +126,7 @@ func TestCrossCutExit_ExitActionOrder(t *testing.T) {
 // is delivered (the broadcast bubbles outward through the enclosing parallel
 // regions rather than stopping at the innermost active parallel).
 func TestNestedParallel_OuterRegionEventDelivered(t *testing.T) {
-	m := state.Forge[string, string, k6ctx]("t9").
+	m := state.ForgeFor[k6ctx]("t9").
 		State("off").
 		Transition("off").On("go").GoTo("P").
 		SuperState("P").

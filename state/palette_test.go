@@ -180,7 +180,7 @@ func TestPaletteEmptyRegistry(t *testing.T) {
 func TestRegisterWithoutDescriptorStillBinds(t *testing.T) {
 	// Backward-compat: the no-option registration path still registers a working
 	// implementation that Quench binds and Fire runs.
-	m := state.Forge[string, string, order]("checkout").
+	m := state.ForgeFor[order]("checkout").
 		Guard("ok", func(state.GuardCtx[order]) bool { return true }).
 		Action("noop", func(state.ActionCtx[order]) (state.Effect, error) { return "done", nil }).
 		State("start").Initial("start").
@@ -240,7 +240,7 @@ func TestDescriptorJSONRoundTrip(t *testing.T) {
 }
 
 func TestBuilderPaletteSurfacesDescriptors(t *testing.T) {
-	b := state.Forge[string, string, order]("m").
+	b := state.ForgeFor[order]("m").
 		Guard("minAmount", func(c state.GuardCtx[order]) bool { return c.Entity.amount >= 1 },
 			state.Describe("Passes when the amount is at least min.").
 				Param("min", state.IntParam).

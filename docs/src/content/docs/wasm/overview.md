@@ -33,7 +33,7 @@ defer mod.Close(ctx)
 reg := state.NewRegistry[Order]()
 guard := wasm.Guard[string](reg, "approved", mod) // a WASM-backed state.GuardBinding
 
-def := state.Forge[string, string, Order]("order").
+def := state.ForgeFor[Order]("order").
 	Guard("approved", func(state.GuardCtx[Order]) bool { return false }). // stub; Provide overwrites
 	State("pending").
 	Transition("pending").On("submit").GoTo("submitted").WhenExpr(guard).

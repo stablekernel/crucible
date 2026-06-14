@@ -18,7 +18,7 @@ type acct struct {
 // TestAssign_TransitionUpdatesContext asserts a transition Assign folds the
 // returned context onto the instance.
 func TestAssign_TransitionUpdatesContext(t *testing.T) {
-	m := state.Forge[string, string, acct]("acct").
+	m := state.ForgeFor[acct]("acct").
 		Reducer("credit", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			c.Balance += 100
@@ -43,7 +43,7 @@ func TestAssign_TransitionUpdatesContext(t *testing.T) {
 // TestG1_GuardCannotMutateContext asserts a guard that writes its received
 // context copy does not change the instance under value semantics.
 func TestG1_GuardCannotMutateContext(t *testing.T) {
-	m := state.Forge[string, string, acct]("g1guard").
+	m := state.ForgeFor[acct]("g1guard").
 		Guard("mutating", func(c state.GuardCtx[acct]) bool {
 			c.Entity.Balance = 9999 // write the copy
 			c.Entity.Notes = append(c.Entity.Notes, "x")
@@ -72,7 +72,7 @@ func TestG1_GuardCannotMutateContext(t *testing.T) {
 // context copy is a structural no-op on the instance under value semantics; only
 // an Assign writes context.
 func TestG1_ActionCannotMutateContext(t *testing.T) {
-	m := state.Forge[string, string, acct]("g1action").
+	m := state.ForgeFor[acct]("g1action").
 		Action("mutating", func(c state.ActionCtx[acct]) (state.Effect, error) {
 			c.Entity.Balance = 9999
 			c.Entity.Notes = append(c.Entity.Notes, "x")
@@ -107,7 +107,7 @@ func TestAssign_FoldOrder(t *testing.T) {
 			return c
 		}
 	}
-	m := state.Forge[string, string, acct]("fold").
+	m := state.ForgeFor[acct]("fold").
 		Reducer("exitA", note("exit")).
 		Reducer("tr", note("tr")).
 		Reducer("entryB", note("entry")).
@@ -147,7 +147,7 @@ func TestAssign_DeclarationOrderWithinPhase(t *testing.T) {
 		c.Balance += 5 // sees first's 10 -> 15
 		return c
 	}
-	m := state.Forge[string, string, acct]("declorder").
+	m := state.ForgeFor[acct]("declorder").
 		Reducer("first", first).
 		Reducer("second", second).
 		State("a").
@@ -169,7 +169,7 @@ func TestAssign_DeclarationOrderWithinPhase(t *testing.T) {
 // the context as it stood at phase entry, before that phase's assigns folded.
 func TestAssign_ActionsReadPreAssignContext(t *testing.T) {
 	var seenByAction int
-	m := state.Forge[string, string, acct]("preassign").
+	m := state.ForgeFor[acct]("preassign").
 		Action("observe", func(c state.ActionCtx[acct]) (state.Effect, error) {
 			seenByAction = c.Entity.Balance
 			return nil, nil
@@ -200,7 +200,7 @@ func TestAssign_ActionsReadPreAssignContext(t *testing.T) {
 // TestAssign_ReadsEvent asserts an Assign reads the triggering event payload from
 // AssignCtx.Event.
 func TestAssign_ReadsEvent(t *testing.T) {
-	m := state.Forge[string, string, acct]("readsevent").
+	m := state.ForgeFor[acct]("readsevent").
 		Reducer("recordEvent", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			if ev, ok := in.Event.(string); ok {
@@ -226,7 +226,7 @@ func TestAssign_ReadsEvent(t *testing.T) {
 
 // TestAssign_ParamsAvailable asserts an Assign reads its ref's static params.
 func TestAssign_ParamsAvailable(t *testing.T) {
-	m := state.Forge[string, string, acct]("params").
+	m := state.ForgeFor[acct]("params").
 		Reducer("addBy", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			if amt, ok := in.Params["amount"].(int); ok {
@@ -253,7 +253,7 @@ func TestAssign_ParamsAvailable(t *testing.T) {
 // folds its assign onto the instance context, so assigns are not silently dropped
 // on the orthogonal-region path.
 func TestAssign_ParallelRegionFolds(t *testing.T) {
-	m := state.Forge[string, string, acct]("parassign").
+	m := state.ForgeFor[acct]("parassign").
 		Reducer("bump", func(in state.AssignCtx[acct]) acct {
 			c := in.Entity
 			c.Balance += 4
@@ -286,7 +286,7 @@ func TestAssign_ParallelRegionFolds(t *testing.T) {
 // surfaces as OutcomeAssignFailed / *AssignPanicError and stops the commit — it
 // must not silently no-op, which was the prior behavior on the parallel path.
 func TestAssign_ParallelRegionPanicStopsCommit(t *testing.T) {
-	m := state.Forge[string, string, acct]("par-assign-panic").
+	m := state.ForgeFor[acct]("par-assign-panic").
 		Reducer("boom", func(in state.AssignCtx[acct]) acct {
 			panic("region reducer blew up")
 		}).
@@ -334,7 +334,7 @@ func TestAssign_IRRoundTrip(t *testing.T) {
 			Reducer("tr", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Balance += 7; return c }).
 			Reducer("entryB", func(in state.AssignCtx[acct]) acct { c := in.Entity; c.Notes = append(c.Notes, "entry"); return c })
 	}
-	m := state.Forge[string, string, acct]("irrt").
+	m := state.ForgeFor[acct]("irrt").
 		Reducer("exitA", func(in state.AssignCtx[acct]) acct { return in.Entity }).
 		Reducer("tr", func(in state.AssignCtx[acct]) acct { return in.Entity }).
 		Reducer("entryB", func(in state.AssignCtx[acct]) acct { return in.Entity }).
@@ -371,7 +371,7 @@ func TestAssign_IRRoundTrip(t *testing.T) {
 // failure that stops the commit and leaves the instance's context unchanged — an
 // assign is a total reducer, so a panic is a programmer error, not a routed error.
 func TestAssign_PanicStopsCommit(t *testing.T) {
-	m := state.Forge[string, string, acct]("assignpanic").
+	m := state.ForgeFor[acct]("assignpanic").
 		Reducer("boom", func(in state.AssignCtx[acct]) acct {
 			panic("reducer blew up")
 		}).
@@ -420,7 +420,7 @@ func TestAssign_UnboundRefFailsQuench(t *testing.T) {
 		}
 	}()
 
-	state.Forge[string, string, acct]("unboundassign").
+	state.ForgeFor[acct]("unboundassign").
 		State("a").
 		State("b").
 		Transition("a").On("go").GoTo("b").Assign("ghost").

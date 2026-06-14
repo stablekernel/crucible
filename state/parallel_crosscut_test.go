@@ -13,7 +13,7 @@ import (
 // transition on "abort" to "done" (exiting all regions). A guard on the abort edge
 // is supplied so the guarded-cross-cutting branch is exercised. "done" is final.
 func crosscutMachine(allowAbort bool) *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("crosscut").
+	return state.ForgeFor[*trec]("crosscut").
 		Guard("canAbort", func(state.GuardCtx[*trec]) bool { return allowAbort }).
 		State("off").
 		Transition("off").On("go").GoTo("par").
@@ -86,7 +86,7 @@ func TestFireFromState_CrossCuttingGuardFails(t *testing.T) {
 // cross-cutting transition surfaces a *GuardPanicError classified
 // OutcomeGuardPanic, exercising the guard-panic branch of fireFromState.
 func TestFireFromState_CrossCuttingGuardPanics(t *testing.T) {
-	m := state.Forge[string, string, *trec]("crosscut-panic").
+	m := state.ForgeFor[*trec]("crosscut-panic").
 		Guard("boom", func(state.GuardCtx[*trec]) bool { panic("guard blew up") }).
 		State("off").
 		Transition("off").On("go").GoTo("par").
@@ -120,7 +120,7 @@ func TestFireFromState_CrossCuttingGuardPanics(t *testing.T) {
 // parallel state is consumed (success, no state change) rather than bubbling,
 // exercising the forbids branch of fireFromState.
 func TestFireFromState_ForbiddenEventIsConsumed(t *testing.T) {
-	m := state.Forge[string, string, *trec]("crosscut-forbid").
+	m := state.ForgeFor[*trec]("crosscut-forbid").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").

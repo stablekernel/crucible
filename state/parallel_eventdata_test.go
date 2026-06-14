@@ -35,7 +35,7 @@ func TestParallel_EventDataReachesHandlingRegion(t *testing.T) {
 		bDone = "bDone"
 	)
 
-	m := state.Forge[string, string, pctx]("parbroadcast").
+	m := state.ForgeFor[pctx]("parbroadcast").
 		Reducer("recordPayload", func(in state.AssignCtx[pctx]) pctx {
 			c := in.Entity
 			if s, ok := in.Event.(string); ok {
@@ -95,7 +95,7 @@ func TestParallel_EventDataReachesCrossCuttingExit(t *testing.T) {
 		done  = "done"
 	)
 
-	m := state.Forge[string, string, pctx]("parexit").
+	m := state.ForgeFor[pctx]("parexit").
 		Reducer("recordPayload", func(in state.AssignCtx[pctx]) pctx {
 			c := in.Entity
 			if s, ok := in.Event.(string); ok {
@@ -154,7 +154,7 @@ func TestParallel_ExitCancelsOrthogonalRegionTimers(t *testing.T) {
 		gone    = "gone"
 	)
 
-	m := state.Forge[string, string, pctx]("parexittimer").
+	m := state.ForgeFor[pctx]("parexittimer").
 		State(start).
 		Transition(start).On("enter").GoTo(root).
 		SuperState(root).

@@ -56,7 +56,7 @@ type shipEvent struct {
 // and deliver from pending has no transition, exercising the two state-aware
 // rejection shapes.
 func fulfillmentMachine() *state.Machine[string, string, *shipment] {
-	return state.Forge[string, string, *shipment]("fulfillment").
+	return state.ForgeFor[*shipment]("fulfillment").
 		Guard("funded", func(ctx state.GuardCtx[*shipment]) bool {
 			return ctx.Entity != nil && ctx.Entity.Funds
 		}).

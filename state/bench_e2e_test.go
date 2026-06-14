@@ -240,7 +240,7 @@ type benchCtx struct{}
 // single "cross" event fires a transition that exits l3a up to l1 and re-enters
 // down to l3b, exercising the multi-level exit/entry cascade.
 func buildNestedBenchMachine() *state.Machine[string, string, *benchCtx] {
-	return state.Forge[string, string, *benchCtx]("nested").
+	return state.ForgeFor[*benchCtx]("nested").
 		SuperState("root").
 		Initial("l1").
 		SuperState("l1").

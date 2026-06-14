@@ -10,7 +10,7 @@ import (
 // ExampleVerify checks that an order machine's terminal state is reachable and
 // prints the event sequence that proves it, without ever firing an event.
 func ExampleVerify() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		State("paid").
@@ -30,7 +30,7 @@ func ExampleVerify() {
 // ExampleVerify_unreachable lists the states a machine declares but can never
 // enter — the marquee reachability defect, found statically.
 func ExampleVerify_unreachable() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("close").GoTo("closed").
 		State("closed").Final().
@@ -48,7 +48,7 @@ func ExampleVerify_unreachable() {
 // along a run that never passes through "canceled"? The clean route exists, and
 // its witness is the event sequence that proves it without ever canceling.
 func ExampleReachAvoiding() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		Transition("open").On("abandon").GoTo("canceled").
@@ -72,7 +72,7 @@ func ExampleReachAvoiding() {
 // can be marked "lost", a terminal that delivered can never follow — so the
 // property fails and the counterexample names the stuck configuration.
 func ExampleAlwaysEventually() {
-	m := state.Forge[string, string, any]("parcel").
+	m := state.ForgeFor[any]("parcel").
 		State("shipped").
 		Transition("shipped").On("arrive").GoTo("delivered").
 		Transition("shipped").On("misroute").GoTo("lost").
@@ -95,7 +95,7 @@ func ExampleAlwaysEventually() {
 // advance independently, so the configuration where both are active is reachable,
 // the invariant is violated, and the counterexample names that configuration.
 func ExampleCheckInvariant() {
-	m := state.Forge[string, string, any]("parcel").
+	m := state.ForgeFor[any]("parcel").
 		State("created").
 		Transition("created").On("dispatch").GoTo("transit").
 		SuperState("transit").
@@ -126,7 +126,7 @@ func ExampleCheckInvariant() {
 // the oracle flags any configuration where the order is "shipped", so the bounded
 // search returns the shortest trace that drives the machine there.
 func ExampleSimulateBounded() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		State("paid").
@@ -151,7 +151,7 @@ func ExampleSimulateBounded() {
 // suite leaves. Here a single happy-path scenario covers the shipping line but
 // leaves the cancellation branch unexercised.
 func ExampleCoverage() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		Transition("open").On("abandon").GoTo("canceled").
@@ -179,7 +179,7 @@ func ExampleCoverage() {
 // feeding it straight back into [Coverage], which reports full coverage. The suite
 // is the seed for a conformance test set built from the machine's structure alone.
 func ExampleCoveringSuite() {
-	m := state.Forge[string, string, any]("order").
+	m := state.ForgeFor[any]("order").
 		State("open").
 		Transition("open").On("pay").GoTo("paid").
 		Transition("open").On("abandon").GoTo("canceled").
@@ -203,7 +203,7 @@ func ExampleCoveringSuite() {
 
 // ExampleReachable restricts the pass to named target states.
 func ExampleReachable() {
-	m := state.Forge[string, string, any]("toggle").
+	m := state.ForgeFor[any]("toggle").
 		State("off").
 		Transition("off").On("flip").GoTo("on").
 		State("on").

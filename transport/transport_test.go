@@ -18,7 +18,7 @@ import (
 type childEnt struct{}
 
 func childMachine() *state.Machine[string, string, *childEnt] {
-	return state.Forge[string, string, *childEnt]("worker").
+	return state.ForgeFor[*childEnt]("worker").
 		State("working").
 		State("done").Final().
 		Initial("working").
@@ -36,7 +36,7 @@ func childBehavior() state.ActorBehavior {
 type hostEnt struct{}
 
 func hostMachine() *state.Machine[string, string, *hostEnt] {
-	return state.Forge[string, string, *hostEnt]("host").
+	return state.ForgeFor[*hostEnt]("host").
 		State("idle").
 		Initial("idle").
 		Quench()

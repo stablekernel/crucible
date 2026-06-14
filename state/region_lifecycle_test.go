@@ -23,7 +23,7 @@ import (
 // exit. Region "side" holds a single flat leaf so the parallel state stays
 // active while "work" advances.
 func regionAfterMachine() *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("region-after").
+	return state.ForgeFor[*trec]("region-after").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").
@@ -133,7 +133,7 @@ func TestRegion_AfterCanceledOnExit(t *testing.T) {
 // "fail" -> "wErrored". A "cancel" event exits "wLoading" early, exercising auto-
 // stop-on-exit.
 func regionInvokeMachine() *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("region-loader").
+	return state.ForgeFor[*trec]("region-loader").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) {
 			return "payload", nil
 		}).
@@ -248,7 +248,7 @@ func TestRegion_InvokeStoppedOnExit(t *testing.T) {
 // -> "wDone"; a "cancel" event exits "wSuper" early, exercising auto-stop-on-
 // exit.
 func regionActorMachine() *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("region-parent").
+	return state.ForgeFor[*trec]("region-parent").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").

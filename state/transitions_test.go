@@ -60,7 +60,7 @@ func provide(b *state.Builder[string, string, *trec]) *state.Machine[string, str
 // TestWildcard_CatchAllMatchesUnhandledEvent asserts a wildcard transition fires
 // for any event no specific On-keyed transition handles.
 func TestWildcard_CatchAllMatchesUnhandledEvent(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("wild").
+	m := provide(state.ForgeFor[*trec]("wild").
 		State("a").
 		Transition("a").On("go").GoTo("b").
 		Transition("a").OnAny().GoTo("fallback").
@@ -81,7 +81,7 @@ func TestWildcard_CatchAllMatchesUnhandledEvent(t *testing.T) {
 // TestWildcard_SpecificOutranksWildcard asserts a specific-event transition is
 // chosen over the wildcard for the event it handles (priority).
 func TestWildcard_SpecificOutranksWildcard(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("wild").
+	m := provide(state.ForgeFor[*trec]("wild").
 		State("a").
 		Transition("a").On("go").GoTo("b").
 		Transition("a").OnAny().GoTo("fallback").
@@ -110,7 +110,7 @@ func TestForbidden_ConsumesEventWithoutBubbling(t *testing.T) {
 	// child forbids "stop"; parent has a cross-cutting "stop" -> halted. A
 	// forbidden "stop" must be consumed at child (stay in child), while an
 	// unrelated "kick" must bubble to the parent.
-	m := provide(state.Forge[string, string, *trec]("forbid").
+	m := provide(state.ForgeFor[*trec]("forbid").
 		State("idle").
 		Transition("idle").On("start").GoTo("running").
 		SuperState("running").
@@ -159,7 +159,7 @@ func TestForbidden_ConsumesEventWithoutBubbling(t *testing.T) {
 // self-transition runs neither (only its effects).
 func TestReenter_SelfTransitionRunsExitEntry(t *testing.T) {
 	build := func(reenter bool) *state.Machine[string, string, *trec] {
-		b := state.Forge[string, string, *trec]("reenter").
+		b := state.ForgeFor[*trec]("reenter").
 			State("s").
 			OnEntry("entry", state.P{"t": "s"}).
 			OnExit("exit", state.P{"t": "s"}).
@@ -218,7 +218,7 @@ func TestReenter_SelfTransitionRunsExitEntry(t *testing.T) {
 // within the same Fire macrostep — chaining a -> b -> c on one external event —
 // and that the raise/transition microsteps are recorded in the Trace.
 func TestRaise_FeedsSameMacrostepRTC(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("raise").
+	m := provide(state.ForgeFor[*trec]("raise").
 		State("a").
 		Transition("a").On("go").GoTo("b").Do("do", state.P{"t": "a->b"}).Raise("next").
 		State("b").
@@ -252,7 +252,7 @@ func TestRaise_FeedsSameMacrostepRTC(t *testing.T) {
 // TestRaise_UnhandledIsIgnored asserts a raised event with no enabled transition
 // at the resulting configuration is ignored (does not fail the macrostep).
 func TestRaise_UnhandledIsIgnored(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("raise").
+	m := provide(state.ForgeFor[*trec]("raise").
 		State("a").
 		Transition("a").On("go").GoTo("b").Raise("nope").
 		State("b").
@@ -271,7 +271,7 @@ func TestRaise_UnhandledIsIgnored(t *testing.T) {
 // TestRaise_CycleOverflowsTyped asserts a self-raising cycle fails fast with the
 // typed run-to-completion overflow error instead of spinning forever.
 func TestRaise_CycleOverflowsTyped(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("loop").
+	m := provide(state.ForgeFor[*trec]("loop").
 		State("a").
 		Transition("a").On("go").GoTo("a").Raise("go").
 		Initial("a"))
@@ -291,7 +291,7 @@ func TestRaise_CycleOverflowsTyped(t *testing.T) {
 // TestAlways_AutoFiresInMacrostep asserts an eventless ("always") transition is
 // auto-fired by the run-to-completion loop within the same macrostep.
 func TestAlways_AutoFiresInMacrostep(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("always").
+	m := provide(state.ForgeFor[*trec]("always").
 		State("a").
 		Transition("a").On("go").GoTo("b").
 		State("b").
@@ -317,7 +317,7 @@ func TestAlways_AutoFiresInMacrostep(t *testing.T) {
 // raise survive a ToJSON -> LoadFromJSON -> Provide -> Quench round-trip and
 // behave identically.
 func TestTransitionSemantics_IRRoundTrip(t *testing.T) {
-	m := provide(state.Forge[string, string, *trec]("rt").
+	m := provide(state.ForgeFor[*trec]("rt").
 		State("a").
 		Transition("a").On("go").GoTo("b").Raise("auto").
 		Transition("a").OnAny().GoTo("fallback").

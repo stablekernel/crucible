@@ -34,7 +34,7 @@ func TestCatalog_RoundTripThroughIRMeta(t *testing.T) {
 	// Author a machine, attach the sidecar to the IR's machine-level Meta (the
 	// reserved extension namespace the kernel round-trips verbatim), serialize, and
 	// reload so the sidecar makes the full JSON round-trip.
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Guard("bigPaid", func(state.GuardCtx[order]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

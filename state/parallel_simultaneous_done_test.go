@@ -51,7 +51,7 @@ func TestParallel_SimultaneousRegionDone_FiresOnDoneOnce(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("par-simultaneous-done").
+	m := state.ForgeFor[prCtx]("par-simultaneous-done").
 		Action("Pdone", note("Pdone")).
 		Action("aEff", note("a-eff")).
 		Action("bEff", note("b-eff")).
@@ -121,7 +121,7 @@ func TestParallel_StaggeredRegionDone_FiresOnDoneOnce(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("par-staggered-done").
+	m := state.ForgeFor[prCtx]("par-staggered-done").
 		Action("Pdone", note("Pdone")).
 		State("off").
 		Transition("off").On("go").GoTo("par").

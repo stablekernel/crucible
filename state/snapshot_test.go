@@ -22,7 +22,7 @@ type snapCtx struct {
 // flatSnapMachine builds a flat three-state machine whose transitions mutate the
 // context, so a snapshot taken mid-run captures both configuration and context.
 func flatSnapMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx]("flow").
+	return state.ForgeFor[*snapCtx]("flow").
 		Action("bump", func(c state.ActionCtx[*snapCtx]) (state.Effect, error) {
 			c.Entity.Count++
 			c.Entity.Notes = append(c.Entity.Notes, "bumped")
@@ -40,7 +40,7 @@ func flatSnapMachine() *state.Machine[string, string, *snapCtx] {
 // hsmSnapMachine builds a hierarchical machine with a compound "running" state so
 // a snapshot of a nested configuration round-trips the spine.
 func hsmSnapMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx]("hsm").
+	return state.ForgeFor[*snapCtx]("hsm").
 		State("off").
 		SuperState("running").
 		Initial("warmup").
@@ -55,7 +55,7 @@ func hsmSnapMachine() *state.Machine[string, string, *snapCtx] {
 // parallelSnapMachine builds a parallel "on" state with two regions so a snapshot
 // of a multi-leaf configuration round-trips every region's active leaf.
 func parallelSnapMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx]("par").
+	return state.ForgeFor[*snapCtx]("par").
 		State("off").
 		SuperState("on").
 		Region("A").
@@ -282,7 +282,7 @@ func TestRestore_RejectsUnknownConfigurationLeaf(t *testing.T) {
 // afterSnapMachine builds a machine whose "waiting" state declares an `after`
 // delayed transition, so a snapshot's ResumeEffects re-arms the pending timer.
 func afterSnapMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx]("timer").
+	return state.ForgeFor[*snapCtx]("timer").
 		State("idle").
 		State("waiting").After(50 * time.Millisecond).On("elapsed").GoTo("done").
 		State("done").Final().
@@ -331,7 +331,7 @@ func TestResumeEffects_ReArmsPendingTimer(t *testing.T) {
 // TestResumeEffects_ReArmsPendingService asserts a restored instance whose
 // configuration owns an `invoke` re-arms the service via ResumeEffects.
 func TestResumeEffects_ReArmsPendingService(t *testing.T) {
-	m := state.Forge[string, string, *snapCtx]("svc").
+	m := state.ForgeFor[*snapCtx]("svc").
 		Service("fetch", func(context.Context, state.ServiceCtx[*snapCtx]) (any, error) { return nil, nil }).
 		State("idle").
 		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
@@ -401,7 +401,7 @@ type snapChildCtx struct {
 // snapChildMachine builds a flat child machine that advances idle -> mid -> done,
 // bumping a JSON-marshalable step counter, so its snapshot round-trips.
 func snapChildMachine() *state.Machine[string, string, *snapChildCtx] {
-	return state.Forge[string, string, *snapChildCtx]("snapchild").
+	return state.ForgeFor[*snapChildCtx]("snapchild").
 		Action("step", func(c state.ActionCtx[*snapChildCtx]) (state.Effect, error) {
 			c.Entity.Steps++
 			return nil, nil
@@ -417,7 +417,7 @@ func snapChildMachine() *state.Machine[string, string, *snapChildCtx] {
 
 // snapParentMachine builds a parent that invokes the snap child actor.
 func snapParentMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx]("snapparent").
+	return state.ForgeFor[*snapCtx]("snapparent").
 		State("idle").
 		State("supervising").InvokeActor("snapchild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("complete").
