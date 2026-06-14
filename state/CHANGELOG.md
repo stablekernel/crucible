@@ -183,6 +183,35 @@ ready to freeze on sign-off. The `analysis`, `evolution`, `conformance`, and
   copy-on-write, trace-history bounding, and random-IR fixpoint and
   eventless-termination fuzzing.
 
+### Deferred additive API surface (post-1.0, non-breaking)
+
+These are deliberate v1.0 boundaries, not oversights. Each lands later as a purely
+additive change — a new builder method, a new option on an existing variadic tail,
+or a new optional IR field — so adopting it never breaks a v1 caller. The freeze
+locks today's surface precisely so these can be added without a major bump.
+
+- Payload-carrying `Raise`: the raised internal-event queue is runtime-internal
+  today, so a transition raises an event without data. A future builder method
+  carries a payload, backed by an additive optional field on the IR transition;
+  the existing `Raise []E` slice is unchanged.
+- Multi-target transitions: a single transition targets one state via `To`. A
+  future `.ToAll(...)` builder, backed by an optional `Targets` IR field, expresses
+  a fan-out; `To` keeps its current single-target meaning.
+- `context.Context` on `Verify` / `PlanPath` / `Cast` / `Restore` and the snapshot
+  codecs: these take no `context.Context` at v1. A future `WithContext` option on
+  each existing option tail threads cancellation and deadlines without changing a
+  signature. (`RestoreActors` already takes a `context.Context`.)
+- Relaxing `SnapshotActors`' non-quiesced refusal: it refuses to snapshot a
+  non-quiesced actor system by design. A future `SnapshotActorsOption` lets a host
+  opt into a defined non-quiesced capture; the strict refusal stays the default.
+- Finer Inspector cadence: the Inspector fires once per macrostep — that
+  once-per-macrostep cadence is the documented v1 contract. A future additive
+  `InspectKind` exposes per-microstep events for callers that want them; existing
+  inspectors keep their macrostep cadence.
+- A metrics `Meter` seam: there is no metrics hook at v1. A future `WithMeter`
+  option attaches a meter through the existing option tail, alongside the structured
+  logger and inspector seams.
+
 ## [1.0.0]
 
 The first stable release. The 0.2.0 to 1.0.0 step finalizes the breaking changes
