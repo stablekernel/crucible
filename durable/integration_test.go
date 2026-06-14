@@ -115,7 +115,7 @@ func pipelineService(calls *int64) state.ServiceFn[*pipelineCtx] {
 // run, so byte-identity proves the recorded output was replayed, not regenerated.
 func pipelineChild(runs *int64) state.ActorBehavior {
 	return func(map[string]any) (state.ActorInstance, error) {
-		child := state.Forge[string, string, *pipelineCtx]("worker").
+		child := state.ForgeFor[*pipelineCtx]("worker").
 			State("working").
 			State("finished").Final().
 			Initial("working").
@@ -150,7 +150,7 @@ func (pipelineEffect) Kind() string { return "pipeline.notify" }
 // timer and the domain effect arm on the plain `proceed` Fire so a settle never has
 // to carry a timer effect into the next seam.
 func pipelineMachine() *state.Machine[string, string, *pipelineCtx] {
-	return state.Forge[string, string, *pipelineCtx]("pipeline").
+	return state.ForgeFor[*pipelineCtx]("pipeline").
 		Service("load", nil). // bound by the Runner's registry; nil here is a declaration
 		Actor("worker").
 		Reducer("recordFetch", func(in state.AssignCtx[*pipelineCtx]) *pipelineCtx {

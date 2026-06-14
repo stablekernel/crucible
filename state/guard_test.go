@@ -43,7 +43,7 @@ func withGuards(b *state.Builder[string, string, gctx]) *state.Builder[string, s
 // transition was enabled (reached "to").
 func fireExpr(t *testing.T, expr state.GuardNode[string], e gctx) (enabled bool, res state.FireResult[string]) {
 	t.Helper()
-	m := withGuards(state.Forge[string, string, gctx]("g").
+	m := withGuards(state.ForgeFor[gctx]("g").
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(expr).
 		State("to").
@@ -212,7 +212,7 @@ func TestCompositeGuard_FailureReportsLeaf(t *testing.T) {
 }
 
 func TestCompositeGuard_PanicSurfacesTyped(t *testing.T) {
-	m := state.Forge[string, string, gctx]("p").
+	m := state.ForgeFor[gctx]("p").
 		Guard("boom", func(state.GuardCtx[gctx]) bool { panic("kaboom") }).
 		State("from").
 		Transition("from").On("go").GoTo("to").
@@ -232,7 +232,7 @@ func TestCompositeGuard_PanicSurfacesTyped(t *testing.T) {
 // transition are AND-composed: the transition is enabled only when both pass.
 func TestWhenAndWhenExpr_BothMustPass(t *testing.T) {
 	build := func(e gctx) bool {
-		m := withGuards(state.Forge[string, string, gctx]("both").
+		m := withGuards(state.ForgeFor[gctx]("both").
 			State("from").
 			Transition("from").On("go").GoTo("to").
 			When("a").
@@ -260,7 +260,7 @@ func TestWhenAndWhenExpr_BothMustPass(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStateIn_Atomic(t *testing.T) {
-	m := state.Forge[string, string, gctx]("flat").
+	m := state.ForgeFor[gctx]("flat").
 		State("a").Transition("a").On("go").GoTo("b").WhenExpr(state.StateIn("a")).
 		State("b").Transition("b").On("go").GoTo("c").WhenExpr(state.StateIn("a")).
 		State("c").
@@ -282,7 +282,7 @@ func TestStateIn_Atomic(t *testing.T) {
 // compound machine: super "work" with children "draft"/"review"; stateIn("work")
 // must be true while any child of work is active.
 func TestStateIn_Compound(t *testing.T) {
-	m := state.Forge[string, string, gctx]("hsm").
+	m := state.ForgeFor[gctx]("hsm").
 		SuperState("work").Initial("draft").
 		SubState("draft").On("next").GoTo("review").
 		SubState("review").
@@ -306,7 +306,7 @@ func TestStateIn_Compound(t *testing.T) {
 // parallel machine: a stateIn over a leaf in one region is true while that region
 // holds the leaf, even though another region is concurrently active.
 func TestStateIn_Parallel(t *testing.T) {
-	m := state.Forge[string, string, gctx]("par").
+	m := state.ForgeFor[gctx]("par").
 		State("off").Transition("off").On("start").GoTo("root").
 		SuperState("root").
 		Region("r1").
@@ -350,7 +350,7 @@ func TestStateIn_Parallel(t *testing.T) {
 
 // stateIn composes with the boolean combinators.
 func TestStateIn_ComposesWithCombinators(t *testing.T) {
-	m := withGuards(state.Forge[string, string, gctx]("mix").
+	m := withGuards(state.ForgeFor[gctx]("mix").
 		State("a").
 		Transition("a").On("go").GoTo("b").
 		WhenExpr(state.And(state.StateIn("a"), state.Not(state.Guard[string]("c")))).
@@ -380,7 +380,7 @@ func TestGuardExpr_IRRoundTrip(t *testing.T) {
 		state.Or(state.Guard[string]("a", map[string]any{"k": "v"}), state.StateIn("a")),
 		state.Not(state.Guard[string]("c")),
 	)
-	m := withGuards(state.Forge[string, string, gctx]("rt").
+	m := withGuards(state.ForgeFor[gctx]("rt").
 		State("a").
 		Transition("a").On("go").GoTo("b").WhenExpr(expr).
 		State("b").
@@ -442,7 +442,7 @@ func TestGuardExpr_UnboundLeafPanicsAtQuench(t *testing.T) {
 			t.Fatalf("want *UnboundRefError, got %T: %v", r, r)
 		}
 	}()
-	state.Forge[string, string, gctx]("u").
+	state.ForgeFor[gctx]("u").
 		State("a").
 		Transition("a").On("go").GoTo("b").WhenExpr(state.Guard[string]("missing")).
 		State("b").
@@ -456,7 +456,7 @@ func TestGuardExpr_MalformedAndPanicsAtQuench(t *testing.T) {
 			t.Fatalf("expected Quench panic for malformed (empty) And")
 		}
 	}()
-	withGuards(state.Forge[string, string, gctx]("m").
+	withGuards(state.ForgeFor[gctx]("m").
 		State("a").
 		Transition("a").On("go").GoTo("b").WhenExpr(state.And[string]()).
 		State("b").
@@ -498,7 +498,7 @@ func TestEventlessGuard_PanicDoesNotEnableTransition(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			m := tt.guard(
-				state.Forge[string, string, gctx]("eventless-guard").
+				state.ForgeFor[gctx]("eventless-guard").
 					Guard("boom", func(state.GuardCtx[gctx]) bool { panic("kaboom") }).
 					State("from").
 					Transition("from").On("go").GoTo("mid").

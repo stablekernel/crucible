@@ -48,7 +48,7 @@ func counterService(calls *int64) state.ServiceFn[svcCtx] {
 // result is observable in the recovered snapshot. fn is bound under "fetch" so the
 // machine and the durable Runner's registry share one implementation.
 func fetchMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
-	return state.Forge[string, string, svcCtx]("fetch").
+	return state.ForgeFor[svcCtx]("fetch").
 		Service("fetch", fn).
 		Reducer("recordResult", func(in state.AssignCtx[svcCtx]) svcCtx {
 			c := in.Entity
@@ -217,7 +217,7 @@ func TestService_ErrorReplay_ByteIdentical(t *testing.T) {
 // reaches the final. It proves multiple services in one instance record and replay
 // in order.
 func chainMachine(svcA, svcB state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
-	return state.Forge[string, string, svcCtx]("chain").
+	return state.ForgeFor[svcCtx]("chain").
 		Service("svcA", svcA).
 		Service("svcB", svcB).
 		Reducer("note", func(in state.AssignCtx[svcCtx]) svcCtx {

@@ -63,7 +63,7 @@ func TestWaitFor_ResolvesViaScheduler(t *testing.T) {
 func TestWaitFor_DoneViaCustomStep(t *testing.T) {
 	ctx := context.Background()
 	// A two-state machine: armed -> done (final) on "finish".
-	m := state.Forge[string, string, *trec]("done-wait").
+	m := state.ForgeFor[*trec]("done-wait").
 		State("armed").
 		State("done").Final().
 		Initial("armed").

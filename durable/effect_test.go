@@ -98,7 +98,7 @@ func (r *effectRecorder) totalApplies() int {
 // effectMachine emits a host effect on entry to a state, so each fired event
 // drives exactly one dispatchable domain effect the runtime must apply once.
 func effectMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("effect").
+	return state.ForgeFor[*runCtx]("effect").
 		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
 			return notifyEffect{To: "ops@example.com"}, nil
 		}).
@@ -367,7 +367,7 @@ type bareEffect struct{ N int }
 // bareEffectMachine emits a bare (non-Kinded) domain effect, exercising the
 // effectKind / recordEffects fallback for an effect with no stable discriminant.
 func bareEffectMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("bare").
+	return state.ForgeFor[*runCtx]("bare").
 		Action("emit", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
 			return bareEffect{N: 1}, nil
 		}).
@@ -436,7 +436,7 @@ func TestRunner_EffectDispatch_NonDispatchStore_NoOp(t *testing.T) {
 // same step a domain effect fires, so the dispatcher must route the driver effect
 // to the Scheduler and only the domain effect to the handler.
 func timerNotifyMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("timer").
+	return state.ForgeFor[*runCtx]("timer").
 		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
 			return notifyEffect{To: "ops@example.com"}, nil
 		}).

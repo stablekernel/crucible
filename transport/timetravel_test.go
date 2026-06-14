@@ -18,7 +18,7 @@ type ttEnt struct {
 // ttMachine advances a --next--> b --next--> c so an instance has distinct states
 // at distinct recorded steps for time-travel to reconstruct.
 func ttMachine() *state.Machine[string, string, *ttEnt] {
-	return state.Forge[string, string, *ttEnt]("counter").
+	return state.ForgeFor[*ttEnt]("counter").
 		State("a").
 		State("b").
 		State("c").Final().

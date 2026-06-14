@@ -19,7 +19,7 @@ type childEntity struct {
 // final "done" state on the "finish" event. On entering "done" it records a result
 // on its entity, which the actor adapter surfaces as the child's output.
 func childMachine() *state.Machine[string, string, *childEntity] {
-	return state.Forge[string, string, *childEntity]("child").
+	return state.ForgeFor[*childEntity]("child").
 		Action("record", func(c state.ActionCtx[*childEntity]) (state.Effect, error) {
 			c.Entity.result = "child-output"
 			return nil, nil
@@ -49,7 +49,7 @@ func childBehavior() state.ActorBehavior {
 // auto-stop-on-exit. The childDone action records the child's output read from the
 // system.
 func parentInvokeMachine(sys **state.ActorSystem[string, string, *trec]) *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("parent").
+	return state.ForgeFor[*trec]("parent").
 		Action("captureOutput", func(c state.ActionCtx[*trec]) (state.Effect, error) {
 			if o, ok := (*sys).LastOutput(); ok {
 				c.Entity.notes = append(c.Entity.notes, "output:"+o.(string))
@@ -113,7 +113,7 @@ func TestActor_InvokeChildMachine_RoutesOnDone(t *testing.T) {
 // TestActor_SpawnYieldsUsableRef asserts the dynamic spawn built-in creates an
 // actor at runtime and yields a ref the holder can address (deliver to and step).
 func TestActor_SpawnYieldsUsableRef(t *testing.T) {
-	m := state.Forge[string, string, *trec]("spawner").
+	m := state.ForgeFor[*trec]("spawner").
 		State("idle").
 		State("active").
 		Initial("idle").
@@ -163,7 +163,7 @@ func TestActor_SpawnYieldsUsableRef(t *testing.T) {
 // completing it.
 func TestActor_DeliverStepsActor(t *testing.T) {
 	// A two-step child: working -> midway -> done(final).
-	cm := state.Forge[string, string, *childEntity]("twostep").
+	cm := state.ForgeFor[*childEntity]("twostep").
 		State("working").
 		State("midway").
 		State("done").Final().
@@ -206,7 +206,7 @@ func TestActor_DeliverStepsActor(t *testing.T) {
 // parentInvokeMachineWith builds the parent for a given child machine, without the
 // output-capturing action (the child carries no output here).
 func parentInvokeMachineWith(_ *state.Machine[string, string, *childEntity]) *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("parent").
+	return state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("complete").
@@ -257,7 +257,7 @@ func TestActor_StopParentStopsNestedChildren(t *testing.T) {
 		return state.NewActor(inst, nil), nil
 	}
 	// Middle actor: on entering its initial state it invokes the grandchild.
-	middle := state.Forge[string, string, *childEntity]("middle").
+	middle := state.ForgeFor[*childEntity]("middle").
 		State("run").InvokeActor("grand", state.WithInvokeOnDone("gDone"), state.WithInvokeOnError("gErr")).
 		State("end").Final().
 		Initial("run").
@@ -293,7 +293,7 @@ func TestActor_StopParentStopsNestedChildren(t *testing.T) {
 // TestActor_UnboundSrcRoutesOnError asserts a spawn whose src is unregistered
 // settles as an error and routes the parent's onError rather than hanging.
 func TestActor_UnboundSrcRoutesOnError(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").InvokeActor("missing", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").
@@ -319,7 +319,7 @@ func TestActor_UnboundSrcRoutesOnError(t *testing.T) {
 // onDone/onError) round-trips losslessly through ToJSON -> LoadFromJSON, and a
 // dynamic Spawn built-in's params survive too.
 func TestActor_IRRoundTrip(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").
 		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"),
@@ -389,7 +389,7 @@ func TestActor_IRRoundTrip(t *testing.T) {
 // by that well-known name.
 func TestActor_RefBySystemID(t *testing.T) {
 	var sys *state.ActorSystem[string, string, *trec]
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").
 		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"), state.WithSystemID("supervisor")).
@@ -417,7 +417,7 @@ func TestActor_RefBySystemID(t *testing.T) {
 // TestActor_SettleErrorRoutesOnError asserts a host-detected actor failure routes
 // the parent's onError.
 func TestActor_SettleErrorRoutesOnError(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").

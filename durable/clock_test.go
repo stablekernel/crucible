@@ -24,7 +24,7 @@ type timerCtx struct {
 // instant it fires is a function of the clock the host driver reads — exactly the
 // nondeterminism the clock seam records and replays.
 func timerMachine() *state.Machine[string, string, *timerCtx] {
-	return state.Forge[string, string, *timerCtx]("timer").
+	return state.ForgeFor[*timerCtx]("timer").
 		Action("markFired", func(c state.ActionCtx[*timerCtx]) (state.Effect, error) {
 			c.Entity.Fired++
 			return nil, nil
@@ -42,7 +42,7 @@ func timerMachine() *state.Machine[string, string, *timerCtx] {
 // a single live lifetime reads the clock many times (arm, tick, re-arm, tick),
 // exercising multiple clock reads correlated across steps.
 func chainedTimerMachine() *state.Machine[string, string, *timerCtx] {
-	return state.Forge[string, string, *timerCtx]("chained").
+	return state.ForgeFor[*timerCtx]("chained").
 		Action("markFired", func(c state.ActionCtx[*timerCtx]) (state.Effect, error) {
 			c.Entity.Fired++
 			return nil, nil

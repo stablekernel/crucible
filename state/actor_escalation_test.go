@@ -14,7 +14,7 @@ import (
 // exercising the ActorSystem's panic recovery + escalation. On "finish" it still
 // completes normally, so the same child serves both the panic and the happy path.
 func panicChildBehavior() state.ActorBehavior {
-	cm := state.Forge[string, string, *childEntity]("child").
+	cm := state.ForgeFor[*childEntity]("child").
 		Action("boom", func(state.ActionCtx[*childEntity]) (state.Effect, error) {
 			panic("child blew up")
 		}).
@@ -39,7 +39,7 @@ const escActorID = "ff-child"
 // has no onError to route, so the G3 default must escalate the failure to the parent
 // observably rather than swallow it. The child is spawned on the "start" event.
 func noErrorParent() *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("parent").
+	return state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").
 		State("complete").
@@ -184,7 +184,7 @@ func TestActorEscalation_ChildPanic_NoOnError_Escalates(t *testing.T) {
 // onError IS wired, the child failure routes to the parent's onError transition and
 // does NOT escalate.
 func TestActorEscalation_WithOnError_HandledLocally(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
 		State("errored").
@@ -252,7 +252,7 @@ func TestActorEscalation_Nested_ClimbsToGrandparent(t *testing.T) {
 		return state.NewActor(inst, nil), nil
 	}
 	// Grandchild dynamically spawns the great-grandchild with no onError wired.
-	grand := state.Forge[string, string, *childEntity]("grand").
+	grand := state.ForgeFor[*childEntity]("grand").
 		State("run").
 		Initial("run").
 		Transition("run").On("spawnGreat").GoTo("run").Spawn("great", greatID).
@@ -263,7 +263,7 @@ func TestActorEscalation_Nested_ClimbsToGrandparent(t *testing.T) {
 	}
 	// Middle dynamically spawns the grandchild with no onError wired, so a descendant
 	// failure escalates and climbs rather than routing into an onError.
-	middle := state.Forge[string, string, *childEntity]("middle").
+	middle := state.ForgeFor[*childEntity]("middle").
 		State("run").
 		State("end").Final().
 		Initial("run").
@@ -337,7 +337,7 @@ func TestActorEscalation_Nested_ClimbsToGrandparent(t *testing.T) {
 // round-trip through the system (resolve by id, then by systemId) yielding the same
 // stable identity, and is NOT constructable as a meaningful positional index.
 func TestActorRef_Opacity_ResolvedThroughSystem(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").
 		InvokeActor("child", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr"), state.WithSystemID("supervisor")).
@@ -390,7 +390,7 @@ func TestActorRef_Opacity_ResolvedThroughSystem(t *testing.T) {
 // TestActorEscalation_UnboundSrc_NoOnError_Escalates asserts a spawn whose Src is
 // unregistered, with NO onError wired, escalates rather than hanging or swallowing.
 func TestActorEscalation_UnboundSrc_NoOnError_Escalates(t *testing.T) {
-	m := state.Forge[string, string, *trec]("parent").
+	m := state.ForgeFor[*trec]("parent").
 		State("idle").
 		State("supervising").
 		Initial("idle").

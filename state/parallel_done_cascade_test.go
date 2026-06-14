@@ -31,7 +31,7 @@ import (
 // succeeded while the OnDone effect never ran.
 func TestParallel_OnDoneActionError_SurfacesTaggedFailure(t *testing.T) {
 	boom := errors.New("ondone-boom")
-	m := state.Forge[string, string, prCtx]("par-ondone-error").
+	m := state.ForgeFor[prCtx]("par-ondone-error").
 		Action("failDone", func(state.ActionCtx[prCtx]) (state.Effect, error) {
 			return nil, boom
 		}).
@@ -98,7 +98,7 @@ func TestParallel_NestedUnderCompound_SettlesParentDone(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("par-nested-done").
+	m := state.ForgeFor[prCtx]("par-nested-done").
 		Action("Pdone", note("Pdone")).
 		Action("Odone", note("Odone")).
 		State("off").
@@ -168,7 +168,7 @@ func TestParallel_NestedTwoCompoundsDeep_CascadesAllDone(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("par-nested-2deep").
+	m := state.ForgeFor[prCtx]("par-nested-2deep").
 		Action("Pdone", note("Pdone")).
 		Action("Mdone", note("Mdone")).
 		Action("Odone", note("Odone")).
@@ -229,7 +229,7 @@ func TestParallel_NestedUnderIncompleteCompound_DoesNotCascade(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("par-nested-incomplete").
+	m := state.ForgeFor[prCtx]("par-nested-incomplete").
 		Action("Pdone", note("Pdone")).
 		Action("Odone", note("Odone")).
 		State("off").

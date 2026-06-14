@@ -21,7 +21,7 @@ type runCtx struct {
 // linearMachine is a flat three-state machine: idle -> active -> done, the
 // simplest record/replay target.
 func linearMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("linear").
+	return state.ForgeFor[*runCtx]("linear").
 		State("idle").
 		State("active").
 		State("done").Final().
@@ -35,7 +35,7 @@ func linearMachine() *state.Machine[string, string, *runCtx] {
 // which event drives it, so replay must re-drive the exact recorded event to
 // reach the live arm.
 func branchingMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("branching").
+	return state.ForgeFor[*runCtx]("branching").
 		State("start").
 		State("left").
 		State("right").
@@ -52,7 +52,7 @@ func branchingMachine() *state.Machine[string, string, *runCtx] {
 // assignMachine folds context on every transition, so a recovered instance only
 // matches byte-for-byte if the assigns replay in the exact recorded order.
 func assignMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("assign").
+	return state.ForgeFor[*runCtx]("assign").
 		Action("bump", func(c state.ActionCtx[*runCtx]) (state.Effect, error) {
 			c.Entity.Count++
 			c.Entity.Tags = append(c.Entity.Tags, "bumped")
@@ -71,7 +71,7 @@ func assignMachine() *state.Machine[string, string, *runCtx] {
 // parallelMachine enters a parallel region so a snapshot of a multi-leaf
 // configuration must round-trip every region's active leaf through replay.
 func parallelMachine() *state.Machine[string, string, *runCtx] {
-	return state.Forge[string, string, *runCtx]("parallel").
+	return state.ForgeFor[*runCtx]("parallel").
 		State("off").
 		SuperState("on").
 		Region("A").

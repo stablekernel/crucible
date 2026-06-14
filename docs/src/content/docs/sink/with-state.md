@@ -23,7 +23,7 @@ out through a `Manifold`:
 ```go
 m := sink.NewManifold(sink.WithTracer(tracer)).Attach(auditOutlet, analyticsOutlet)
 
-machine := state.Forge[string, string, *Order]("order").
+machine := state.ForgeFor[*Order]("order").
     Use(bridge.Middleware[string, string, *Order](m, bridge.WithTracer(tracer))).
     // ... states and transitions ...
     Quench(state.Strict())

@@ -14,7 +14,7 @@ authoring, an immutable definition, and a running instance.
 
 | Verb | Signature (shape) | What it does | When to call it |
 | --- | --- | --- | --- |
-| **Forge** | `Forge[S,E,C]("name") *Builder` | Opens a mutable builder. Declare states, transitions, and register named behavior (`.Guard`, `.Action`, `.Reducer`, `.Service`, `.Actor`). | Once, at the start of defining a machine. |
+| **Forge** | `Forge[S,E,C]("name") *Builder` | Opens a mutable builder. Declare states, transitions, and register named behavior (`.Guard`, `.Action`, `.Reducer`, `.Service`, `.Actor`). For the common string-keyed case, `ForgeFor[C]("name")` fixes `S` and `E` to `string` so you spell only the context type. | Once, at the start of defining a machine. |
 | **Temper** | `b.Temper() []Diagnostic` | Optional, non-failing lint/diagnostics pass over the builder. Returns findings; never panics, never freezes. | Before `Quench`, when you want to surface reachability or wiring warnings. |
 | **Quench** | `b.Quench() *Machine` | Freezes the builder into an immutable `*Machine`. **Panics on misconfiguration** (unknown states, dangling refs). | Once, when the definition is complete. The `*Machine` is safe to share across goroutines. |
 | **Cast** | `m.Cast(entity, opts...) *Instance` | Creates a running `*Instance` seeded with your context entity (by value). | Per entity you want to track. Cheap; cast freely. |

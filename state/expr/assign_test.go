@@ -20,7 +20,7 @@ func TestAssign_DrivesContextThroughFire(t *testing.T) {
 		t.Fatalf("Assign: %v", err)
 	}
 
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Reducer("applyDiscount", func(in state.AssignCtx[order]) order { return in.Entity }). // stub, overwritten by Provide
 		State("from").
 		Transition("from").On("go").GoTo("to").Assign("applyDiscount").
@@ -66,7 +66,7 @@ func fireAssign(t *testing.T, source string, start order) order {
 	if err := expr.Assign(reg, "a", source, orderSchema()); err != nil {
 		t.Fatalf("Assign: %v", err)
 	}
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Reducer("a", func(in state.AssignCtx[order]) order { return in.Entity }).
 		State("from").
 		Transition("from").On("go").GoTo("to").Assign("a").

@@ -12,7 +12,7 @@ import (
 // "closed"; "form" reaches "thanks" or "closed"; "thanks" reaches "closed". It is
 // guard-free, so ShortestPaths is directly comparable to the kernel's PlanPath.
 func feedbackMachine() *state.Machine[string, string, any] {
-	return state.Forge[string, string, any]("feedback").
+	return state.ForgeFor[any]("feedback").
 		State("question").
 		Transition("question").On("CLICK_GOOD").GoTo("thanks").
 		Transition("question").On("CLICK_BAD").GoTo("form").
@@ -32,7 +32,7 @@ func feedbackMachine() *state.Machine[string, string, any] {
 // simple-path walk must refuse to re-enter a state on the current path to
 // terminate.
 func cyclicMachine() *state.Machine[string, string, any] {
-	return state.Forge[string, string, any]("cyclic").
+	return state.ForgeFor[any]("cyclic").
 		State("a").
 		Transition("a").On("toB").GoTo("b").
 		State("b").

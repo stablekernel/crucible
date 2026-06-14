@@ -15,7 +15,7 @@ import (
 // through Fire — driving a delayed (after) transition with no real waiting.
 func ExampleScheduler() {
 	type cart struct{}
-	m := state.Forge[string, string, cart]("checkout").
+	m := state.ForgeFor[cart]("checkout").
 		State("active").
 		State("pending").
 		State("expired").

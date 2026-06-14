@@ -14,7 +14,7 @@ type pingEnt struct{}
 // pingMachine stays running: a self-transition on "ping" keeps the actor alive so
 // a benchmark can deliver to it repeatedly without re-spawning.
 func pingMachine() *state.Machine[string, string, *pingEnt] {
-	return state.Forge[string, string, *pingEnt]("ping").
+	return state.ForgeFor[*pingEnt]("ping").
 		State("up").
 		Initial("up").
 		Transition("up").On("ping").GoTo("up").

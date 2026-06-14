@@ -16,7 +16,7 @@ func ExampleMiddleware() {
 	m := csink.NewManifold(csink.WithOutlets(bucket))
 
 	// Install the bridge as middleware: every transition fans out through m.
-	machine := state.Forge[string, string, *bulb]("switch").
+	machine := state.ForgeFor[*bulb]("switch").
 		Use(bridge.Middleware[string, string, *bulb](m)).
 		State("off").State("on").
 		Initial("off").

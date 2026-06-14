@@ -65,7 +65,7 @@ type Fulfillment struct {
 // and deliver from pending has no transition, so both state-aware rejection
 // shapes are reachable from a stream.
 func NewFulfillment() *Fulfillment {
-	machine := state.Forge[string, string, *Shipment]("fulfillment").
+	machine := state.ForgeFor[*Shipment]("fulfillment").
 		Guard("funded", func(ctx state.GuardCtx[*Shipment]) bool {
 			return ctx.Entity != nil && ctx.Entity.Funds
 		}).

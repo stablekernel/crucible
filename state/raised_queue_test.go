@@ -21,7 +21,7 @@ type rqCtx struct{ N int }
 // s1 -> s4 must NOT then replay the stale r2 (which would otherwise drive s4 -> s5).
 func TestRaisedQueue_DoesNotLeakAcrossFires(t *testing.T) {
 	boom := errors.New("boom")
-	m := state.Forge[string, string, rqCtx]("rq-leak").
+	m := state.ForgeFor[rqCtx]("rq-leak").
 		Action("fail", func(state.ActionCtx[rqCtx]) (state.Effect, error) { return nil, boom }).
 		State("s1").
 		State("s2").

@@ -26,7 +26,7 @@ func (b *bulb) cur() string {
 }
 
 func switchMachine(mw ...state.Middleware[string, string, *bulb]) *state.Machine[string, string, *bulb] {
-	return state.Forge[string, string, *bulb]("switch").
+	return state.ForgeFor[*bulb]("switch").
 		Use(mw...).
 		State("off").
 		State("on").

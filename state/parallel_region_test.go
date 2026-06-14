@@ -40,7 +40,7 @@ func sortedConfig(inst interface{ Configuration() []string }) []string {
 // region transition's Raise must reach region b. The pre-fix kernel dropped the
 // Raise (applyRegionTransition never called enqueueRaised), leaving {a2, b1}.
 func TestRegionTransition_RaiseIsDelivered(t *testing.T) {
-	m := state.Forge[string, string, prCtx]("pr-raise").
+	m := state.ForgeFor[prCtx]("pr-raise").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").
@@ -85,7 +85,7 @@ func TestRegionTransition_RaiseIsDelivered(t *testing.T) {
 func TestRegionTransition_GuardFailBubblesToParallelHandler(t *testing.T) {
 	ctx := context.Background()
 
-	mPar := state.Forge[string, string, prCtx]("pr-guardfail-par").
+	mPar := state.ForgeFor[prCtx]("pr-guardfail-par").
 		Guard("no", func(state.GuardCtx[prCtx]) bool { return false }).
 		State("off").
 		Transition("off").On("go").GoTo("par").
@@ -107,7 +107,7 @@ func TestRegionTransition_GuardFailBubblesToParallelHandler(t *testing.T) {
 
 	// Compound analog: an identical guard-false candidate inside a compound state
 	// bubbles to the parent handler. The parallel case must behave the same.
-	mCmp := state.Forge[string, string, prCtx]("pr-guardfail-cmp").
+	mCmp := state.ForgeFor[prCtx]("pr-guardfail-cmp").
 		Guard("no", func(state.GuardCtx[prCtx]) bool { return false }).
 		State("off").
 		Transition("off").On("go").GoTo("k").
@@ -156,7 +156,7 @@ func TestRegionTransition_ActionSeesExitAssignFold(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	mPar := state.Forge[string, string, prCtx]("pr-fold-par").
+	mPar := state.ForgeFor[prCtx]("pr-fold-par").
 		Reducer("inc", inc).
 		Action("obs", obs).
 		State("off").
@@ -180,7 +180,7 @@ func TestRegionTransition_ActionSeesExitAssignFold(t *testing.T) {
 
 	// Compound analog: identical shape on the main commit path; the observer sees
 	// the exit-assign fold (N=1). The region path must match.
-	mCmp := state.Forge[string, string, prCtx]("pr-fold-cmp").
+	mCmp := state.ForgeFor[prCtx]("pr-fold-cmp").
 		Reducer("inc", inc).
 		Action("obs", obs).
 		State("off").
@@ -225,7 +225,7 @@ func TestRegionTransition_InteriorCompoundOnDone(t *testing.T) {
 	note := func(s string) state.ActionFn[prCtx] {
 		return func(state.ActionCtx[prCtx]) (state.Effect, error) { return s, nil }
 	}
-	m := state.Forge[string, string, prCtx]("pr-interior-done").
+	m := state.ForgeFor[prCtx]("pr-interior-done").
 		Action("kdone", note("kdone")).
 		State("off").
 		Transition("off").On("go").GoTo("par").
@@ -277,7 +277,7 @@ func TestRegionTransition_InteriorCompoundOnDone(t *testing.T) {
 // instance must not be stuck. The pre-fix region path used the raw target, so
 // the pseudostate entered as a permanent leaf.
 func TestRegionTransition_SameRegionHistoryRestore(t *testing.T) {
-	m := state.Forge[string, string, prCtx]("pr-hist").
+	m := state.ForgeFor[prCtx]("pr-hist").
 		State("off").
 		Transition("off").On("go").GoTo("par").
 		SuperState("par").

@@ -45,7 +45,7 @@ func sampleCorder() corder {
 // enabled. No ContextSchema is attached, so evaluation is purely dynamic.
 func evalCoreGuard(t *testing.T, expr state.GuardNode[string], e corder) bool {
 	t.Helper()
-	m := state.Forge[string, string, corder]("co").
+	m := state.ForgeFor[corder]("co").
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(expr).
 		State("to").
@@ -171,7 +171,7 @@ func TestCoreExpr_BooleanCompositionWithStateIn(t *testing.T) {
 func TestCoreExpr_StateInMixedWithCore(t *testing.T) {
 	// A machine that mixes the stateIn built-in with a Core compare in one
 	// expression, driving a real transition.
-	m := state.Forge[string, string, corder]("mix").
+	m := state.ForgeFor[corder]("mix").
 		State("from").
 		Transition("from").On("go").GoTo("to").
 		WhenExpr(state.And(
@@ -197,7 +197,7 @@ func TestCoreExpr_FieldVsField(t *testing.T) {
 		A int `json:"a"`
 		B int `json:"b"`
 	}
-	m := state.Forge[string, string, pair]("ff").
+	m := state.ForgeFor[pair]("ff").
 		State("from").
 		Transition("from").On("go").GoTo("to").
 		WhenExpr(state.Field[string]("a").Lt(state.FieldOp(state.Field[string]("b")))).
@@ -216,7 +216,7 @@ func TestCoreExpr_FieldVsField(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func coreExprBuilder(expr state.GuardNode[string]) *state.Builder[string, string, corder] {
-	return state.Forge[string, string, corder]("tc").
+	return state.ForgeFor[corder]("tc").
 		WithContextSchema(state.SchemaOf[corder]()).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(expr).
@@ -302,7 +302,7 @@ func TestCoreExpr_IRRoundTrip(t *testing.T) {
 			state.Field[string]("window").Lt(state.Dur[string](time.Hour)),
 		),
 	)
-	m := state.Forge[string, string, corder]("rt").
+	m := state.ForgeFor[corder]("rt").
 		WithContextSchema(state.SchemaOf[corder]()).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(expr).
@@ -384,7 +384,7 @@ func TestCoreExpr_UnknownKindPreserved(t *testing.T) {
 func TestCoreExpr_UnresolvableFieldErrorsAtFire(t *testing.T) {
 	// With no schema, an unknown field passes the build but surfaces a typed guard
 	// error at Fire rather than silently passing the transition.
-	m := state.Forge[string, string, corder]("err").
+	m := state.ForgeFor[corder]("err").
 		State("from").
 		Transition("from").On("go").GoTo("to").
 		WhenExpr(state.Field[string]("ghost").Eq(state.Str[string]("x"))).

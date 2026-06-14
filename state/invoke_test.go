@@ -16,7 +16,7 @@ import (
 // record the service result/error read from the runner so a test asserts the
 // payload routed through.
 func invokeMachine(run **state.ServiceRunner[string, string, *trec]) *state.Machine[string, string, *trec] {
-	return state.Forge[string, string, *trec]("loader").
+	return state.ForgeFor[*trec]("loader").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) {
 			return "payload", nil
 		}).
@@ -178,7 +178,7 @@ func TestInvoke_UnboundServiceQuench(t *testing.T) {
 		}
 	}()
 
-	state.Forge[string, string, *trec]("unbound").
+	state.ForgeFor[*trec]("unbound").
 		State("idle").
 		State("loading").Invoke("missing", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").
@@ -193,7 +193,7 @@ func TestInvoke_UnboundServiceQuench(t *testing.T) {
 // src ref + params, input, and onDone/onError survive ToJSON -> LoadFromJSON, and
 // the rehydrated machine starts the same service.
 func TestInvoke_RoundTrip(t *testing.T) {
-	m := state.Forge[string, string, *trec]("rt").
+	m := state.ForgeFor[*trec]("rt").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) { return nil, nil }).
 		State("idle").
 		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail"),
@@ -299,7 +299,7 @@ func TestInvoke_RunResolvesService(t *testing.T) {
 // the initial active configuration, so an invoke on the very first state runs.
 func TestInvoke_StartEffectsInitialState(t *testing.T) {
 	var run *state.ServiceRunner[string, string, *trec]
-	m := state.Forge[string, string, *trec]("boot").
+	m := state.ForgeFor[*trec]("boot").
 		Service("fetch", func(context.Context, state.ServiceCtx[*trec]) (any, error) { return "p", nil }).
 		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok"), state.WithInvokeOnError("fail")).
 		State("ready").

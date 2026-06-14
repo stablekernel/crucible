@@ -15,7 +15,7 @@ import (
 // schema version. Its single event mutates context so a trace records both a
 // human-readable label and a structured event payload.
 func jrnlMachine() *state.Machine[string, string, *snapCtx] {
-	return state.Forge[string, string, *snapCtx](
+	return state.ForgeFor[*snapCtx](
 		"flow",
 		state.WithMachineVersion("1.2.0"),
 		state.WithMachineID("flow-def"),

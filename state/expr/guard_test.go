@@ -116,7 +116,7 @@ func TestGuard_DrivesTransitionThroughFire(t *testing.T) {
 		t.Fatalf("Guard: %v", err)
 	}
 
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Guard("bigPaid", func(state.GuardCtx[order]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).
@@ -171,7 +171,7 @@ func fireRich(t *testing.T, source string, e order) bool {
 func provideMachine(t *testing.T, reg *state.Registry[order], node state.GuardNode[string]) *state.Machine[string, string, order] {
 	t.Helper()
 	name := node.Ref.Name
-	def := state.Forge[string, string, order]("rich").
+	def := state.ForgeFor[order]("rich").
 		Guard(name, func(state.GuardCtx[order]) bool { return false }).
 		State("from").
 		Transition("from").On("go").GoTo("to").WhenExpr(node).

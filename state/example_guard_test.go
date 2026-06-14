@@ -18,7 +18,7 @@ type access struct {
 // guard combinators. The transition fires only when the composite passes; And
 // short-circuits at the first false and Or at the first true.
 func ExampleAnd() {
-	m := state.Forge[string, string, access]("door").
+	m := state.ForgeFor[access]("door").
 		Guard("admin", func(c state.GuardCtx[access]) bool { return c.Entity.admin }).
 		Guard("auditor", func(c state.GuardCtx[access]) bool { return c.Entity.auditor }).
 		State("locked").

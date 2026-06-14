@@ -16,7 +16,7 @@ type orderCtx struct {
 
 // orderMachine is a flat event-driven order machine: pending -> charged -> done.
 func orderMachine() *state.Machine[string, string, *orderCtx] {
-	return state.Forge[string, string, *orderCtx]("order").
+	return state.ForgeFor[*orderCtx]("order").
 		Action("charge", func(c state.ActionCtx[*orderCtx]) (state.Effect, error) {
 			c.Entity.Charges++
 			return nil, nil
@@ -75,7 +75,7 @@ type timerOrderCtx struct {
 // reminderMachine sends a reminder a fixed delay after an order is placed, driven
 // by a delayed (`after`) transition.
 func reminderMachine() *state.Machine[string, string, *timerOrderCtx] {
-	return state.Forge[string, string, *timerOrderCtx]("reminder").
+	return state.ForgeFor[*timerOrderCtx]("reminder").
 		Action("remind", func(c state.ActionCtx[*timerOrderCtx]) (state.Effect, error) {
 			c.Entity.Reminded = true
 			return nil, nil
@@ -138,7 +138,7 @@ type quoteCtx struct {
 // quoteMachine invokes a pricing service on entering quoting, folding the returned
 // quote into context on its onDone.
 func quoteMachine(fn state.ServiceFn[*quoteCtx]) *state.Machine[string, string, *quoteCtx] {
-	return state.Forge[string, string, *quoteCtx]("quote").
+	return state.ForgeFor[*quoteCtx]("quote").
 		Service("price", fn).
 		Reducer("save", func(in state.AssignCtx[*quoteCtx]) *quoteCtx {
 			c := in.Entity
@@ -213,7 +213,7 @@ type fulfillmentCtx struct {
 // entering supervising and folds the actor's done-data (a tracking number) into
 // context on its onDone.
 func fulfillmentMachine() *state.Machine[string, string, *fulfillmentCtx] {
-	return state.Forge[string, string, *fulfillmentCtx]("fulfillment").
+	return state.ForgeFor[*fulfillmentCtx]("fulfillment").
 		Reducer("track", func(in state.AssignCtx[*fulfillmentCtx]) *fulfillmentCtx {
 			c := in.Entity
 			if tr, ok := in.Event.(string); ok {
@@ -241,7 +241,7 @@ func ExampleHandle_DeliverToActor() {
 	var runs int
 	palette := map[string]state.ActorBehavior{
 		"ship": func(map[string]any) (state.ActorInstance, error) {
-			child := state.Forge[string, string, *fulfillmentCtx]("shipper").
+			child := state.ForgeFor[*fulfillmentCtx]("shipper").
 				State("packing").
 				State("shipped").Final().
 				Initial("packing").

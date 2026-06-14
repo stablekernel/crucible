@@ -13,7 +13,7 @@ import (
 // forge returns a string-typed builder, matching the analysis package's test
 // fixtures so the two packages exercise the same machine shapes.
 func forge(name string) *state.Builder[string, string, any] {
-	return state.Forge[string, string, any](name)
+	return state.ForgeFor[any](name)
 }
 
 // linearChain is a 4-state pipeline: a -> b -> c -> d(final). Every state is

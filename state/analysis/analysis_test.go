@@ -11,7 +11,7 @@ import (
 // forge opens a string-typed builder for the example machines. The machines are
 // neutral order/job lifecycles with no real-world coupling.
 func forge(name string) *state.Builder[string, string, any] {
-	return state.Forge[string, string, any](name)
+	return state.ForgeFor[any](name)
 }
 
 // kinds returns the set of finding kinds present in a report.

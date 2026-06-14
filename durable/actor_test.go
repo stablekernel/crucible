@@ -27,7 +27,7 @@ type actorCtx struct {
 // is working -(finish)-> done(final), so the actor settles when delivered "finish".
 func counterChild(runs *int64) state.ActorBehavior {
 	return func(map[string]any) (state.ActorInstance, error) {
-		child := state.Forge[string, string, actorCtx]("child").
+		child := state.ForgeFor[actorCtx]("child").
 			State("working").
 			State("done").Final().
 			Initial("working").
@@ -52,7 +52,7 @@ func counterPalette(runs *int64) map[string]state.ActorBehavior {
 // folds the child output into context via an Assign reading AssignCtx.Event, so the
 // routed output is observable in the recovered parent snapshot.
 func supervisorMachine() *state.Machine[string, string, actorCtx] {
-	return state.Forge[string, string, actorCtx]("supervisor").
+	return state.ForgeFor[actorCtx]("supervisor").
 		Reducer("recordChild", func(in state.AssignCtx[actorCtx]) actorCtx {
 			c := in.Entity
 			if o, ok := in.Event.(string); ok {
@@ -158,7 +158,7 @@ func TestActor_DoneReplay_ByteIdentical_NotReInvoked(t *testing.T) {
 func failChild(runs *int64) state.ActorBehavior {
 	return func(map[string]any) (state.ActorInstance, error) {
 		atomic.AddInt64(runs, 1)
-		child := state.Forge[string, string, actorCtx]("child").
+		child := state.ForgeFor[actorCtx]("child").
 			Action("boom", func(state.ActionCtx[actorCtx]) (state.Effect, error) { panic("actor boom") }).
 			State("working").
 			State("done").Final().OnEntry("boom").
@@ -232,7 +232,7 @@ func TestActor_ErrorReplay_ByteIdentical(t *testing.T) {
 func pingerChild(msgs *int64) state.ActorBehavior {
 	return func(map[string]any) (state.ActorInstance, error) {
 		atomic.AddInt64(msgs, 1)
-		child := state.Forge[string, string, actorCtx]("pinger").
+		child := state.ForgeFor[actorCtx]("pinger").
 			State("ready").
 			State("done").Final().
 			Initial("ready").
@@ -247,7 +247,7 @@ func pingerChild(msgs *int64) state.ActorBehavior {
 // onDone: it spawns a pinger, and a "pong" message the pinger sends advances it from
 // listening to heard, folding the message into context.
 func messengerMachine() *state.Machine[string, string, actorCtx] {
-	return state.Forge[string, string, actorCtx]("messenger").
+	return state.ForgeFor[actorCtx]("messenger").
 		Reducer("recordPong", func(in state.AssignCtx[actorCtx]) actorCtx {
 			c := in.Entity
 			if s, ok := in.Event.(string); ok {
@@ -324,7 +324,7 @@ func TestActor_MessageDrivesParent_Replay(t *testing.T) {
 // proving multiple actors in one instance record and replay in order. Each child
 // settles through its own onDone correlated by its own actor id.
 func twoActorMachine() *state.Machine[string, string, actorCtx] {
-	return state.Forge[string, string, actorCtx]("twin").
+	return state.ForgeFor[actorCtx]("twin").
 		Reducer("note", func(in state.AssignCtx[actorCtx]) actorCtx {
 			c := in.Entity
 			if o, ok := in.Event.(string); ok {
@@ -495,7 +495,7 @@ func TestActor_CrashAfterSettle_ResumeContinues(t *testing.T) {
 // re-spawning the restored configuration's actor so a post-recover DeliverToActor
 // finds it.
 func idleActorMachine() *state.Machine[string, string, actorCtx] {
-	return state.Forge[string, string, actorCtx]("idler").
+	return state.ForgeFor[actorCtx]("idler").
 		Reducer("note", func(in state.AssignCtx[actorCtx]) actorCtx {
 			c := in.Entity
 			if o, ok := in.Event.(string); ok {

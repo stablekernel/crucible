@@ -12,7 +12,7 @@ import (
 // accumulates each step's guards and effects, exercising the full-mode merge
 // branch of mergeTrace (which is a no-op in lite mode).
 func TestFireSeq_FullTraceMergesPerStepDiagnostics(t *testing.T) {
-	m := state.Forge[string, string, *trec]("seq").
+	m := state.ForgeFor[*trec]("seq").
 		Guard("ok", func(state.GuardCtx[*trec]) bool { return true }).
 		Action("note", noteAction("do")).
 		State("a").
@@ -48,7 +48,7 @@ func TestFireSeq_FullTraceMergesPerStepDiagnostics(t *testing.T) {
 // TestFireSeq_LiteTraceDoesNotMerge confirms that in the default lite mode the
 // merged trace stays empty of the rich per-step fields: mergeTrace short-circuits.
 func TestFireSeq_LiteTraceDoesNotMerge(t *testing.T) {
-	m := state.Forge[string, string, *trec]("seq-lite").
+	m := state.ForgeFor[*trec]("seq-lite").
 		Guard("ok", func(state.GuardCtx[*trec]) bool { return true }).
 		Action("note", noteAction("do")).
 		State("a").
