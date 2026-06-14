@@ -97,6 +97,18 @@ func Guard[S comparable, C any](
 	return richNode[S](name), nil
 }
 
+// GuardString is the string-state convenience form of Guard: it fixes the machine
+// state type parameter S to string, inferring the context type C from reg, for the
+// common case of a string-keyed machine. It forwards to Guard[string, C] with the
+// same arguments and returns the same rich IR node, so the two are behaviorally
+// identical; reach for Guard[S, C] directly when the machine's state identifiers
+// are typed (for example enum) values.
+func GuardString[C any](
+	reg *state.Registry[C], name, source string, schema state.ContextSchema, opts ...Option,
+) (state.GuardNode[string], error) {
+	return Guard[string, C](reg, name, source, schema, opts...)
+}
+
 // richNode builds the rich IR node for a registered rich guard: a named-ref guard
 // leaf tagged Kind "rich". It is structurally identical to a Core named-ref leaf —
 // the kernel resolves and evaluates it by name — but the Kind discriminant marks it

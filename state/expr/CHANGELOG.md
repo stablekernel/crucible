@@ -7,6 +7,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 This is the opt-in rich-expression tier; the kernel (the `state` module) stays
 dependency-free, and `expr` depends on `state`, never the reverse.
 
+## [Unreleased]
+
+### Added
+
+- `GuardString[C]` convenience constructor: the string-state form of `Guard`,
+  fixing the machine state type parameter `S` to `string` and inferring the context
+  type `C` from the registry. It forwards to `Guard[string, C]` with the same
+  arguments and rich IR node, so the two are behaviorally identical; reach for
+  `Guard[S, C]` directly when the machine's state identifiers are typed (for example
+  enum) values.
+
 ## [0.1.0]
 
 First release of the rich guard tier. It compiles guard logic written in CEL
