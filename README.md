@@ -46,7 +46,14 @@ Three core modules form the **ingest → drive → emit** spine: `source` brings
 events in, `state` decides what happens, and `sink` fans the resulting effects
 out. Each is a thin seam you can adopt on its own, and none imports another.
 
+<!--
+  Canonical Crucible mermaid palette: molten ember/copper over deep steel/charcoal.
+  These hexes are kept in sync with docs/src/styles/crucible.css and the central
+  docs theme in docs/src/mermaid-theme.mjs (used by the docs site for every diagram).
+  GitHub ignores the astro config, so each diagram below carries the same %%{init}%%.
+-->
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
 flowchart LR
     streams[(external streams)] -->|source| engine[state engine]
     engine -->|sink| destinations[(destinations)]
@@ -59,6 +66,7 @@ folds an event into a new instance and emits effects as plain data, leaving
 persistence and dispatch to the host.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
 stateDiagram-v2
     [*] --> Idle
     Idle --> Working: Start [guard]
@@ -74,6 +82,7 @@ Consumes external streams (Kafka, JetStream, Redis, CDC, and more) and drives a
 machine, with the ack tied to a durable transition so redelivery is safe.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
 flowchart LR
     stream[(stream)] --> decode[decode / codec] --> route["route to (key, event)"] --> fire["Fire on instance"] --> commit[durable commit] --> ack[ack]
 ```
@@ -84,6 +93,7 @@ Fans emitted effects out to many destinations through a `Manifold`,
 fire-and-forget; one outlet's failure never stops the rest.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
 flowchart LR
     effect[emitted effect] --> manifold[Manifold]
     manifold --> a[destination A]
