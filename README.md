@@ -107,7 +107,8 @@ stability label.
 | `sink`              | Egress fan-out, fire-and-forget. 20+ destinations: SQL, Dynamo, S3, Kafka, NATS, Redis, StatsD, … | experimental             |
 | `source`            | Ingress: consume streams and drive machines, ack on durable transition. Inlets: Kafka, JetStream, Redis, CloudEvents, CDC; opt-in retry/DLQ/idempotency/schema middleware. | experimental             |
 | `durable`           | Durable-execution runtime: record and replay to survive a crash.         | experimental             |
-| `cluster`           | Distribution runtime: remote actors, supervision, live migration (gRPC `transport`, `wasm` polyglot behaviors). | experimental             |
+| `cluster`           | Distribution runtime: remote actors, supervision, and live migration (gRPC `transport` network layer included). | experimental             |
+| `wasm`              | Run state behaviors as WebAssembly: polyglot guards over a JSON ABI via wazero. | experimental             |
 | `broker`            | Message broker seam: publish/subscribe transport with injected adapters.  | planned                  |
 
 ## Status
