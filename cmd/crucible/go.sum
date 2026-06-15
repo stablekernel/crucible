@@ -1,0 +1,4 @@
+github.com/stablekernel/crucible/gen v0.1.0 h1:IdQlLIsoIYMlUgWeZiY3pzTBvxe5wBZhpPaZ02xW/NY=
+github.com/stablekernel/crucible/gen v0.1.0/go.mod h1:rl6qLJ21rp9B/nMYiAM0sbSgi+2wE0NXP+7+p/rc1RE=
+github.com/stablekernel/crucible/state v1.0.0 h1:YjhEM3vqqHptq33j+zZlYgSa4FupAFrDgAUUPfLwx68=
+github.com/stablekernel/crucible/state v1.0.0/go.mod h1:GU2LNVI+FJrdii+UNZYqfwcH219dCKO+TkX6KRE/Fys=
