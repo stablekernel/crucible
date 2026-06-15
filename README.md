@@ -47,13 +47,15 @@ events in, `state` decides what happens, and `sink` fans the resulting effects
 out. Each is a thin seam you can adopt on its own, and none imports another.
 
 <!--
-  Canonical Crucible mermaid palette: molten ember/copper over deep steel/charcoal.
-  These hexes are kept in sync with docs/src/styles/crucible.css and the central
-  docs theme in docs/src/mermaid-theme.mjs (used by the docs site for every diagram).
-  GitHub ignores the astro config, so each diagram below carries the same %%{init}%%.
+  The docs site renders these diagrams via docs/src/mermaid-theme.mjs on its own
+  dark background, so it can use the full dark brand palette. For the README on GitHub,
+  viewers may be in light or dark mode, so the diagrams here use a dual-context variant:
+  neutral steel fills (#8a929c) keep nodes legible on either background, while the same
+  ember/copper accents (#d9620a, #c47a3d) preserve brand identity. The canonical brand
+  hexes and the docs-site palette live in crucible.css and mermaid-theme.mjs.
 -->
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
+%%{init: {'theme':'base','themeVariables':{'background':'transparent','primaryColor':'#8a929c','primaryBorderColor':'#d9620a','primaryTextColor':'#16191d','lineColor':'#b06a28','defaultLinkColor':'#b06a28','titleColor':'#b5500c','mainBkg':'#8a929c','nodeBorder':'#d9620a','nodeTextColor':'#16191d','labelColor':'#16191d','edgeLabelBackground':'#c0c7cf','altBackground':'#aab1ba','clusterBkg':'#aab1ba','clusterBorder':'#d9620a'}}}%%
 flowchart LR
     streams[(external streams)] -->|source| engine[state engine]
     engine -->|sink| destinations[(destinations)]
@@ -66,7 +68,7 @@ folds an event into a new instance and emits effects as plain data, leaving
 persistence and dispatch to the host.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
+%%{init: {'theme':'base','themeVariables':{'background':'transparent','primaryColor':'#8a929c','primaryBorderColor':'#d9620a','primaryTextColor':'#16191d','lineColor':'#b06a28','defaultLinkColor':'#b06a28','titleColor':'#b5500c','mainBkg':'#8a929c','nodeBorder':'#d9620a','nodeTextColor':'#16191d','labelColor':'#16191d','edgeLabelBackground':'#c0c7cf','altBackground':'#aab1ba','clusterBkg':'#aab1ba','clusterBorder':'#d9620a'}}}%%
 stateDiagram-v2
     [*] --> Idle
     Idle --> Working: Start [guard]
@@ -82,7 +84,7 @@ Consumes external streams (Kafka, JetStream, Redis, CDC, and more) and drives a
 machine, with the ack tied to a durable transition so redelivery is safe.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
+%%{init: {'theme':'base','themeVariables':{'background':'transparent','primaryColor':'#8a929c','primaryBorderColor':'#d9620a','primaryTextColor':'#16191d','lineColor':'#b06a28','defaultLinkColor':'#b06a28','titleColor':'#b5500c','mainBkg':'#8a929c','nodeBorder':'#d9620a','nodeTextColor':'#16191d','labelColor':'#16191d','edgeLabelBackground':'#c0c7cf','altBackground':'#aab1ba','clusterBkg':'#aab1ba','clusterBorder':'#d9620a'}}}%%
 flowchart LR
     stream[(stream)] --> decode[decode / codec] --> route["route to (key, event)"] --> fire["Fire on instance"] --> commit[durable commit] --> ack[ack]
 ```
@@ -93,7 +95,7 @@ Fans emitted effects out to many destinations through a `Manifold`,
 fire-and-forget; one outlet's failure never stops the rest.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'darkMode':true,'background':'#16191d','primaryColor':'#23272c','primaryBorderColor':'#d9620a','primaryTextColor':'#f4f6f8','lineColor':'#c47a3d','secondaryColor':'#353b42','secondaryBorderColor':'#c47a3d','tertiaryColor':'#1b1f24','tertiaryBorderColor':'#2b3036','mainBkg':'#23272c','nodeBorder':'#d9620a','nodeTextColor':'#f4f6f8','clusterBkg':'#1b1f24','clusterBorder':'#c47a3d','titleColor':'#f6a85b','edgeLabelBackground':'#23272c','labelColor':'#f4f6f8','altBackground':'#353b42','textColor':'#f4f6f8'}}}%%
+%%{init: {'theme':'base','themeVariables':{'background':'transparent','primaryColor':'#8a929c','primaryBorderColor':'#d9620a','primaryTextColor':'#16191d','lineColor':'#b06a28','defaultLinkColor':'#b06a28','titleColor':'#b5500c','mainBkg':'#8a929c','nodeBorder':'#d9620a','nodeTextColor':'#16191d','labelColor':'#16191d','edgeLabelBackground':'#c0c7cf','altBackground':'#aab1ba','clusterBkg':'#aab1ba','clusterBorder':'#d9620a'}}}%%
 flowchart LR
     effect[emitted effect] --> manifold[Manifold]
     manifold --> a[destination A]
