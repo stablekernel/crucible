@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","name":"quenchfail","states":[{"name":"a","transitions":[{"from":"a","to":"nowhere","on":"go"}]},{"name":"b","isFinal":true}],"initial":"a","hasInitial":true}
