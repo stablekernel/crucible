@@ -1,7 +1,5 @@
 module github.com/stablekernel/crucible/gen
 
-go 1.25.11
-toolchain go1.26.4
-require github.com/stablekernel/crucible/state v0.0.0
+go 1.25
 
-replace github.com/stablekernel/crucible/state => ../state
+require github.com/stablekernel/crucible/state v1.0.0

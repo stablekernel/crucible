@@ -1,13 +1,11 @@
 module github.com/stablekernel/crucible/state/expr
 
-go 1.25.11
-toolchain go1.26.4
-replace github.com/stablekernel/crucible/state => ../
+go 1.25.0
 
 require (
 	cel.dev/expr v0.25.2
 	github.com/google/cel-go v0.28.1
-	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/state v1.0.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171
 	google.golang.org/protobuf v1.36.11
 )
