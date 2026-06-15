@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "1.0",
+  "name": "composite",
+  "states": [
+    {
+      "name": "active",
+      "onEntry": [{ "name": "logEntry" }],
+      "onExit": [{ "name": "logExit" }],
+      "onDone": [{ "name": "logDone" }],
+      "onEntryAssign": [{ "name": "seedCtx" }],
+      "onExitAssign": [{ "name": "clearCtx" }],
+      "initialChild": "working",
+      "children": [
+        {
+          "name": "working",
+          "transitions": [
+            {
+              "from": "working",
+              "to": "review",
+              "on": "submit",
+              "guards": [{ "name": "canSubmit" }],
+              "effects": [{ "name": "notify" }],
+              "assigns": [{ "name": "stamp" }],
+              "guardExpr": {
+                "op": "and",
+                "children": [
+                  { "op": "leaf", "ref": { "name": "exprGuardA" } },
+                  { "op": "leaf", "ref": { "name": "exprGuardB" } }
+                ]
+              }
+            }
+          ],
+          "invoke": [
+            { "src": { "name": "fetchWork" }, "onDone": "submit", "onError": "fail" }
+          ]
+        },
+        { "name": "review", "isFinal": true }
+      ]
+    },
+    {
+      "name": "parallel",
+      "regions": [
+        {
+          "name": "regionA",
+          "initialChild": "ra1",
+          "states": [
+            {
+              "name": "ra1",
+              "transitions": [
+                { "from": "ra1", "to": "ra2", "on": "tick", "guards": [{ "name": "regionGuard" }] }
+              ]
+            },
+            { "name": "ra2", "isFinal": true }
+          ]
+        }
+      ]
+    },
+    { "name": "done", "isFinal": true }
+  ],
+  "initial": "active",
+  "hasInitial": true
+}
