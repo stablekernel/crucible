@@ -96,61 +96,38 @@ flowchart LR
 Each module is independently versioned (per-module SemVer) and carries its own
 stability label.
 
-| Module                | What it is                                                                       | Status       |
-| --------------------- | -------------------------------------------------------------------------------- | ------------ |
-| `state`               | Full-featured, domain-agnostic statechart engine. Stdlib-only, no IO.            | v1.0.0 |
-| `state/analysis`      | Static model-checking and path enumeration over a machine's IR.                  | advisory |
-| `state/evolution`     | Diffs two machine definitions and classifies the SemVer bump.                    | advisory |
-| `state/conformance`   | Reusable harness for driving golden scenarios against a machine.                 | advisory |
-| `state/verify`        | Decides behavioral properties of a machine and returns a witness event sequence. | advisory |
-| `state/expr`          | Rich expression tier: CEL-backed guards type-checked against the context schema. | stable contract (v0.1.0) |
-| `gen`                 | Eject codegen: turn a machine's IR into typed Go stub source and a registry wiring. | v0.1.0 |
-| `cmd/crucible`        | Headless IR CLI: lint, render, diff, validate, and eject a machine's serialized IR. | v0.1.0 |
-| `telemetry`           | Vendor-neutral tracing/metrics interface for the IO modules. Stdlib-only.        | experimental |
-| `telemetry/slog`      | `log/slog` adapter for the telemetry interface.                                  | experimental |
-| `telemetry/otel`      | OpenTelemetry adapter for the telemetry interface.                               | experimental |
-| `telemetry/datadog`   | Datadog adapter for the telemetry interface.                                     | experimental |
-| `broker`              | Message broker seam: publish/subscribe transport with injected adapters.         | planned      |
-| `sink`                | Egress seam: fan emitted effects out to many destinations, fire-and-forget.      | experimental |
-| `source`              | Ingress seam: consume streams and drive statecharts; ack on durable transition.  | experimental |
-| `source/kafka`        | Kafka/RedPanda Inlet over franz-go: group consumer, mark-commit-after-process.   | experimental |
-| `source/jetstream`    | NATS JetStream Inlet over nats.go: pull consumer, ack/nak/term, MaxAckPending.    | experimental |
-| `source/redis`        | Redis Streams Inlet over go-redis: consumer group, XACK/pending-claim, DLQ.       | experimental |
-| `source/cloudevents`  | CloudEvents codec with structured and binary content modes.                      | experimental |
-| `source/cdc`          | Change-data-capture codec: decode Debezium/OpenCDC change events, drive by key.   | experimental |
-| `source/statemachine` | Bridge: an inbound message drives a transition, ack tied to the durable commit.  | experimental |
-| `durable`             | Durable-execution runtime: record and replay nondeterminism to survive a crash. | experimental |
-| `cluster`             | Distribution runtime: remote actors, supervision, and live instance migration.  | experimental |
-| `transport`           | gRPC network transport for cluster: remote deliver/spawn and time-travel.        | experimental |
-| `wasm`                | Run state behaviors as WebAssembly: polyglot guards over a JSON ABI via wazero.  | experimental |
-
-source also ships composable reliability middleware as its own opt-in modules
-(`source/retry`, `source/dlq`, `source/idempotency`, `source/schema`) and an
-in-memory `source/memsource` test source, each experimental.
+| Module              | What it is                                                                | Status                   |
+| ------------------- | ------------------------------------------------------------------------- | ------------------------ |
+| `state`             | Domain-agnostic statechart engine. Stdlib-only, no IO.                    | v1.0.0 (stable)          |
+| `state` subpackages | `analysis`, `evolution`, `conformance`, `verify`: diagnostics over the IR. | advisory                 |
+| `state/expr`        | CEL-backed guards type-checked against the context schema.                | stable contract (v0.1.0) |
+| `gen`               | Eject codegen: a machine's IR into typed Go stubs and registry wiring.    | v0.1.0                   |
+| `cmd/crucible`      | Headless IR CLI: lint, render, diff, validate, eject.                     | v0.1.0                   |
+| `telemetry`         | Vendor-neutral tracing/metrics seam, plus `slog`, `otel`, `datadog` adapters. | experimental             |
+| `sink`              | Egress fan-out, fire-and-forget. 20+ destinations: SQL, Dynamo, S3, Kafka, NATS, Redis, StatsD, … | experimental             |
+| `source`            | Ingress: consume streams and drive machines, ack on durable transition. Inlets: Kafka, JetStream, Redis, CloudEvents, CDC; opt-in retry/DLQ/idempotency/schema middleware. | experimental             |
+| `durable`           | Durable-execution runtime: record and replay to survive a crash.         | experimental             |
+| `cluster`           | Distribution runtime: remote actors, supervision, live migration (gRPC `transport`, `wasm` polyglot behaviors). | experimental             |
+| `broker`            | Message broker seam: publish/subscribe transport with injected adapters.  | planned                  |
 
 ## Status
 
-`state` is released at **v1.0.0**: a complete, embeddable statechart engine
-covering hierarchical, parallel, and final states, history, guard combinators,
-delayed transitions, invoked services, an actor model, snapshots, and JSON
-(de)serialization. Its public contract is frozen under v1 SemVer. The
-`analysis`, `evolution`, `conformance`, and `verify` subpackages ship inside
-v1.0 but are **advisory**: they produce diagnostics, and their surfaces sit
-outside the frozen contract and may change in a minor release. `state/expr` is a
-separate module pinned at v0.1.0 whose expression *semantics* are a committed,
-stable contract even though the module version is pre-1.0.
+**`state` is released at v1.0.0 with a frozen public contract.** It is a
+complete, embeddable statechart engine: hierarchical, parallel, and final states,
+history, guard combinators, delayed transitions, invoked services, an actor
+model, snapshots, and JSON (de)serialization.
 
-The IR tools `gen` (eject codegen) and `cmd/crucible` (the IR CLI) are released
-at **v0.1.0**, versioned independently of `state` and free to move at their own
-pace.
-
-The remaining modules are still evolving and may change before they reach v1:
-`telemetry`, `sink`, and `source` (with all their adapters, codecs, and
-middleware) are released and documented, as are the host-side runtimes over the
-kernel: `durable` (durable execution), `cluster` (distribution and live
-migration), `transport` (the gRPC network transport for cluster), and `wasm`
-(polyglot behaviors). `broker` is planned. Treat those modules as experimental
-until each reaches its own v1.
+- **`state` subpackages** (`analysis`, `evolution`, `conformance`, `verify`):
+  advisory. They ship inside v1.0 but sit outside the frozen contract and may
+  change in a minor release.
+- **`state/expr`**: a separate module at v0.1.0. The module version is pre-1.0,
+  but its expression *semantics* are a committed, stable contract.
+- **`gen` and `cmd/crucible`**: released at v0.1.0, versioned independently of
+  `state` and free to move at their own pace.
+- **Everything else is experimental** and may change before it reaches v1:
+  `telemetry`, `sink`, and `source` (with all adapters, codecs, and middleware),
+  plus the host-side runtimes `durable`, `cluster`, `transport`, and `wasm`.
+  `broker` is planned.
 
 ## Roadmap
 
