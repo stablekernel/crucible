@@ -22,6 +22,11 @@ stdlib-only core: a deployment that uses only Go or CEL guards never compiles WA
 in. The ABI is **core WebAssembly**, not the Component Model, which would require a
 CGo runtime.
 
+> **Today, only a Go guest path is exercised.** The JSON ABI is language-agnostic
+> by design, but the only guest the test suite compiles is Go (`//go:wasmexport`); a
+> guest in another language must implement the two-export ABI directly. Ready-made
+> non-Go guest SDKs are [tracked on the roadmap](https://github.com/stablekernel/crucible/issues/177).
+
 ## The shape of it
 
 Compile a module once and reuse it across calls, then bind it as a guard by name:
