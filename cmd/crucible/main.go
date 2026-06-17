@@ -20,6 +20,9 @@ const (
 	exitError    = 1
 	exitUsage    = 2
 	exitFindings = 1
+	// exitBreaking is returned by diff -exit-code when the recommended bump is
+	// major (at least one breaking change). It shares the value of exitError.
+	exitBreaking = 1
 )
 
 func main() {
@@ -79,9 +82,9 @@ Usage:
   crucible <command> [arguments]
 
 Commands:
-  lint      <ir.json>                 run static analysis and report findings
+  lint      <ir.json> [-format f]     run static analysis; -format text (default), json, or sarif
   render    <ir.json> [-format f]     render the machine as mermaid (default) or dot
-  diff      <old.json> <new.json>     classify changes and recommend a semver bump
+  diff      <old.json> <new.json> [-format f] [-exit-code]   classify changes and recommend a semver bump
   validate  <ir.json>                 confirm the IR loads and assembles
   eject     <ir.json> [-package p] [-o f]   generate typed Go behavior stubs
   version                             print the crucible CLI version

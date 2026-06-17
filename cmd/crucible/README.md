@@ -20,11 +20,14 @@ event is fired), so the structural view is exactly what the IR describes.
 ### lint
 
 ```
-crucible lint <ir.json>
+crucible lint <ir.json> [-format text|json|sarif]
 ```
 
 Runs every static analysis check and prints the findings. Exits non-zero when
-the analysis reports any finding, so it can gate CI.
+the analysis reports any finding, so it can gate CI. `-format` selects the
+output: human-readable `text` (the default), `json`, or `sarif` (SARIF 2.1.0)
+for ingestion by code-scanning tools. SARIF findings carry the IR path as a
+physical location unless the IR was read from stdin (`-`).
 
 ### render
 
@@ -39,12 +42,15 @@ m.json -format dot | dot -Tsvg`); native SVG rendering is a future addition.
 ### diff
 
 ```
-crucible diff <old.json> <new.json>
+crucible diff <old.json> <new.json> [-format text|json] [-exit-code]
 ```
 
 Classifies the changes between two serialized IRs, prints the recommended semver
 bump (`major`, `minor`, or `patch`), and lists the breaking and additive changes
-separately.
+separately. `-format` selects human-readable `text` (the default) or `json`
+(SARIF is not applicable to diffs). With `-exit-code`, the command exits non-zero
+when the recommended bump is `major` (at least one breaking change), so a diff
+can gate CI.
 
 ### validate
 
@@ -78,7 +84,7 @@ Prints the CLI version.
 ## Exit codes
 
 - `0` success
-- `1` runtime or load error, and lint findings
+- `1` runtime or load error, lint findings, and `diff -exit-code` on a breaking change
 - `2` usage error
 
 ## Versioning
