@@ -33,6 +33,14 @@ The `state` engine is the extreme end of this: **stdlib-only**, with no injected
 IO at all. The IO modules carry the heavier seams via injection, but follow the
 same rule. Defaults are no-ops, nothing third-party is forced on the consumer.
 
+This "stdlib-only" guarantee is about the library you import: the `state` engine
+and its seams pull in nothing third-party. The standalone `crucible` CLI is a
+leaf tool, not a library, and is the one exception — it embeds a pure-Go
+(WebAssembly) Graphviz **only** for `render -format svg|png`, so you can render
+images without installing Graphviz. That convenience lives entirely in the CLI
+binary; it never enters the `state` engine or any module you import. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution.
+
 ## Documentation
 
 Guides, concepts, the food-delivery example, and the generated API reference live

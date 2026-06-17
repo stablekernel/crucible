@@ -85,7 +85,7 @@ Usage:
 
 Commands:
   lint      <ir.json> [-format f]     run static analysis; -format text (default), json, or sarif
-  render    <ir.json> [-format f]     render the machine as mermaid (default) or dot
+  render    <ir.json> [-format f] [-o file]   render as mermaid (default), dot, svg, or png (svg/png embed Graphviz; no external install)
   diff      <old.json> <new.json> [-format f] [-exit-code]   classify changes and recommend a semver bump
   validate  <ir.json>                 confirm the IR loads and assembles
   eject     <ir.json> [-package p] [-o f]   generate typed Go behavior stubs
