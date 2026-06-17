@@ -50,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runValidate(rest, stdout, stderr)
 	case "eject":
 		return runEject(rest, stdout, stderr)
+	case "simulate":
+		return runSimulate(rest, stdout, stderr)
 	case "version":
 		emitln(stdout, version)
 		return exitOK
@@ -87,6 +89,7 @@ Commands:
   diff      <old.json> <new.json> [-format f] [-exit-code]   classify changes and recommend a semver bump
   validate  <ir.json>                 confirm the IR loads and assembles
   eject     <ir.json> [-package p] [-o f]   generate typed Go behavior stubs
+  simulate  <ir.json> -events e1,e2 [flags]   fire events and print the step trace
   version                             print the crucible CLI version
 
 Each command reads an IR JSON file path, or - for stdin.

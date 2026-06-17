@@ -260,7 +260,10 @@ func parseSingleArg(fs *flag.FlagSet, args []string, name, argHint string, stder
 // carries its own value. A bare "--" terminates flag processing, and everything
 // after it is treated as positional.
 func reorderArgs(args []string) []string {
-	valueFlags := map[string]bool{"-format": true, "-package": true, "-o": true}
+	valueFlags := map[string]bool{
+		"-format": true, "-package": true, "-o": true,
+		"-events": true, "-events-file": true, "-initial": true, "-guard": true,
+	}
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]

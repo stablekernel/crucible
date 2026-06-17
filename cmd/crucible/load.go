@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -39,12 +40,45 @@ func loadIR(path string, stdin io.Reader) (*state.IR[string, string, any], error
 // target, for example), so the panic is recovered and returned as an error
 // rather than crashing the tool.
 func quench(ir *state.IR[string, string, any]) (m *state.Machine[string, string, any], err error) {
+	return quenchWith(ir, stubRegistry(ir))
+}
+
+// quenchWith binds an IR against a caller-supplied registry and assembles a
+// *Machine. Like quench, it recovers the panic Quench raises on a structural
+// defect and returns it as an error. simulate uses this to bind a registry whose
+// guards return seeded verdicts rather than the always-false stubs.
+func quenchWith(ir *state.IR[string, string, any], reg *state.Registry[any]) (m *state.Machine[string, string, any], err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			m = nil
 			err = fmt.Errorf("quench: %v", r)
 		}
 	}()
-	reg := stubRegistry(ir)
 	return ir.Provide(reg).Quench(), nil
+}
+
+// simulateRegistry walks an IR to enumerate every referenced behavior name, then
+// registers behaviors suitable for a structural simulation. Guards return the
+// seeded verdict from verdicts (defaulting to false for an unseeded guard), so a
+// caller can drive a machine down a chosen path without real implementations.
+// Actions, reducers, and services remain total no-ops, matching stubRegistry.
+func simulateRegistry(ir *state.IR[string, string, any], verdicts map[string]bool) *state.Registry[any] {
+	var b behaviorNames
+	for i := range ir.States {
+		b.walkState(&ir.States[i])
+	}
+	reg := state.NewRegistry[any]()
+	for name := range b.guards {
+		reg.Guard(name, func(state.GuardCtx[any]) bool { return verdicts[name] })
+	}
+	for name := range b.actions {
+		reg.Action(name, func(state.ActionCtx[any]) (state.Effect, error) { return nil, nil })
+	}
+	for name := range b.reducers {
+		reg.Reducer(name, func(in state.AssignCtx[any]) any { return in.Entity })
+	}
+	for name := range b.services {
+		reg.Service(name, func(context.Context, state.ServiceCtx[any]) (any, error) { return nil, nil })
+	}
+	return reg
 }
