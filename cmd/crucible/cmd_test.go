@@ -42,12 +42,18 @@ func TestRender(t *testing.T) {
 }
 
 func TestRender_UnknownFormat(t *testing.T) {
-	code, _, errOut := runCmd("render", "testdata/clean.json", "-format", "svg")
-	if code != exitUsage {
-		t.Fatalf("exit = %d, want %d", code, exitUsage)
-	}
-	if !strings.Contains(errOut, "unknown -format") {
-		t.Fatalf("stderr missing format error: %s", errOut)
+	// jpg is explicitly out of scope and zzz is nonsense; both are usage errors.
+	// svg/png are now valid (see render_image_test.go).
+	for _, format := range []string{"jpg", "zzz"} {
+		t.Run(format, func(t *testing.T) {
+			code, _, errOut := runCmd("render", "testdata/clean.json", "-format", format)
+			if code != exitUsage {
+				t.Fatalf("exit = %d, want %d", code, exitUsage)
+			}
+			if !strings.Contains(errOut, "unknown -format") {
+				t.Fatalf("stderr missing format error: %s", errOut)
+			}
+		})
 	}
 }
 

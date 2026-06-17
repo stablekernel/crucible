@@ -9,6 +9,11 @@ versioned independently of the `state` module.
 
 ### Added
 
+- `render -format svg|png` renders the machine directly to a themed image via an
+  embedded, pure-Go (WebAssembly) Graphviz — no external Graphviz install is
+  required. The image carries the Crucible brand palette. `-o file` writes the
+  output to a file instead of stdout (the norm for binary `png`); `mermaid` and
+  `dot` output is unchanged.
 - `lint -format` selects the output format: `text` (default), `json`, or
   `sarif` (SARIF 2.1.0) for machine-readable CI ingestion.
 - `diff -format` selects `text` (default) or `json` output.

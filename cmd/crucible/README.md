@@ -32,12 +32,18 @@ physical location unless the IR was read from stdin (`-`).
 ### render
 
 ```
-crucible render <ir.json> [-format mermaid|dot]
+crucible render <ir.json> [-format mermaid|dot|svg|png] [-o outfile]
 ```
 
-Renders the machine as a Mermaid `stateDiagram-v2` (the default) or as Graphviz
-DOT. Output is text. For an SVG, pipe the DOT through Graphviz (`crucible render
-m.json -format dot | dot -Tsvg`); native SVG rendering is a future addition.
+Renders the machine as a Mermaid `stateDiagram-v2` (the default), Graphviz DOT,
+or a themed `svg`/`png` image. The `svg` and `png` formats are rendered directly
+by an embedded, pure-Go (WebAssembly) Graphviz, so **no external Graphviz
+install is required** and the image carries the Crucible brand palette.
+
+`-o` writes the output to a file instead of stdout; it is the norm for `png`,
+whose bytes are binary. `mermaid`/`dot` remain text and stream to stdout
+unchanged (the historical `crucible render m.json -format dot | dot -Tsvg`
+pipeline still works for callers who prefer their own Graphviz).
 
 ### diff
 

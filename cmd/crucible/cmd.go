@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/stablekernel/crucible/gen"
+	"github.com/stablekernel/crucible/state"
 	"github.com/stablekernel/crucible/state/analysis"
 	"github.com/stablekernel/crucible/state/evolution"
 )
@@ -59,22 +60,28 @@ func runLint(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// runRender loads an IR, assembles it with stub behaviors, and prints the
-// machine diagram. -format selects mermaid (the default) or dot. SVG output is
-// not produced here; pipe the dot text through Graphviz for an image.
+// runRender loads an IR, assembles it with stub behaviors, and emits the
+// machine diagram. -format selects mermaid (the default), dot, svg, or png. The
+// svg and png formats are rendered directly via an embedded (pure-Go, WASM)
+// Graphviz — no external `dot` install is required — and carry the Crucible
+// brand theme. Image bytes go to -o when set, otherwise to stdout; png in
+// particular is binary, so -o is the norm.
 func runRender(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("render", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	format := fs.String("format", "mermaid", "diagram format: mermaid or dot")
+	format := fs.String("format", "mermaid", "diagram format: mermaid, dot, svg, or png")
+	out := fs.String("o", "", "output file (default: stdout)")
 	if err := fs.Parse(reorderArgs(args)); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 1 {
-		emitln(stderr, "usage: crucible render <ir.json> [-format mermaid|dot]")
+		emitln(stderr, "usage: crucible render <ir.json> [-format mermaid|dot|svg|png] [-o outfile]")
 		return exitUsage
 	}
-	if *format != "mermaid" && *format != "dot" {
-		emitf(stderr, "crucible render: unknown -format %q (want mermaid or dot)\n", *format)
+	switch *format {
+	case "mermaid", "dot", "svg", "png":
+	default:
+		emitf(stderr, "crucible render: unknown -format %q (want mermaid, dot, svg, or png)\n", *format)
 		return exitUsage
 	}
 
@@ -90,10 +97,36 @@ func runRender(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch *format {
+	case "svg":
+		return renderImageToOutput(m, formatSVG, *out, stdout, stderr)
+	case "png":
+		return renderImageToOutput(m, formatPNG, *out, stdout, stderr)
 	case "dot":
 		emit(stdout, m.ToDOT())
 	default:
 		emit(stdout, m.ToMermaid())
+	}
+	return exitOK
+}
+
+// renderImageToOutput renders the machine to image bytes and writes them either
+// to the named file or to stdout. The bytes are binary, so they bypass the
+// emit* helpers (which append newlines and would corrupt a PNG). It returns the
+// process exit code.
+func renderImageToOutput[S comparable, E comparable, C any](m *state.Machine[S, E, C], format imageFormat, out string, stdout, stderr io.Writer) int {
+	img, err := renderImage(m, format)
+	if err != nil {
+		emitf(stderr, "crucible render: %v\n", err)
+		return exitError
+	}
+	if out == "" {
+		_, err = stdout.Write(img)
+	} else {
+		err = os.WriteFile(out, img, 0o644)
+	}
+	if err != nil {
+		emitf(stderr, "crucible render: write output: %v\n", err)
+		return exitError
 	}
 	return exitOK
 }
