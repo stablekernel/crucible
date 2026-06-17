@@ -192,3 +192,36 @@ func TestEmit_SpecialCharEscaping(t *testing.T) {
 		t.Error("want quoted label containing the middle dot")
 	}
 }
+
+// TestEmit_GuardOnlyEdgeQuoted is the regression for the bracket-array bug: an
+// EVENTLESS transition carrying ONLY a guard yields the edge label "[hasStock]".
+// Emitted bare ("a -> b: [hasStock]") D2 parses the value as an ARRAY and fails
+// to compile; it MUST be emitted double-quoted. The second edge carries an
+// embedded quote and backslash to pin the escaping rule (\" and \\). The golden
+// captures both quoted forms.
+func TestEmit_GuardOnlyEdgeQuoted(t *testing.T) {
+	vm := viewmodel.ViewModel{
+		Nodes: []viewmodel.ViewNode{
+			{ID: "a", Name: "a", Kind: viewmodel.NodeAtomic},
+			{ID: "b", Name: "b", Kind: viewmodel.NodeAtomic},
+			{ID: "c", Name: "c", Kind: viewmodel.NodeAtomic},
+		},
+		Edges: []viewmodel.ViewEdge{
+			// Eventless + guard only -> label becomes "[hasStock]".
+			{From: "a", To: "b", Kind: viewmodel.EdgeEventless, Guards: []viewmodel.DetailItem{{Name: "hasStock"}}},
+			// Event label containing a quote and a backslash -> must escape both.
+			{From: "b", To: "c", Event: `say "hi" \ end`, Kind: viewmodel.EdgeEvent},
+		},
+	}
+	got := goldenCheck(t, "guard_only_edge", vm)
+	if !strings.Contains(got, `a -> b: "[hasStock]"`) {
+		t.Errorf("want quoted guard-only edge label, got:\n%s", got)
+	}
+	if strings.Contains(got, `a -> b: [hasStock]`) {
+		t.Error("guard-only label emitted BARE — D2 would parse it as an array")
+	}
+	// Backslash escaped first, then quote: \\ and \" both present.
+	if !strings.Contains(got, `b -> c: "say \"hi\" \\ end"`) {
+		t.Errorf("want escaped quote+backslash in label, got:\n%s", got)
+	}
+}

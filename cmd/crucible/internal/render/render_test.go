@@ -180,6 +180,35 @@ func TestRender_ContainerForgeStyle(t *testing.T) {
 	}
 }
 
+// TestRender_GuardOnlyEdgeCompiles is the end-to-end regression for the
+// bracket-array bug. An EVENTLESS transition carrying only a guard renders the
+// edge label "[hasStock]"; before the quoting fix the emitter wrote it BARE, so
+// D2 parsed it as an array ("edges cannot be assigned arrays") and RenderSVG
+// errored. With the fix the label is double-quoted and RenderSVG must succeed
+// and produce an <svg> root. A second edge carries a quote+backslash to exercise
+// the escaping path end-to-end.
+func TestRender_GuardOnlyEdgeCompiles(t *testing.T) {
+	vm := viewmodel.ViewModel{
+		Nodes: []viewmodel.ViewNode{
+			{ID: "a", Name: "a", Kind: viewmodel.NodeAtomic},
+			{ID: "b", Name: "b", Kind: viewmodel.NodeAtomic},
+			{ID: "c", Name: "c", Kind: viewmodel.NodeAtomic},
+		},
+		Edges: []viewmodel.ViewEdge{
+			{From: "a", To: "b", Kind: viewmodel.EdgeEventless, Guards: []viewmodel.DetailItem{{Name: "hasStock"}}},
+			{From: "b", To: "c", Event: `say "hi" \ end`, Kind: viewmodel.EdgeEvent},
+		},
+		Highlight: []string{},
+	}
+	out, err := RenderSVG(vm, DefaultTheme)
+	if err != nil {
+		t.Fatalf("RenderSVG must succeed for a guard-only eventless edge: %v", err)
+	}
+	if !regexp.MustCompile(`<svg`).MatchString(string(out)) {
+		t.Error("missing <svg root in rendered output")
+	}
+}
+
 func TestRender_LifecycleRecolored(t *testing.T) {
 	// A path scope that includes the composite's lifecycle-bearing "active"
 	// state, projected at Lifecycle level so entry/exit/invoke rows are emitted.

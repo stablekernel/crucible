@@ -454,19 +454,35 @@ func sanitizeKey(id string) string {
 	return k
 }
 
-// quote wraps a label/value in double quotes when it contains D2-special
-// characters (spaces, the middle dot, > - : or a quote) or begins with '#' (the
-// D2 comment marker — color values like "#ff7a18" MUST be quoted or D2 treats
-// the rest of the line as a comment). Embedded quotes are escaped. Plain
-// identifiers are returned bare.
+// safeBareKeyRe matches a value that is safe to emit as a BARE D2 token: one or
+// more of [A-Za-z0-9_] that does not begin with a digit. Anything else must be
+// double-quoted. A whitelist is used deliberately rather than a blacklist of
+// "special" characters: D2 assigns meaning to many punctuation characters in a
+// value position — '[' / ']' start an array (so a guard-only label like
+// "[hasStock]" parses as an array and fails to compile), '{' / '}' open a map,
+// '#' starts a comment, ':' '|' '(' ')' '<' '>' '-' '&' '*' '.' ';' and
+// whitespace all carry syntax — and enumerating them is error-prone. Keeping
+// only pure identifiers bare is both safe and stable (existing goldens use bare
+// alphanumeric names/labels, which stay bare).
+var safeBareKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// quote renders a label/value for D2. A pure identifier (safeBareKeyRe) is
+// returned bare; everything else is wrapped in a D2 double-quoted string.
+//
+// D2 double-quoted strings (verified against oss.terrastruct.com/d2 v0.7.1) use
+// backslash escaping: `\"` yields a literal '"' and `\\` yields a literal '\'.
+// We therefore escape backslashes FIRST, then quotes, so embedded backslashes
+// and quotes round-trip exactly. The empty string becomes `""`.
 func quote(s string) string {
 	if s == "" {
 		return `""`
 	}
-	if strings.HasPrefix(s, "#") || strings.ContainsAny(s, " ·>-:\"\n") {
-		return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+	if safeBareKeyRe.MatchString(s) {
+		return s
 	}
-	return s
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
 }
 
 // indent returns 2*depth spaces.
