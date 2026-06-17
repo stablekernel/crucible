@@ -14,6 +14,11 @@ versioned independently of the `state` module.
 - `diff -format` selects `text` (default) or `json` output.
 - `diff -exit-code` exits non-zero when the recommended bump is `major`
   (at least one breaking change), so a diff can gate CI.
+- `simulate` fires a sequence of events against a machine from a given state
+  and prints the step trace. `-events` takes a comma-separated list; `-events-file`
+  accepts a JSON events file. `-guard name=bool` seeds a guard verdict (unseeded
+  guards default to false). `-initial` overrides the IR's declared start state.
+  `-format` selects `text` (default) or `json` output.
 
 ## [0.1.0] - 2026-06-13
 

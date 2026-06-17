@@ -72,6 +72,24 @@ Generates typed Go behavior stubs for every referenced guard, action, reducer,
 and service, plus a `Provide` function that registers them. Writes to `outfile`
 or, by default, to stdout.
 
+### simulate
+
+```
+crucible simulate <ir.json> -events e1,e2 [-events-file f] [-initial S] [-guard name=bool] [-format text|json]
+```
+
+Fires a sequence of events against a machine assembled from the IR and prints the
+resulting step trace (each event's from/to state, outcome, and emitted effects),
+then the final state. The events come from `-events` (a comma-separated list) or
+`-events-file` (a JSON file that is either a bare array of event names or a
+conformance scenario object); exactly one is required. Since the IR carries no
+real behavior, guards return seeded verdicts: `-guard name=bool` (repeatable)
+sets a guard's result, and any unseeded guard defaults to `false`; actions,
+reducers, and services are no-ops. `-initial` overrides the IR's declared start
+state. `-format` selects human-readable `text` (the default) or `json`. A
+guard-blocked or invalid transition is a normal observable outcome and exits
+zero; an unknown event or an action failure exits non-zero.
+
 ### version
 
 ```
