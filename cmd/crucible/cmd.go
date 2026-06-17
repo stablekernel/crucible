@@ -16,11 +16,23 @@ import (
 func runLint(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if code, ok := parseSingleArg(fs, args, "lint", "<ir.json>", stderr); !ok {
-		return code
+	format := fs.String("format", "text", "output format: text, json, or sarif")
+	if err := fs.Parse(reorderArgs(args)); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 1 {
+		emitln(stderr, "usage: crucible lint <ir.json> [-format text|json|sarif]")
+		return exitUsage
+	}
+	switch *format {
+	case "text", "json", "sarif":
+	default:
+		emitf(stderr, "crucible lint: unknown -format %q (want text, json, or sarif)\n", *format)
+		return exitUsage
 	}
 
-	ir, err := loadIR(fs.Arg(0), os.Stdin)
+	irPath := fs.Arg(0)
+	ir, err := loadIR(irPath, os.Stdin)
 	if err != nil {
 		emitf(stderr, "crucible lint: %v\n", err)
 		return exitError
@@ -32,7 +44,15 @@ func runLint(args []string, stdout, stderr io.Writer) int {
 	}
 
 	report := analysis.Analyze(m)
-	emitln(stdout, report.String())
+	switch *format {
+	case "text":
+		emitln(stdout, report.String())
+	default:
+		if err := formatLint(report, *format, irPath, version, stdout); err != nil {
+			emitf(stderr, "crucible lint: %v\n", err)
+			return exitError
+		}
+	}
 	if len(report.Findings) > 0 {
 		return exitFindings
 	}
@@ -84,11 +104,22 @@ func runRender(args []string, stdout, stderr io.Writer) int {
 func runDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
+	format := fs.String("format", "text", "output format: text or json")
+	exitCode := fs.Bool("exit-code", false, "exit nonzero on breaking (major) changes")
+	if err := fs.Parse(reorderArgs(args)); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 2 {
-		emitln(stderr, "usage: crucible diff <old.json> <new.json>")
+		emitln(stderr, "usage: crucible diff <old.json> <new.json> [-format text|json] [-exit-code]")
+		return exitUsage
+	}
+	switch *format {
+	case "text", "json":
+	case "sarif":
+		emitln(stderr, "crucible diff: -format sarif is not supported for diff")
+		return exitUsage
+	default:
+		emitf(stderr, "crucible diff: unknown -format %q (want text or json)\n", *format)
 		return exitUsage
 	}
 
@@ -109,22 +140,33 @@ func runDiff(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	emitf(stdout, "bump: %s\n", report.SemverBump())
-	var breaking, additive []evolution.Change
-	for _, c := range report.Changes {
-		if c.Breaking {
-			breaking = append(breaking, c)
-		} else {
-			additive = append(additive, c)
+	if *format == "json" {
+		if err := formatDiff(report, *format, stdout); err != nil {
+			emitf(stderr, "crucible diff: %v\n", err)
+			return exitError
+		}
+	} else {
+		emitf(stdout, "bump: %s\n", report.SemverBump())
+		var breaking, additive []evolution.Change
+		for _, c := range report.Changes {
+			if c.Breaking {
+				breaking = append(breaking, c)
+			} else {
+				additive = append(additive, c)
+			}
+		}
+		emitf(stdout, "\nbreaking (%d):\n", len(breaking))
+		for _, c := range breaking {
+			emitf(stdout, "  %-24s %s: %s\n", c.Kind, c.Path, c.Description)
+		}
+		emitf(stdout, "\nadditive (%d):\n", len(additive))
+		for _, c := range additive {
+			emitf(stdout, "  %-24s %s: %s\n", c.Kind, c.Path, c.Description)
 		}
 	}
-	emitf(stdout, "\nbreaking (%d):\n", len(breaking))
-	for _, c := range breaking {
-		emitf(stdout, "  %-24s %s: %s\n", c.Kind, c.Path, c.Description)
-	}
-	emitf(stdout, "\nadditive (%d):\n", len(additive))
-	for _, c := range additive {
-		emitf(stdout, "  %-24s %s: %s\n", c.Kind, c.Path, c.Description)
+
+	if *exitCode && report.SemverBump() == evolution.Major {
+		return exitBreaking
 	}
 	return exitOK
 }

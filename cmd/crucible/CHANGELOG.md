@@ -7,6 +7,14 @@ versioned independently of the `state` module.
 
 ## [Unreleased]
 
+### Added
+
+- `lint -format` selects the output format: `text` (default), `json`, or
+  `sarif` (SARIF 2.1.0) for machine-readable CI ingestion.
+- `diff -format` selects `text` (default) or `json` output.
+- `diff -exit-code` exits non-zero when the recommended bump is `major`
+  (at least one breaking change), so a diff can gate CI.
+
 ## [0.1.0] - 2026-06-13
 
 Initial release.
