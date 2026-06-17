@@ -32,18 +32,87 @@ physical location unless the IR was read from stdin (`-`).
 ### render
 
 ```
-crucible render <ir.json> [-format mermaid|dot|svg|png] [-o outfile]
+crucible render <ir.json> [-format mermaid|dot|svg] [-o outfile] \
+  [-from state] [-to state] [-mode shortest|all|trace] \
+  [-detail outline|guards|actions|lifecycle|full] \
+  [-show dim]... [-hide dim]... [-theme file.json]
 ```
 
-Renders the machine as a Mermaid `stateDiagram-v2` (the default), Graphviz DOT,
-or a themed `svg`/`png` image. The `svg` and `png` formats are rendered directly
-by an embedded, pure-Go (WebAssembly) Graphviz, so **no external Graphviz
-install is required** and the image carries the Crucible brand palette.
+Renders the machine as a diagram. `-format` selects the output:
 
-`-o` writes the output to a file instead of stdout; it is the norm for `png`,
-whose bytes are binary. `mermaid`/`dot` remain text and stream to stdout
-unchanged (the historical `crucible render m.json -format dot | dot -Tsvg`
-pipeline still works for callers who prefer their own Graphviz).
+- `mermaid` (the default) — a Mermaid `stateDiagram-v2`, streamed to stdout.
+- `dot` — Graphviz DOT, streamed to stdout (the historical
+  `crucible render m.json -format dot | dot -Tsvg` pipeline still works for
+  callers who prefer their own Graphviz).
+- `svg` — a themed, scalable SVG rendered in-process by the embedded D2 engine
+  (pure Go, no Chromium and no external Graphviz install). The SVG carries the
+  Crucible forge palette.
+
+There is no `png` format: `-format png` exits with a usage error pointing you
+at the conversion path. SVG is the scalable raster-free output; for a PNG,
+render `-format svg` and convert it, e.g.:
+
+```
+crucible render m.json -format svg -o m.svg
+resvg m.svg m.png        # recommended
+# or: rsvg-convert m.svg -o m.png
+```
+
+`-o` writes the output to a file instead of stdout; it is the norm for `svg`.
+
+#### Scope and detail
+
+The SVG pipeline projects the machine along two independent axes: **scope**
+(how much of the graph to keep) and **detail** (how much of each
+state/transition to show).
+
+**Scope** is chosen from `-from`/`-to`/`-mode`:
+
+- No `-from`: the **whole** machine.
+- `-from A` only: the subgraph **reachable from A**.
+- `-from A -to X`: a **path** from A to X. `-mode` shapes it:
+  - `shortest` (default) keeps the whole reachable subgraph but highlights the
+    single shortest A→X path (off-path elements stay, dimmed).
+  - `all` keeps the union of all simple A→X paths, all highlighted.
+  - `trace` keeps **only** the shortest A→X path, dropping everything else.
+
+`-to` requires `-from`; a non-default `-mode` requires `-from`. Endpoints are
+bare state names (composite names resolve to their region).
+
+**Detail** is a cumulative ladder set by `-detail` (default `actions`); each
+level implies all the levels below it:
+
+| Level       | Adds                                              |
+|-------------|---------------------------------------------------|
+| `outline`   | states and transitions only                       |
+| `guards`    | + transition guards                               |
+| `actions`   | + effects and assigns (the default)               |
+| `lifecycle` | + entry/exit actions and invocations              |
+| `full`      | + delays, descriptions, data-flow, context schema, source |
+
+`-show <dimension>` and `-hide <dimension>` (both repeatable) override the
+ladder per dimension; `-show` wins when both name the same one. Dimensions:
+`guards`, `effects`, `assigns`, `entry-exit`, `invoke`, `delays`,
+`descriptions`, `data-flow`, `context-schema`, `source`.
+
+#### Theme
+
+`-theme file.json` overlays a JSON theme onto the embedded default forge
+palette; fields you omit keep their defaults. Without `-theme`, the embedded
+default theme is used.
+
+#### Examples
+
+```
+# Whole machine, default detail, as Mermaid (to stdout):
+crucible render m.json
+
+# Just the shortest path from cart to done, nothing else, as SVG:
+crucible render m.json -format svg -mode trace -from cart -to done -o path.svg
+
+# Reachable-from-A view with full detail but guards suppressed:
+crucible render m.json -format svg -from active -detail full -hide guards -o active.svg
+```
 
 ### diff
 
