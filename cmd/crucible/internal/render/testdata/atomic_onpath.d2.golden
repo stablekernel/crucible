@@ -1,0 +1,126 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  state: {
+    shape: rectangle
+    style: {
+      fill: "#474c52"
+      stroke: "#c0763a"
+      font-color: "#efe7db"
+      stroke-width: 2
+      3d: true
+    }
+  }
+  invoke: {
+    shape: hexagon
+    style: {
+      fill: "#2a1606"
+      stroke: "#c0763a"
+      font-color: "#f2c39b"
+      stroke-width: 2
+    }
+  }
+  init: {
+    shape: circle
+    width: 26
+    style: {
+      fill: "#d9620a"
+      stroke: "#ff7a18"
+      font-color: "#161310"
+    }
+  }
+  history: {
+    shape: circle
+    width: 34
+    style: {
+      fill: "#c0763a"
+      stroke: "#c0763a"
+      font-color: "#241405"
+    }
+  }
+  final: {
+    shape: circle
+    width: 34
+    style: {
+      fill: "#161310"
+      stroke: "#d9620a"
+      stroke-width: 3
+      font-color: "#f2c39b"
+      multiple: true
+    }
+  }
+  region: {
+    shape: rectangle
+    style: {
+      fill: "#33373c"
+      stroke: "#c0763a"
+      font-color: "#e7c9a6"
+      stroke-dash: 3
+      border-radius: 8
+    }
+  }
+  hot_edge: {
+    style: {
+      stroke: "#ff7a18"
+      stroke-width: 3
+      font-color: "#ffae42"
+      bold: true
+    }
+  }
+  guard_edge: {
+    style: {
+      stroke: "#6b7177"
+      font-color: "#8d9298"
+    }
+  }
+  eventless: {
+    style: {
+      stroke: "#6b7177"
+      stroke-dash: 4
+      font-color: "#8d9298"
+    }
+  }
+  delayed: {
+    style: {
+      stroke: "#c0763a"
+      stroke-dash: 4
+      font-color: "#e7c9a6"
+    }
+  }
+  dim_node: {
+    shape: rectangle
+    style: {
+      fill: "#22262b"
+      stroke: "#6b7177"
+      font-color: "#8d9298"
+      stroke-width: 1
+      opacity: 0.85
+      3d: true
+    }
+  }
+  dim_edge: {
+    style: {
+      stroke: "#6b7177"
+      font-color: "#8d9298"
+      opacity: 0.7
+    }
+  }
+}
+
+style.fill: "#161310"
+
+a: a {
+  class: state
+  style.stroke: "#ff7a18"
+  style.stroke-width: 3
+}
+b: b {
+  class: state
+  style.stroke: "#ff7a18"
+  style.stroke-width: 3
+}
+a -> b: go { class: hot_edge }

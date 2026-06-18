@@ -35,10 +35,11 @@ same rule. Defaults are no-ops, nothing third-party is forced on the consumer.
 
 This "stdlib-only" guarantee is about the library you import: the `state` engine
 and its seams pull in nothing third-party. The standalone `crucible` CLI is a
-leaf tool, not a library, and is the one exception — it embeds a pure-Go
-(WebAssembly) Graphviz **only** for `render -format svg|png`, so you can render
-images without installing Graphviz. That convenience lives entirely in the CLI
-binary; it never enters the `state` engine or any module you import. See
+leaf tool, not a library, and is the one exception — it embeds
+[D2](https://d2lang.com) (MPL-2.0, pure Go, no Chromium) **only** for
+`render -format svg`, so you can render diagrams without installing Graphviz.
+That dependency lives entirely in the CLI binary; it never enters the `state`
+engine or any module you import. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution.
 
 ## Documentation

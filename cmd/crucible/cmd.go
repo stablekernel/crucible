@@ -1,14 +1,21 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/stablekernel/crucible/gen"
 	"github.com/stablekernel/crucible/state"
 	"github.com/stablekernel/crucible/state/analysis"
 	"github.com/stablekernel/crucible/state/evolution"
+
+	"github.com/stablekernel/crucible/cmd/crucible/internal/query"
+	"github.com/stablekernel/crucible/cmd/crucible/internal/render"
+	"github.com/stablekernel/crucible/cmd/crucible/internal/viewmodel"
 )
 
 // runLint loads an IR, assembles it with stub behaviors, runs every static
@@ -60,24 +67,69 @@ func runLint(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// stringSliceFlag is a repeatable flag that accumulates string values.
+// It implements flag.Value so it can be registered with fs.Var.
+type stringSliceFlag []string
+
+// String returns the slice formatted as a comma-joined string.
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ",") }
+
+// Set appends v to the accumulated slice.
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// dimensionByToken maps user-visible flag tokens to their Dimension constant.
+var dimensionByToken = map[string]viewmodel.Dimension{
+	"guards":         viewmodel.DimGuards,
+	"effects":        viewmodel.DimEffects,
+	"assigns":        viewmodel.DimAssigns,
+	"entry-exit":     viewmodel.DimEntryExit,
+	"invoke":         viewmodel.DimInvoke,
+	"delays":         viewmodel.DimDelays,
+	"descriptions":   viewmodel.DimDescriptions,
+	"data-flow":      viewmodel.DimDataFlow,
+	"context-schema": viewmodel.DimContextSchema,
+	"source":         viewmodel.DimSource,
+}
+
+// validDimensionTokens is the sorted list of recognized dimension tokens,
+// used in error messages.
+var validDimensionTokens = []string{
+	"assigns", "context-schema", "data-flow", "delays", "descriptions",
+	"effects", "entry-exit", "guards", "invoke", "source",
+}
+
 // runRender loads an IR, assembles it with stub behaviors, and emits the
-// machine diagram. -format selects mermaid (the default), dot, svg, or png. The
-// svg and png formats are rendered directly via an embedded (pure-Go, WASM)
-// Graphviz — no external `dot` install is required — and carry the Crucible
-// brand theme. Image bytes go to -o when set, otherwise to stdout; png in
-// particular is binary, so -o is the norm.
+// machine diagram. -format selects mermaid (the default), dot, or svg. The svg
+// format is rendered via the in-house D2 renderer and carries the Crucible
+// brand theme; SVG bytes are written to -o when set, otherwise to stdout.
+// -format png is rejected with a conversion hint. Scope and detail projection
+// are controlled by -from, -to, -mode, -detail, -show, and -hide.
 func runRender(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("render", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	format := fs.String("format", "mermaid", "diagram format: mermaid, dot, svg, or png")
+	format := fs.String("format", "mermaid", "diagram format: mermaid, dot, or svg")
 	out := fs.String("o", "", "output file (default: stdout)")
+	from := fs.String("from", "", "source state for scope/path filtering")
+	to := fs.String("to", "", "target state for path filtering (requires -from)")
+	mode := fs.String("mode", "shortest", "path mode: shortest, all, or trace (requires -from)")
+	detail := fs.String("detail", "actions", "detail level: outline, guards, actions, lifecycle, or full")
+	theme := fs.String("theme", "", "path to a theme JSON file")
+	var show, hide stringSliceFlag
+	fs.Var(&show, "show", "add a dimension (repeatable): guards, effects, assigns, …")
+	fs.Var(&hide, "hide", "suppress a dimension (repeatable)")
+
 	if err := fs.Parse(reorderArgs(args)); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 1 {
-		emitln(stderr, "usage: crucible render <ir.json> [-format mermaid|dot|svg|png] [-o outfile]")
+		emitln(stderr, "usage: crucible render <ir.json> [-format mermaid|dot|svg] [-o outfile] [-from state] [-to state] [-mode shortest|all|trace] [-detail outline|guards|actions|lifecycle|full] [-show dim] [-hide dim] [-theme file]")
 		return exitUsage
 	}
+
+	// Validate -format first so the existing TestRender_UnknownFormat passes.
 	switch *format {
 	case "mermaid", "dot", "svg", "png":
 	default:
@@ -85,50 +137,183 @@ func runRender(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	ir, err := loadIR(fs.Arg(0), os.Stdin)
+	// PNG is rejected with a conversion hint.
+	if *format == "png" {
+		emitf(stderr, "crucible render: png is not supported directly; render -format svg and convert with resvg or rsvg-convert\n")
+		return exitUsage
+	}
+
+	// Validate -mode token.
+	var svgMode viewmodel.Mode
+	switch *mode {
+	case "shortest":
+		svgMode = viewmodel.ModeShortest
+	case "all":
+		svgMode = viewmodel.ModeAll
+	case "trace":
+		svgMode = viewmodel.ModeTrace
+	default:
+		emitf(stderr, "crucible render: unknown -mode %q (want shortest, all, or trace)\n", *mode)
+		return exitUsage
+	}
+
+	// Validate -detail token.
+	var level viewmodel.DetailLevel
+	switch *detail {
+	case "outline":
+		level = viewmodel.Outline
+	case "guards":
+		level = viewmodel.Guards
+	case "actions":
+		level = viewmodel.Actions
+	case "lifecycle":
+		level = viewmodel.Lifecycle
+	case "full":
+		level = viewmodel.Full
+	default:
+		emitf(stderr, "crucible render: unknown -detail %q (want outline, guards, actions, lifecycle, or full)\n", *detail)
+		return exitUsage
+	}
+
+	// Validate -show tokens.
+	showDims, err := parseDimensions(show)
 	if err != nil {
-		emitf(stderr, "crucible render: %v\n", err)
+		emitf(stderr, "crucible render: -show %v (valid: %s)\n", err, strings.Join(validDimensionTokens, ", "))
+		return exitUsage
+	}
+
+	// Validate -hide tokens.
+	hideDims, err := parseDimensions(hide)
+	if err != nil {
+		emitf(stderr, "crucible render: -hide %v (valid: %s)\n", err, strings.Join(validDimensionTokens, ", "))
+		return exitUsage
+	}
+
+	// -to requires -from.
+	if *to != "" && *from == "" {
+		emitf(stderr, "crucible render: -to requires -from\n")
+		return exitUsage
+	}
+
+	// Non-shortest mode requires -from.
+	if *mode != "shortest" && *from == "" {
+		emitf(stderr, "crucible render: mode requires -from/-to\n")
+		return exitUsage
+	}
+
+	// For mermaid/dot, skip the full pipeline and emit text.
+	if *format == "dot" || *format == "mermaid" {
+		ir, loadErr := loadIR(fs.Arg(0), os.Stdin)
+		if loadErr != nil {
+			emitf(stderr, "crucible render: %v\n", loadErr)
+			return exitError
+		}
+		m, quenchErr := quench(ir)
+		if quenchErr != nil {
+			emitf(stderr, "crucible render: %v\n", quenchErr)
+			return exitError
+		}
+		switch *format {
+		case "dot":
+			emit(stdout, m.ToDOT())
+		default:
+			emit(stdout, m.ToMermaid())
+		}
+		return exitOK
+	}
+
+	// SVG: full viewmodel/render pipeline.
+	var renderTheme render.Theme
+	if *theme != "" {
+		renderTheme, err = render.LoadTheme(*theme)
+		if err != nil {
+			emitf(stderr, "crucible render: %v\n", err)
+			return exitUsage
+		}
+	} else {
+		renderTheme = render.DefaultTheme
+	}
+
+	ir, loadErr := loadIR(fs.Arg(0), os.Stdin)
+	if loadErr != nil {
+		emitf(stderr, "crucible render: %v\n", loadErr)
 		return exitError
 	}
-	m, err := quench(ir)
-	if err != nil {
-		emitf(stderr, "crucible render: %v\n", err)
+	m, quenchErr := quench(ir)
+	if quenchErr != nil {
+		emitf(stderr, "crucible render: %v\n", quenchErr)
 		return exitError
 	}
 
-	switch *format {
-	case "svg":
-		return renderImageToOutput(m, formatSVG, *out, stdout, stderr)
-	case "png":
-		return renderImageToOutput(m, formatPNG, *out, stdout, stderr)
-	case "dot":
-		emit(stdout, m.ToDOT())
+	resolver := viewmodel.NewRefResolver(state.BuiltinPalette(), m.Palette())
+
+	var scope viewmodel.Scope
+	switch {
+	case *from != "" && *to != "":
+		scope = viewmodel.ScopePath
+	case *from != "":
+		scope = viewmodel.ScopeReachableFrom
 	default:
-		emit(stdout, m.ToMermaid())
+		scope = viewmodel.ScopeWhole
+	}
+
+	opts := viewmodel.ProjectionOptions{
+		Level: level,
+		Show:  showDims,
+		Hide:  hideDims,
+		Scope: scope,
+		Mode:  svgMode,
+		From:  *from,
+		To:    *to,
+	}
+
+	vm, vmErr := viewmodel.BuildScoped(ir, resolver, opts)
+	if vmErr != nil {
+		switch {
+		case errors.Is(vmErr, query.ErrUnknownState) || errors.Is(vmErr, query.ErrAmbiguousState):
+			emitf(stderr, "crucible render: %v\n", vmErr)
+		case strings.Contains(vmErr.Error(), "no path"):
+			emitf(stderr, "crucible render: %v\n", vmErr)
+		default:
+			emitf(stderr, "crucible render: %v\n", vmErr)
+		}
+		return exitUsage
+	}
+
+	svg, renderErr := render.RenderSVG(vm, renderTheme)
+	if renderErr != nil {
+		emitf(stderr, "crucible render: %v\n", renderErr)
+		return exitError
+	}
+
+	var writeErr error
+	if *out == "" {
+		_, writeErr = stdout.Write(svg)
+	} else {
+		writeErr = os.WriteFile(*out, svg, 0o644)
+	}
+	if writeErr != nil {
+		emitf(stderr, "crucible render: write output: %v\n", writeErr)
+		return exitError
 	}
 	return exitOK
 }
 
-// renderImageToOutput renders the machine to image bytes and writes them either
-// to the named file or to stdout. The bytes are binary, so they bypass the
-// emit* helpers (which append newlines and would corrupt a PNG). It returns the
-// process exit code.
-func renderImageToOutput[S comparable, E comparable, C any](m *state.Machine[S, E, C], format imageFormat, out string, stdout, stderr io.Writer) int {
-	img, err := renderImage(m, format)
-	if err != nil {
-		emitf(stderr, "crucible render: %v\n", err)
-		return exitError
+// parseDimensions converts a slice of user-visible token strings to their
+// Dimension constants. It returns an error naming the first unrecognized token.
+func parseDimensions(tokens []string) ([]viewmodel.Dimension, error) {
+	if len(tokens) == 0 {
+		return nil, nil
 	}
-	if out == "" {
-		_, err = stdout.Write(img)
-	} else {
-		err = os.WriteFile(out, img, 0o644)
+	dims := make([]viewmodel.Dimension, 0, len(tokens))
+	for _, tok := range tokens {
+		d, ok := dimensionByToken[tok]
+		if !ok {
+			return nil, fmt.Errorf("unknown dimension token %q", tok)
+		}
+		dims = append(dims, d)
 	}
-	if err != nil {
-		emitf(stderr, "crucible render: write output: %v\n", err)
-		return exitError
-	}
-	return exitOK
+	return dims, nil
 }
 
 // runDiff loads two serialized IRs, classifies the changes between them, and
@@ -289,13 +474,16 @@ func parseSingleArg(fs *flag.FlagSet, args []string, name, argHint string, stder
 // appear after the IR path (e.g. "render ir.json -format dot"). Go's flag
 // package stops at the first non-flag token, so without this a trailing flag is
 // read as a stray positional. Every value-taking flag in this CLI (-format,
-// -package, -o) is moved together with its following value token; a -k=v token
-// carries its own value. A bare "--" terminates flag processing, and everything
-// after it is treated as positional.
+// -package, -o, -from, -to, -mode, -detail, -show, -hide, -theme) is moved
+// together with its following value token; a -k=v token carries its own value.
+// A bare "--" terminates flag processing, and everything after it is treated as
+// positional.
 func reorderArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"-format": true, "-package": true, "-o": true,
 		"-events": true, "-events-file": true, "-initial": true, "-guard": true,
+		"-from": true, "-to": true, "-mode": true, "-detail": true,
+		"-show": true, "-hide": true, "-theme": true,
 	}
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {

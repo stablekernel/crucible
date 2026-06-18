@@ -9,11 +9,16 @@ versioned independently of the `state` module.
 
 ### Added
 
-- `render -format svg|png` renders the machine directly to a themed image via an
-  embedded, pure-Go (WebAssembly) Graphviz — no external Graphviz install is
-  required. The image carries the Crucible brand palette. `-o file` writes the
-  output to a file instead of stdout (the norm for binary `png`); `mermaid` and
-  `dot` output is unchanged.
+- Machine visualizer: `render -format svg` renders the machine directly to a
+  themed, scalable SVG via the embedded D2 engine (pure Go, no Chromium, no
+  external Graphviz install). The pipeline supports scope and detail projection:
+  `-from`/`-to` with `-mode shortest|all|trace` select a whole / reachable-from
+  / path scope, and `-detail outline|guards|actions|lifecycle|full` (default
+  `actions`) sets a cumulative detail ladder, refined by repeatable
+  `-show`/`-hide <dimension>`. `-o file` writes the SVG to a file instead of
+  stdout.
+- `render -theme file.json` overlays a JSON theme onto the embedded default
+  forge palette; omitted fields keep their defaults.
 - `lint -format` selects the output format: `text` (default), `json`, or
   `sarif` (SARIF 2.1.0) for machine-readable CI ingestion.
 - `diff -format` selects `text` (default) or `json` output.
@@ -24,6 +29,21 @@ versioned independently of the `state` module.
   accepts a JSON events file. `-guard name=bool` seeds a guard verdict (unseeded
   guards default to false). `-initial` overrides the IR's declared start state.
   `-format` selects `text` (default) or `json` output.
+
+### Changed
+
+- The `render` SVG backend now uses the embedded D2 engine
+  (`oss.terrastruct.com/d2`) instead of the previous WebAssembly Graphviz
+  backend. SVG output is themed with the Crucible forge palette and rendered
+  in-process.
+
+### Removed
+
+- The previous WebAssembly Graphviz rendering dependency (and its bundled
+  Graphviz engine) is removed in favor of D2.
+- `render -format png` no longer renders directly; it now exits with a usage
+  error hinting to render `-format svg` and convert with `resvg` or
+  `rsvg-convert`.
 
 ## [0.1.0] - 2026-06-13
 
