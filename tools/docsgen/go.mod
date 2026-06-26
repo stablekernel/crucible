@@ -1,7 +1,9 @@
 module github.com/stablekernel/crucible/tools/docsgen
 
 go 1.25.11
+
 toolchain go1.26.4
+
 // The generator builds real example machines and renders their diagrams, and
 // shells out to gomarkdoc for the API reference. It depends on the local state
 // kernel, the rich-expression tier, and the flagship example, all via replace
@@ -14,7 +16,7 @@ replace github.com/stablekernel/crucible/examples/fooddelivery => ../../examples
 
 require (
 	github.com/stablekernel/crucible/examples/fooddelivery v0.0.0-00010101000000-000000000000
-	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/state v1.0.0
 )
 
 require (

@@ -1,13 +1,15 @@
 module github.com/stablekernel/crucible/examples/fooddelivery
 
 go 1.25.11
+
 toolchain go1.26.4
+
 replace github.com/stablekernel/crucible/state => ../../state
 
 replace github.com/stablekernel/crucible/state/expr => ../../state/expr
 
 require (
-	github.com/stablekernel/crucible/state v0.0.0-00010101000000-000000000000
+	github.com/stablekernel/crucible/state v1.0.0
 	github.com/stablekernel/crucible/state/expr v0.0.0-00010101000000-000000000000
 )
 
