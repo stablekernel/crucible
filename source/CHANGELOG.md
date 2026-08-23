@@ -5,6 +5,14 @@ All notable changes to `crucible/source` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-08-23
+
+Release engineering only: no code changes. The v1.0.0 tag's release workflow
+failed for environment reasons (the validate job built with the repository
+workspace present, and golangci-lint could not run on the Go 1.25 matrix leg
+against a module targeting a newer language version); v1.0.1 republishes the
+identical source so the tag validates cleanly end to end.
+
 ## [1.0.0] — 2026-08-23
 
 The first stable release. It freezes the neutral ingress surface — `Inlet`,
