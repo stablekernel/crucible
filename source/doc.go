@@ -30,7 +30,9 @@
 // restarts and rebalances, backends whose redelivery rides persisted offsets
 // (Kafka) resume from the last committed position, which a concurrently
 // committed higher offset can advance past a nacked record; those backends
-// therefore redeliver exactly within a session and best-effort across restarts,
+// therefore redeliver within the live session subject to each adapter's
+// documented constraints (Kafka: a concurrent commit can pass a nacked record
+// before its re-seek lands) and best-effort across restarts,
 // and each adapter documents the precise semantics in its own module. A handler
 // returns a [Result] — [Ack], [Nak], [Term], [InProgress], or [Manual] — and
 // the Hopper applies it to the backend. Backends differ (Kafka commits offsets
