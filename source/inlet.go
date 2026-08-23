@@ -61,12 +61,18 @@ type Subscription interface {
 	// ack/commit, schedule redelivery, route to dead-letter, or extend the
 	// deadline, per Result.Action. It is the single point where a delivery
 	// decision reaches the backend. Settling a message more than once is safe:
-	// every call is applied and recorded (a duplicate mark is idempotent at
-	// every backend), and in-flight accounting never goes negative, so drain
-	// semantics are unaffected.
+	// every call is applied and recorded in arrival order, and in-flight
+	// accounting never goes negative, so drain semantics are unaffected. A
+	// later decision supersedes an earlier one for future commits — an Ack
+	// after a Nak marks past the record — though a re-seek already issued may
+	// still yield one final redelivery (at-least-once). Settling a message this
+	// subscription never delivered, or after drain completed, is
+	// backend-defined: where detectable it is rejected (Kafka rejects non-Kafka
+	// messages); otherwise it applies as if delivered.
 	Settle(ctx context.Context, m Message, r Result) error
-	// Close begins a graceful drain: Next stops yielding new messages, and once
-	// in-flight messages are settled, Next returns ErrDrained. Close is
-	// idempotent.
+	// Close begins a graceful drain: from then on Next stops yielding fresh
+	// messages — only messages already handed out or buffered before Close may
+	// still be yielded — and once in-flight messages are settled, Next returns
+	// ErrDrained. Close is idempotent.
 	Close() error
 }

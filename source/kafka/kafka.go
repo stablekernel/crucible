@@ -24,9 +24,10 @@
 //     not an in-session one.
 //   - Term produces the record to the configured dead-letter topic, then marks
 //     it for commit so it is not re-read — except on a transactional
-//     subscription, where Term reports [ErrTermInsideTransaction]: route poison
-//     through Begin's transaction instead, producing to the dead-letter topic
-//     via the handed [source.Tx] so DLQ write and offset commit are atomic.
+//     subscription, where Term reports [ErrTermInsideTransaction] and leaves
+//     the record unmarked, so it is redelivered: route poison through Begin's
+//     transaction instead, producing to the dead-letter topic via the handed
+//     [source.Tx] so DLQ write and offset commit are atomic.
 //   - InProgress is a no-op: Kafka has no per-message ack deadline to extend.
 //   - Manual is a no-op: the handler settled the record itself through
 //     [source.Message.As] and the underlying *kgo.Client.
