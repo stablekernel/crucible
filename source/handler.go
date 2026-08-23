@@ -172,6 +172,8 @@ func Skip() Result { return Result{Action: ActionAck, Class: Drop} }
 func InProgress() Result { return Result{Action: ActionInProgress} }
 
 // Manual returns a Result reporting the handler settled the message itself.
+// The message's in-flight slot is released like any other settle — drain
+// accounting treats Manual as settled — but the backend takes no action.
 func Manual() Result { return Result{Action: ActionManual} }
 
 // Failed reports whether the result carries a failure (anything that is not a

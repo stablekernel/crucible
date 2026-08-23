@@ -120,7 +120,8 @@ type OrderedDelivery interface {
 // substitute for per-message settlement.
 type Batched interface {
 	// NextBatch returns up to limit messages, blocking for at least one, or
-	// ctx.Err()/ErrDrained as [Subscription.Next] would.
+	// ctx.Err()/ErrDrained as [Subscription.Next] would. A limit below one is
+	// treated as one.
 	NextBatch(ctx context.Context, limit int) ([]Message, error)
 	// SettleBatch applies the single result r to every message in ms in one call.
 	// It is for a caller settling a uniform batch directly; the Hopper settles per
