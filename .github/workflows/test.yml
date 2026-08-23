@@ -3,7 +3,7 @@ name: tests
 # Reusable race-test matrix for the state-machine modules. Runs `go test -race
 # ./...` for each module across the Go × OS matrix. Called by ci.yml so the legs
 # render as a single collapsible tree in the checks UI (e.g. "state machine tests
-# / test (1.25.11, ubuntu-latest)") instead of cluttering the top-level checks
+# / test (1.25.14, ubuntu-latest)") instead of cluttering the top-level checks
 # list. The sink-domain modules have their own reusable workflow (sink.yml).
 on:
   workflow_call:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.25.11", "1.26.4"]
+        go: ["1.25.14", "1.26.6"]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
