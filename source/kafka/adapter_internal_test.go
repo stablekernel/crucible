@@ -747,3 +747,61 @@ func TestSubscribeBuildsClientAndAs(t *testing.T) {
 type stringCursor string
 
 func (c stringCursor) String() string { return string(c) }
+
+// TestSettleTermOnTransactionalSubscriptionRejected pins the P2-9 decision: on
+// a transactional subscription a direct Term would produce the DLQ record
+// outside the open EOS session, breaking atomicity with the offset mark, so it
+// is rejected with ErrTermInsideTransaction and has no side effects.
+func TestSettleTermOnTransactionalSubscriptionRejected(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, fp := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 9, "A-1", "poison"))
+
+	err := sub.Settle(context.Background(), m, source.Term(errors.New("poison")))
+	if !errors.Is(err, ErrTermInsideTransaction) {
+		t.Fatalf("Settle(Term) on tx subscription = %v, want ErrTermInsideTransaction", err)
+	}
+	if got := fp.markedCount(); got != 0 {
+		t.Errorf("marked = %d, want 0 (rejected settle must not advance offsets)", got)
+	}
+	if got := fp.producedCount(); got != 0 {
+		t.Errorf("produced = %d, want 0 (no DLQ write outside the transaction)", got)
+	}
+	if len(ft.calls) != 0 {
+		t.Errorf("transact calls = %v, want none", ft.calls)
+	}
+}
+
+// TestBeginDeadLettersThroughTransactionOnPoison pins the supported EOS DLQ
+// pattern for poison messages: inside Begin's fn, produce the rejected record
+// to the dead-letter topic via the handed Tx and return nil, so the DLQ
+// record and the consumed offset commit as one atomic unit.
+func TestBeginDeadLettersThroughTransactionOnPoison(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransactor{committed: true}
+	sub, fp := newTxSub(ft)
+	m := newMessage(rec("orders", 0, 11, "A-1", "poison"))
+
+	err := sub.Begin(context.Background(), m, func(ctx context.Context, tx source.Tx) error {
+		return tx.Produce(ctx, source.ProducedRecord{
+			Topic: "orders.DLQ",
+			Key:   []byte("A-1"),
+			Value: []byte("poison"),
+		})
+	})
+	if err != nil {
+		t.Fatalf("Begin() error = %v, want nil", err)
+	}
+	if len(ft.produced) != 1 || len(ft.produced[0]) != 1 || ft.produced[0][0].Topic != "orders.DLQ" {
+		t.Fatalf("produced = %#v, want one record on orders.DLQ", ft.produced)
+	}
+	if got := fp.markedCount(); got != 1 {
+		t.Errorf("marked = %d, want 1 (consumed offset committed atomically with the DLQ record)", got)
+	}
+	if got, want := ft.calls, []string{"begin", "produce", "end-commit"}; !equalStrings(got, want) {
+		t.Errorf("call order = %v, want %v", got, want)
+	}
+}

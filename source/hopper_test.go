@@ -591,3 +591,127 @@ func TestHopper_RedeliveryStormBoundedResources(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// settleBlockingSub mimics a backend whose Settle honors ctx and can be slow —
+// a Kafka commit or JetStream ack mid-round-trip when shutdown lands. Next
+// yields the queued messages, then blocks on ctx; after Close it never yields
+// again. Settle blocks until the context is canceled, then completes exactly
+// once, so the test can prove the engine neither strands nor double-settles
+// in-flight work across a Close+cancel race.
+type settleBlockingSub struct {
+	mu               sync.Mutex
+	msgs             []source.Message
+	closed           bool
+	nextCalls        int
+	yieldsAfterClose int
+
+	settleStarted chan struct{}
+	startOnce     sync.Once
+	settleCalls   atomic.Int32
+}
+
+func newSettleBlockingSub(msgs ...source.Message) *settleBlockingSub {
+	return &settleBlockingSub{msgs: msgs, settleStarted: make(chan struct{})}
+}
+
+func (s *settleBlockingSub) Next(ctx context.Context) (source.Message, error) {
+	s.mu.Lock()
+	s.nextCalls++
+	closed := s.closed
+	if len(s.msgs) > 0 {
+		m := s.msgs[0]
+		s.msgs = s.msgs[1:]
+		if closed {
+			s.yieldsAfterClose++
+		}
+		s.mu.Unlock()
+		return m, nil
+	}
+	s.mu.Unlock()
+	if closed {
+		return nil, source.ErrDrained
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *settleBlockingSub) Settle(ctx context.Context, _ source.Message, _ source.Result) error {
+	s.settleCalls.Add(1)
+	s.startOnce.Do(func() { close(s.settleStarted) })
+	<-ctx.Done() // the backend settle only completes when its context ends
+	return nil
+}
+
+func (s *settleBlockingSub) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *settleBlockingSub) yieldsAfterCloseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.yieldsAfterClose
+}
+
+// TestHopper_DrainOnCancelWithMidFlightSettle pins the shutdown contract when a
+// backend settle is mid-flight: a Close and a context cancel racing must leave
+// exactly one settle (no double-settle), yield nothing new after Close, strand
+// no goroutines, and let Run return.
+func TestHopper_DrainOnCancelWithMidFlightSettle(t *testing.T) {
+	t.Parallel()
+
+	sub := newSettleBlockingSub(testMsg{key: []byte("k"), value: []byte("v")})
+	hp := source.New(source.WithConcurrency(1))
+	t.Cleanup(func() { _ = hp.Close() })
+
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- hp.Run(ctx, sub, func(context.Context, source.Message) source.Result {
+			return source.Ack()
+		})
+	}()
+
+	select {
+	case <-sub.settleStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("message never reached its (blocking) settle")
+	}
+
+	// Race graceful Close against cancellation, like an operator shutdown and
+	// a deadline expiring at once.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _ = sub.Close() }()
+	go func() { defer wg.Done(); cancel() }()
+	wg.Wait()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, source.ErrDrained) {
+			t.Fatalf("Run = %v, want nil, context.Canceled, or ErrDrained", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after the Close+cancel race")
+	}
+
+	if got := sub.settleCalls.Load(); got != 1 {
+		t.Fatalf("settle calls = %d, want exactly 1 (no double-settle)", got)
+	}
+	if got := sub.yieldsAfterCloseCount(); got != 0 {
+		t.Fatalf("Next yielded %d messages after Close, want 0", got)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines after run = %d, want within +2 of baseline %d (stranded in-flight)",
+				runtime.NumGoroutine(), baseline)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

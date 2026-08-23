@@ -445,8 +445,16 @@ var integrationModules = func() []string {
 	mods := []string{"sink/file", "sink/http", "sink/prometheus", "sink/slog"}
 	mods = append(mods, sinkDestinations...)
 	mods = append(mods, "source", "source/statemachine")
-	mods = append(mods, sourceDestinations...)
-	return mods
+	for _, mod := range sourceDestinations {
+		if mod == "source/kafka" {
+			// The RedPanda leg lives in its own test-only module so its
+			// testcontainers/redpanda/kadm deps stay out of source/kafka's
+			// go.mod; appended below under its nested path.
+			continue
+		}
+		mods = append(mods, mod)
+	}
+	return append(mods, "source/kafka/integration")
 }()
 
 // Integration runs the //go:build integration leg for every sink and source

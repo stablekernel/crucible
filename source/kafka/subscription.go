@@ -292,6 +292,15 @@ func (s *subscription) Settle(ctx context.Context, m source.Message, r source.Re
 		return s.requeueWithDelay(ctx, rec, r.Requeue)
 
 	case source.ActionTerm:
+		// On a transactional subscription the DLQ write must join the open
+		// EOS transaction; a direct Term here would produce outside it and
+		// break atomicity with the offset mark. Route poison through Begin's
+		// fn instead: produce to the dead-letter topic via the handed
+		// [source.Tx] and return success, committing DLQ record and consumed
+		// offset as one unit.
+		if s.transactSess != nil {
+			return fmt.Errorf("source/kafka: term: %w", ErrTermInsideTransaction)
+		}
 		// Produce to the dead-letter topic, then mark so it is not re-read.
 		if err := s.deadLetter(ctx, rec, r); err != nil {
 			return err
