@@ -88,6 +88,11 @@ do expose it:
 - `Transactional` — Kafka exactly-once consume-process-produce, available when
   the inlet is built with `WithTransactional()`.
 
+**Post-drain settles:** settling a genuine Kafka record after this
+subscription drained applies it as if delivered — a duplicate mark is
+harmless (broker-idempotent) and accounting cannot go negative — while a
+non-Kafka message is rejected where detectable.
+
 `BlockRebalanceOnPoll` gives the engine a safe processing window: a rebalance
 cannot move partitions mid-batch; the subscription releases the rebalance only
 between fetches. A `NakAfter(d)` pause holds that window for at most `d` per
