@@ -71,7 +71,9 @@ type Subscription interface {
 	// subscription never delivered, or after drain completed, is
 	// backend-defined: where detectable it is rejected (Kafka rejects messages
 	// that are not Kafka records; a record from a sibling subscription of the
-	// same backend is applied as if delivered).
+	// same backend is applied as if delivered). For messages settled through a
+	// transactional [source.Transactional.Begin], that Begin-only-settle-path
+	// rule governs instead — see its documentation.
 	Settle(ctx context.Context, m Message, r Result) error
 	// Close begins a graceful drain: from then on Next stops yielding fresh
 	// messages — only messages already handed out or buffered before Close may

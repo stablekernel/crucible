@@ -413,7 +413,12 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 
 // Begin runs fn inside a Kafka producer transaction so the records fn produces
 // through the handed [source.Tx] are committed (or aborted) atomically with the
-// consumed offset of m — exactly-once consume-process-produce. The choreography
+// consumed offset of m — exactly-once consume-process-produce. Begin replaces
+// [Subscription.Settle] for m entirely: a direct Settle for m during or after
+// Begin is a caller error with undefined results (at best a harmless duplicate
+// mark; at worst a race with End's commit/abort), and fn must not panic — a
+// panic propagates unrecovered, leaving the transaction open until End, session
+// close, or a rebalance fence aborts it. The choreography
 // is: begin the transaction, run fn (which produces emitted records through the
 // txHandle), mark m's offset for commit on success, then End with TryCommit if fn
 // succeeded or TryAbort if it failed. On commit, franz-go flushes the produced
