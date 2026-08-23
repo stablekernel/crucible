@@ -122,6 +122,11 @@ track franz-go releases.
 
 ## Setup notes
 
+- Configure `WithDLQTopic` before processing poison-prone streams. Without it,
+  every `Term` fails with `ErrNoDLQTopic` and the record stays unmarked — a
+  poison record redelivers on every fetch, stalling its partition until the
+  dead-letter topic is configured or the DLQ produce recovers.
+
 - The dead-letter topic must exist before the first `Term` settles: the
   adapter's DLQ producer does not enable topic auto-creation. Create it up
   front (as the integration suite does with `CreateTopics`).

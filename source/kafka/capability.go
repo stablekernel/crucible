@@ -428,7 +428,10 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 // for m. A direct Settle for m during an open Begin, or after Begin returned,
 // is a caller error with undefined results — it is not detected or coordinated
 // with the transaction: at best it duplicates an already-committed mark
-// (harmless at-least-once), at worst it races End's commit/abort.
+// (harmless at-least-once), at worst it races End's commit/abort. fn must not
+// panic: a panic is not recovered; it propagates to the caller of Begin,
+// leaving the transaction open until a later End, the session closes, or a
+// rebalance fences the producer (which aborts it).
 //
 // It is available only when the inlet was built with [WithTransactional];
 // otherwise it reports the capability is absent rather than silently running fn
