@@ -33,19 +33,27 @@ and the marked offsets are committed on graceful drain and on rebalance
 | Result        | Kafka behavior                                              |
 | ------------- | ----------------------------------------------------------- |
 | `Ack`         | mark the record for commit (commit-after-process)           |
-| `Nak`         | do **not** mark; the record is re-read on restart/rebalance |
-| `NakAfter(d)` | best-effort: pause partition, wait `d`, re-seek, resume     |
+| `Nak`         | never mark; pause, re-seek to the record's offset, resume — the record is fetched again in this session |
+| `NakAfter(d)` | same as `Nak`, waiting out `d` between pause and re-seek (best-effort) |
 | `Term`        | produce the record to the dead-letter topic, then mark      |
 | `InProgress`  | no-op (Kafka has no per-message ack deadline)               |
 | `Manual`      | no-op (the handler settled via `Message.As` + the client)   |
 
-### Divergence: Nak delay
+### Divergence: Nak delay and cross-restart redelivery
 
-Kafka has no native per-message redelivery delay. `NakAfter(d)` is emulated by
-pausing the record's partition, waiting out `d` (or the context), re-seeking to
-the record's own offset, and resuming. A plain `Nak` simply declines to mark,
-so the record is re-delivered on the next restart or rebalance. This is the
-documented divergence from JetStream's native delayed nak.
+Kafka has no native per-message redelivery. A `Nak` (plain or delayed) is
+emulated by pausing the record's partition, waiting out the requested delay
+(zero for a plain `Nak`), re-seeking the partition to the record's own offset,
+and resuming — so the record is redelivered deterministically **within the live
+subscription**. Costs to know about: the delay head-of-line-blocks the paused
+partition; records already fetched but not yet yielded are still delivered
+before the redelivered record; and concurrent settles on the same partition can
+commit past the nacked offset before the re-seek lands.
+
+Across process restarts and rebalances, redelivery rides committed offsets: a
+concurrently committed higher offset can advance past a nacked record, so
+cross-restart redelivery is **best-effort**, not guaranteed. This is the one
+divergence from JetStream's native nak semantics.
 
 ## Capabilities
 

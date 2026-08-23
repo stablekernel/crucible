@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -498,4 +499,95 @@ func TestHopper_MaxInFlightBackpressure(t *testing.T) {
 		t.Fatalf("max in-flight = %d, want <= 3 (backpressure)", maxInFlight)
 	}
 	h.AssertSettled(total)
+}
+
+// stormSub is a minimal Subscription whose Settle requeues nacked messages, so
+// a handler that keeps Naking drives Hopper.run through a real redelivery loop
+// without a broker.
+type stormSub struct {
+	queue chan source.Message
+}
+
+func newStormSub(m source.Message) *stormSub {
+	q := make(chan source.Message, 8)
+	q <- m
+	return &stormSub{queue: q}
+}
+
+func (s *stormSub) Next(ctx context.Context) (source.Message, error) {
+	select {
+	case m := <-s.queue:
+		return m, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *stormSub) Settle(_ context.Context, m source.Message, r source.Result) error {
+	if r.Action == source.ActionNak {
+		s.queue <- m // redeliver
+	}
+	return nil
+}
+
+func (s *stormSub) Close() error { return nil }
+
+// TestHopper_RedeliveryStormBoundedResources drives 500 consecutive Naks of a
+// single-key message through a real Hopper.run redelivery loop and pins the
+// resource contract: Run terminates, the delivery loop really cycled (>= 501
+// deliveries for 500 naks + 1 ack), and every lane/fetch goroutine unwinds so
+// the goroutine count returns to its pre-run baseline.
+func TestHopper_RedeliveryStormBoundedResources(t *testing.T) {
+	t.Parallel()
+
+	sub := newStormSub(testMsg{key: []byte("k"), value: []byte("v")})
+	hp := source.New(source.WithConcurrency(4))
+	t.Cleanup(func() { _ = hp.Close() })
+
+	var deliveries atomic.Int64
+	acked := make(chan struct{})
+	var ackOnce sync.Once
+	handler := func(context.Context, source.Message) source.Result {
+		if deliveries.Add(1) <= 500 {
+			return source.Nak(errors.New("transient"))
+		}
+		ackOnce.Do(func() { close(acked) })
+		return source.Ack()
+	}
+
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hp.Run(ctx, sub, handler) }()
+
+	select {
+	case <-acked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reached its first ack after the redelivery storm")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run = %v, want nil or context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	if got := deliveries.Load(); got < 501 {
+		t.Fatalf("deliveries = %d, want >= 501 (500 naks + 1 ack through the redelivery loop)", got)
+	}
+
+	// Bounded resources: the fetch loop and lane goroutines must all unwind
+	// once Run returns, returning the process to its pre-run goroutine count.
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines after run = %d, want back within +2 of baseline %d", runtime.NumGoroutine(), baseline)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

@@ -15,10 +15,12 @@
 // Each handler [source.Result] maps onto Kafka as follows:
 //
 //   - Ack marks the record for commit (commit-after-process).
-//   - Nak does NOT mark the record, so it is re-read on restart or rebalance.
-//     A requeue delay is best-effort, applied by pausing and re-seeking the
-//     record's partition; this is a documented divergence from JetStream's
-//     native delayed nak (Kafka has no per-message redelivery delay).
+//   - Nak never marks the record and redelivers it in-session: the partition is
+//     paused, re-seeked to the record's offset so it is fetched again, then
+//     resumed; a requeue delay waits out the pause. Redelivery across restarts
+//     or rebalances rides committed offsets, so a concurrently committed higher
+//     offset can pass the nacked record — a documented best-effort divergence,
+//     not an in-session one.
 //   - Term produces the record to the configured dead-letter topic, then marks
 //     it for commit so it is not re-read.
 //   - InProgress is a no-op: Kafka has no per-message ack deadline to extend.

@@ -52,6 +52,11 @@ type subscription struct {
 	buffer   []*kgo.Record
 	inFlight int
 	closed   bool
+	// notify wakes a Next/NextBatch that is waiting (after Close) for the last
+	// in-flight records to settle. Capacity one: sends are best-effort wakeups,
+	// and every waiter re-checks the drain state under mu after waking. Guarded
+	// by mu; created lazily by signal() so a zero-value subscription stays safe.
+	notify chan struct{}
 
 	// onAssignedFn/onRevokedFn are the engine-registered hooks the franz-go
 	// rebalance trampolines forward to. Guarded by hookMu.
@@ -63,8 +68,10 @@ type subscription struct {
 // Next returns the next buffered record, polling the broker when the buffer is
 // empty. It blocks until a record is available, returns ctx.Err() on
 // cancellation, or [source.ErrDrained] once the subscription is closed and all
-// delivered records are settled. Next is single-consumer (the engine's fetch
-// loop).
+// delivered records are settled. After Close it never polls for new records:
+// only records already fetched into the buffer are yielded, and once the buffer
+// is empty Next blocks until the remaining in-flight records settle, then
+// returns ErrDrained. Next is single-consumer (the engine's fetch loop).
 func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 	for {
 		if rec, ok := s.takeBuffered(); ok {
@@ -72,10 +79,20 @@ func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 		}
 
 		s.mu.Lock()
-		drained := s.closed && s.inFlight == 0
+		closed, drained := s.closed, s.inFlight == 0
 		s.mu.Unlock()
-		if drained {
+		if closed && drained {
 			return nil, source.ErrDrained
+		}
+		if closed {
+			// Draining with records still in flight: hold here — do not poll —
+			// until the last settle wakes us, or the caller gives up.
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-s.signal():
+			}
+			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -92,7 +109,10 @@ func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 		}
 		if errs := fetches.Errors(); len(errs) > 0 {
 			// Surface the first non-context fetch error; the engine decides
-			// whether to retry the loop.
+			// whether to retry the loop. Records fetched alongside an error are
+			// deliberately discarded rather than buffered: none of them have
+			// been delivered, so nothing can be settled or marked from them,
+			// and the next successful poll refetches their offsets.
 			for _, fe := range errs {
 				if fe.Err != nil && fe.Err != context.Canceled && fe.Err != context.DeadlineExceeded {
 					return nil, fmt.Errorf("source/kafka: poll %s[%d]: %w", fe.Topic, fe.Partition, fe.Err)
@@ -107,6 +127,29 @@ func (s *subscription) Next(ctx context.Context) (source.Message, error) {
 		s.mu.Lock()
 		s.buffer = recs
 		s.mu.Unlock()
+	}
+}
+
+// signal returns the wakeup channel for drain waiters, creating it on first
+// use so a zero-value subscription stays safe.
+func (s *subscription) signal() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.notify == nil {
+		s.notify = make(chan struct{}, 1)
+	}
+	return s.notify
+}
+
+// wake nudges any Next/NextBatch waiting for in-flight settles after Close.
+// Best-effort: a coalesced wakeup is fine because every waiter re-checks the
+// drain state after receiving. Call with s.mu held.
+func (s *subscription) wake() {
+	if s.notify != nil {
+		select {
+		case s.notify <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -146,7 +189,10 @@ func (s *subscription) takeBatch(limit int) ([]*kgo.Record, bool) {
 // buffer is empty, satisfying [source.Batched]. franz-go already fetches in
 // batches (PollRecords), so this exposes a poll's records as a group rather than
 // draining them one at a time; the engine settles each through SettleBatch.
-// NextBatch is single-consumer, like Next.
+// After Close it never polls for new records: only already-buffered records are
+// yielded, and once the buffer is empty it blocks until the remaining in-flight
+// records settle, then returns [source.ErrDrained] — the same drain contract as
+// [Next]. NextBatch is single-consumer, like Next.
 func (s *subscription) NextBatch(ctx context.Context, limit int) ([]source.Message, error) {
 	if limit < 1 {
 		limit = 1
@@ -161,10 +207,20 @@ func (s *subscription) NextBatch(ctx context.Context, limit int) ([]source.Messa
 		}
 
 		s.mu.Lock()
-		drained := s.closed && s.inFlight == 0
+		closed, drained := s.closed, s.inFlight == 0
 		s.mu.Unlock()
-		if drained {
+		if closed && drained {
 			return nil, source.ErrDrained
+		}
+		if closed {
+			// Draining with records still in flight: hold here — do not poll —
+			// until the last settle wakes us, or the caller gives up.
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-s.signal():
+			}
+			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -226,13 +282,14 @@ func (s *subscription) Settle(ctx context.Context, m source.Message, r source.Re
 		return nil
 
 	case source.ActionNak:
-		// Do NOT mark: the record stays uncommitted and is re-read on the next
-		// restart or rebalance. A requeue delay is best-effort: pause the
-		// partition, sleep, re-seek to this record's offset, resume.
-		if r.Requeue > 0 {
-			return s.requeueWithDelay(ctx, rec, r.Requeue)
-		}
-		return nil
+		// Redeliver: never mark the record. The partition is paused, re-seeked
+		// to this record's offset so it (and anything after it) is fetched
+		// again in this session, then resumed; a Requeue delay waits out the
+		// pause, and a plain Nak re-seeks immediately (delay zero). Redelivery
+		// across restarts/rebalances rides committed offsets, so a concurrent
+		// ack that commits past this record can skip it after such a restart —
+		// a documented best-effort divergence, not an in-session one.
+		return s.requeueWithDelay(ctx, rec, r.Requeue)
 
 	case source.ActionTerm:
 		// Produce to the dead-letter topic, then mark so it is not re-read.
@@ -255,21 +312,31 @@ func (s *subscription) Settle(ctx context.Context, m source.Message, r source.Re
 	}
 }
 
-// settled decrements the in-flight count and is deferred from Settle so it runs
-// on every path, including errors, keeping the drain accounting honest.
+// settled decrements the in-flight count and wakes any drain waiter; deferred
+// from Settle so it runs on every path, including errors, keeping the drain
+// accounting honest.
 func (s *subscription) settled() {
 	s.mu.Lock()
 	if s.inFlight > 0 {
 		s.inFlight--
 	}
+	s.wake()
 	s.mu.Unlock()
 }
 
-// requeueWithDelay implements the best-effort Nak delay: pause the record's
-// partition so no further records are fetched from it, wait out the delay (or
-// the context), re-seek delivery to the record's own offset so it is re-read,
-// then resume the partition. This is a documented divergence — Kafka has no
-// native per-message redelivery delay.
+// requeueWithDelay implements Nak redelivery: pause the record's partition so
+// no further records are fetched from it, wait out the delay (zero for a plain
+// Nak), re-seek delivery to the record's own offset so it is re-read, then
+// resume the partition.
+//
+// Cost model, documented as best-effort by design: the delay blocks only the
+// calling settle goroutine, but the pause head-of-line-blocks the whole
+// partition for the delay's duration (Kafka has no native per-message
+// redelivery delay), and records fetched before the seek but not yet yielded
+// are still delivered ahead of the redelivered record. A concurrent ack on the
+// same partition can also commit past the nacked offset before the re-seek
+// lands; the commit advances the persisted position while the live fetch keeps
+// reading from the seeked offset until the next rebalance or restart.
 func (s *subscription) requeueWithDelay(ctx context.Context, rec *kgo.Record, d time.Duration) error {
 	tp := map[string][]int32{rec.Topic: {rec.Partition}}
 	s.client.PauseFetchPartitions(tp)
@@ -337,14 +404,16 @@ const (
 	dlqHeaderError           = "crucible-error"
 )
 
-// Close begins a graceful drain: Next stops fetching new records once the
-// current buffer is exhausted, commits whatever has been marked, and once
-// in-flight records settle, Next returns [source.ErrDrained]. Close is
-// idempotent.
+// Close begins a graceful drain: from the moment it returns, Next/NextBatch
+// stop fetching new records and yield only what was already buffered; once the
+// in-flight records settle, Next returns [source.ErrDrained]. Marked offsets
+// are committed best-effort so a clean shutdown does not re-read
+// already-processed records. Close is idempotent.
 func (s *subscription) Close() error {
 	s.mu.Lock()
 	already := s.closed
 	s.closed = true
+	s.wake()
 	s.mu.Unlock()
 	if already {
 		return nil
