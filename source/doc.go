@@ -23,15 +23,22 @@
 //
 // # Contract
 //
-// Delivery is at-least-once by default: a message is acked only after its
-// handler reports success, never before processing. A handler returns a
-// [Result] — [Ack], [Nak], [Term], [InProgress], or [Manual] — and the Hopper
-// applies it to the backend. Backends differ (Kafka commits offsets per
-// partition; JetStream acks per message), so capabilities a backend may or may
-// not have — replay, consumer groups, transactions — are optional interfaces
-// discovered by type assertion ([Seekable], [ConsumerGroups], [Transactional],
-// …) rather than a lowest-common-denominator API that lies about what a backend
-// can do.
+// Delivery is at-least-once within a live subscription: a message is acked only
+// after its handler reports success, never before processing, and a [Nak]
+// redelivers — JetStream naks natively (with optional delay), Kafka pauses and
+// re-seeks the record's partition so it is fetched again. Across process
+// restarts and rebalances, backends whose redelivery rides persisted offsets
+// (Kafka) resume from the last committed position, which a concurrently
+// committed higher offset can advance past a nacked record; those backends
+// therefore redeliver exactly within a session and best-effort across restarts,
+// and each adapter documents the precise semantics in its own module. A handler
+// returns a [Result] — [Ack], [Nak], [Term], [InProgress], or [Manual] — and
+// the Hopper applies it to the backend. Backends differ (Kafka commits offsets
+// per partition; JetStream acks per message), so capabilities a backend may or
+// may not have — replay, consumer groups, transactions — are optional
+// interfaces discovered by type assertion ([Seekable], [ConsumerGroups],
+// [Transactional], …) rather than a lowest-common-denominator API that lies
+// about what a backend can do.
 //
 // # No forced dependencies
 //

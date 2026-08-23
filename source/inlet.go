@@ -49,7 +49,10 @@ type Inlet interface {
 type Subscription interface {
 	// Next returns the next message. It blocks until one is available, returns
 	// ctx.Err() if ctx is canceled, or returns ErrDrained once the subscription
-	// has been closed and all delivered messages settled.
+	// has been closed and all delivered messages settled. After Close, a
+	// backend must not deliver new messages: only messages already returned to
+	// the buffer before Close may still be yielded, and once none remain,
+	// Next blocks until in-flight settles finish and then reports ErrDrained.
 	Next(ctx context.Context) (Message, error)
 	// Settle applies a handler [Result] to a message previously returned by Next:
 	// ack/commit, schedule redelivery, route to dead-letter, or extend the
