@@ -209,7 +209,7 @@ func (hp *Hopper) run(ctx context.Context, sub Subscription, h Handler) error {
 			select {
 			case inFlight <- struct{}{}:
 			case <-runCtx.Done():
-				return hp.exitErr(ctx, runErr)
+				return hp.exitErr(runErr)
 			}
 		}
 
@@ -219,10 +219,10 @@ func (hp *Hopper) run(ctx context.Context, sub Subscription, h Handler) error {
 				<-inFlight // release the slot we reserved but did not use
 			}
 			if errors.Is(err, ErrDrained) || errors.Is(err, context.Canceled) || runCtx.Err() != nil {
-				return hp.exitErr(ctx, runErr)
+				return hp.exitErr(runErr)
 			}
 			errOnce.Do(func() { runErr = err })
-			return hp.exitErr(ctx, runErr)
+			return hp.exitErr(runErr)
 		}
 
 		hp.received.Add(runCtx, 1)
@@ -236,7 +236,7 @@ func (hp *Hopper) run(ctx context.Context, sub Subscription, h Handler) error {
 			if inFlight != nil {
 				<-inFlight
 			}
-			return hp.exitErr(ctx, runErr)
+			return hp.exitErr(runErr)
 		}
 
 		workWG.Add(1)
@@ -250,17 +250,15 @@ func (hp *Hopper) run(ctx context.Context, sub Subscription, h Handler) error {
 			if inFlight != nil {
 				<-inFlight
 			}
-			return hp.exitErr(ctx, runErr)
+			return hp.exitErr(runErr)
 		}
 	}
 }
 
 // exitErr maps a run's terminal error onto the public contract: a clean drain
 // ([ErrDrained]), a context cancellation, and a Close are all graceful and
-// return nil; only a genuine fetch error propagates. The parent context is
-// accepted to document that its cancellation is the expected, non-error
-// shutdown path.
-func (hp *Hopper) exitErr(_ context.Context, runErr error) error {
+// return nil; only a genuine fetch error propagates.
+func (hp *Hopper) exitErr(runErr error) error {
 	return runErr
 }
 

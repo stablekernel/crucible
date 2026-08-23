@@ -432,6 +432,12 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 // without a transaction. A rebalance during the transaction fences the producer,
 // so End reports the transaction did not commit and the work is retried after
 // reassignment.
+//
+// Poison handling on a transactional subscription flows through Begin too:
+// settling [source.Term] directly is rejected with [ErrTermInsideTransaction].
+// Inside fn, produce the rejected record to the dead-letter topic via the
+// handed [source.Tx] and return nil, so the DLQ write and the consumed offset
+// commit atomically.
 func (s *subscription) Begin(ctx context.Context, m source.Message, fn func(ctx context.Context, tx source.Tx) error) error {
 	if s.transactSess == nil {
 		return fmt.Errorf("source/kafka: transactional: %w", errNotTransactional)

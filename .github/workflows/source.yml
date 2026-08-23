@@ -103,11 +103,13 @@ jobs:
           awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) ? 1 : 0 }' \
             || { echo "::error::coverage ${pct}% is below the ${THRESHOLD}% threshold"; exit 1; }
 
-  # Integration / E2E leg, behind the `integration` build tag, run with
-  # GOWORK=off. The in-workspace source modules run end-to-end; the SDK-backed
-  # source modules drive a real broker via testcontainers (Docker is available on
-  # GitHub-hosted ubuntu runners) and skip cleanly if a daemon is ever absent.
-  # Kept off the default test matrix so the hermetic checks stay fast.
+  # Integration / E2E leg, run with GOWORK=off. The in-workspace source modules
+  # run end-to-end; the SDK-backed source modules drive a real broker via
+  # testcontainers (Docker is available on GitHub-hosted ubuntu runners) and skip
+  # cleanly if a daemon is ever absent. source/kafka's RedPanda leg lives in the
+  # test-only nested module source/kafka/integration so its testcontainers,
+  # redpanda, and kadm dependencies never enter source/kafka's go.mod. Kept off
+  # the default test matrix so the hermetic checks stay fast.
   integration:
     strategy:
       fail-fast: false
@@ -115,7 +117,7 @@ jobs:
         module:
           - source
           - source/statemachine
-          - source/kafka
+          - source/kafka/integration
           - source/jetstream
           - source/redis
           - source/cloudevents

@@ -35,7 +35,7 @@ and the marked offsets are committed on graceful drain and on rebalance
 | `Ack`         | mark the record for commit (commit-after-process)           |
 | `Nak`         | never mark; pause, re-seek to the record's offset, resume — the record is fetched again in this session |
 | `NakAfter(d)` | same as `Nak`, waiting out `d` between pause and re-seek (best-effort) |
-| `Term`        | produce the record to the dead-letter topic, then mark      |
+| `Term`        | produce the record to the dead-letter topic, then mark (transactional subscriptions: rejected with `ErrTermInsideTransaction`; route poison through `Begin` instead)      |
 | `InProgress`  | no-op (Kafka has no per-message ack deadline)               |
 | `Manual`      | no-op (the handler settled via `Message.As` + the client)   |
 
@@ -54,6 +54,15 @@ Across process restarts and rebalances, redelivery rides committed offsets: a
 concurrently committed higher offset can advance past a nacked record, so
 cross-restart redelivery is **best-effort**, not guaranteed. This is the one
 divergence from JetStream's native nak semantics.
+
+### Divergence: Term inside a transaction
+
+On a subscription built with `WithTransactional`, settling `Term` directly is
+rejected with `ErrTermInsideTransaction`: a DLQ produce outside the open EOS
+session would not be atomic with the consumed offset. Inside
+`Transactional.Begin`, produce the poison record to the dead-letter topic via
+the handed `source.Tx` and return nil — the DLQ record and the input offset
+then commit as one atomic unit.
 
 ## Capabilities
 

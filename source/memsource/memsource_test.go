@@ -175,3 +175,45 @@ func memsourceLedgerWith(t *testing.T, results ...source.Result) *memsource.Ledg
 	})
 	return h.Ledger()
 }
+
+// TestMemsourceDuplicateSettleIsIdempotent pins duplicate-settle semantics for
+// the in-memory adapter: a second Settle for an already-settled message is
+// safe — it records another ledger entry (every settle decision is logged) but
+// never corrupts the in-flight accounting, so the subscription still drains.
+func TestMemsourceDuplicateSettleIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	in := memsource.New(memsource.WithMessages(memsource.Msg{Key: "k", Value: []byte("v")}))
+	sub, err := in.Subscribe(context.Background(), source.SubscribeConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		if err := sub.Settle(context.Background(), m, source.Ack()); err != nil {
+			t.Fatalf("Settle #%d error = %v, want nil", i+1, err)
+		}
+	}
+	if got := in.Ledger().Counts(); got.Acked != 2 {
+		t.Fatalf("ledger acks = %d, want 2 (each settle recorded, duplicates harmless)", got.Acked)
+	}
+	if err := sub.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	drained := make(chan error, 1)
+	go func() {
+		_, err := sub.Next(context.Background())
+		drained <- err
+	}()
+	select {
+	case err := <-drained:
+		if !errors.Is(err, source.ErrDrained) {
+			t.Fatalf("Next after duplicate settles + Close = %v, want ErrDrained", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription did not drain after duplicate settles (in-flight accounting corrupted)")
+	}
+}

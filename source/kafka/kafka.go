@@ -23,7 +23,10 @@
 //     offset can pass the nacked record — a documented best-effort divergence,
 //     not an in-session one.
 //   - Term produces the record to the configured dead-letter topic, then marks
-//     it for commit so it is not re-read.
+//     it for commit so it is not re-read — except on a transactional
+//     subscription, where Term reports [ErrTermInsideTransaction]: route poison
+//     through Begin's transaction instead, producing to the dead-letter topic
+//     via the handed [source.Tx] so DLQ write and offset commit are atomic.
 //   - InProgress is a no-op: Kafka has no per-message ack deadline to extend.
 //   - Manual is a no-op: the handler settled the record itself through
 //     [source.Message.As] and the underlying *kgo.Client.
@@ -89,6 +92,17 @@ var ErrNoDLQTopic = errors.New("source/kafka: term requested but no dead-letter 
 // to measure lag from; poll and settle at least one record first. Match it
 // with errors.Is.
 var ErrNoCommittedOffsets = errors.New("source/kafka: lag requires at least one committed offset")
+
+// ErrTermInsideTransaction reports that a handler returned [source.Term] (or
+// [source.Reject]) against a transactional subscription outside
+// [source.Transactional.Begin]. A DLQ produce there would write outside the
+// open EOS session and break atomicity with the consumed offset. On a
+// transactional subscription, route poison through Begin instead: inside fn,
+// produce the rejected record to the dead-letter topic via the handed
+// [source.Tx] (a ProducedRecord with the DLQ topic), then return nil — the
+// DLQ record and the input offset then commit as one atomic unit. Match it
+// with errors.Is.
+var ErrTermInsideTransaction = errors.New("source/kafka: dead-letter via term is not supported outside Begin on a transactional subscription")
 
 // errTransactionalSingleSubscribe reports a second [Inlet.Subscribe] on a
 // transactional inlet. The exactly-once session backing a transactional inlet
