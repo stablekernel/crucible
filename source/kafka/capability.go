@@ -424,8 +424,11 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 // m's offset is marked only after fn succeeds and only inside the transaction, so
 // a failed transform never advances the consumed position: the commit-after-
 // process invariant holds, now atomically with the produce side. Begin is the
-// full settle path for m; the caller must not also call [Subscription.Settle] for
-// m.
+// full settle path for m; the caller must not also call [Subscription.Settle]
+// for m. A direct Settle for m during an open Begin, or after Begin returned,
+// is a caller error with undefined results — it is not detected or coordinated
+// with the transaction: at best it duplicates an already-committed mark
+// (harmless at-least-once), at worst it races End's commit/abort.
 //
 // It is available only when the inlet was built with [WithTransactional];
 // otherwise it reports the capability is absent rather than silently running fn
