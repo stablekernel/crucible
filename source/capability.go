@@ -49,7 +49,8 @@ type Seekable interface {
 	// SeekToTime repositions delivery to the first message at or after t.
 	SeekToTime(ctx context.Context, t time.Time) error
 	// SeekToCursor repositions delivery to resume from a previously observed
-	// [Cursor] (re-delivering from just after it, per the backend's convention).
+	// [Cursor], re-delivering from the cursor's position per the backend's
+	// convention (Kafka re-delivers the record at the cursor).
 	SeekToCursor(ctx context.Context, c Cursor) error
 	// SeekToStart repositions delivery to the earliest retained message.
 	SeekToStart(ctx context.Context) error
