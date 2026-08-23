@@ -63,7 +63,7 @@ func TestNextAfterCloseYieldsOnlyBufferedThenDrained(t *testing.T) {
 		t.Fatalf("first Next value = %q, want v0", m0.Value())
 	}
 
-	if err := sub.Close(); err != nil {
+	if err = sub.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestNextBatchAfterCloseYieldsOnlyBufferedThenDrained(t *testing.T) {
 		t.Fatalf("first batch values = %q/%q, want v0/v1", first[0].Value(), first[1].Value())
 	}
 
-	if err := sub.Close(); err != nil {
+	if err = sub.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
