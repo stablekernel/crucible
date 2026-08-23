@@ -113,7 +113,21 @@ one is injected with `WithClient`, in which case it is the caller's.
 
 ## Stability
 
-Experimental (pre-v1). The API may change until the suite locks v1.0.0.
+Stable at v1.0.0: the adapter surface is frozen (see the
+[CHANGELOG](CHANGELOG.md) for the frozen-contract terms). The typed power
+seams (`WithSASL`, `WithBalancer`, `WithClientOptions`, `WithClient`) may
+track franz-go releases.
+
+## Setup notes
+
+- The dead-letter topic must exist before the first `Term` settles: the
+  adapter's DLQ producer does not enable topic auto-creation. Create it up
+  front (as the integration suite does with `CreateTopics`).
+- Managed Kafka (e.g. MSK): authenticate by constructing franz-go
+  `sasl.Mechanism` values (`pkg/sasl/plain`, `.../scram`, `.../oauthbearer`,
+  or the AWS MSK IAM token provider) and passing them via `WithSASL` with
+  `WithTLS`; this means importing franz-go directly for the mechanism
+  constructors, which is expected.
 
 ## License
 

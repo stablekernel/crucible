@@ -9,6 +9,8 @@ own line, so there is no single global version number. Each module keeps its own
 
 - [`state`](state/CHANGELOG.md) — statechart engine (v1.x, frozen contract)
 - [`state/expr`](state/expr/CHANGELOG.md) — CEL-backed guards
+- [`source`](source/CHANGELOG.md) — ingress consume engine (v1.x, frozen contract). Per-inlet changelogs:
+  [`kafka`](source/kafka/CHANGELOG.md), [`statemachine`](source/statemachine/CHANGELOG.md).
 
 ## Tooling
 
@@ -29,8 +31,6 @@ own line, so there is no single global version number. Each module keeps its own
   under `sink/<name>/CHANGELOG.md` (bridge, cloudwatch, dynamo, eventbridge, file,
   firehose, gcppubsub, http, kafka, kinesis, nats, otel, prometheus, redis, s3, slog,
   sns, sql, sqs, statsd, timestream).
-- `source` — ingress. Per-inlet changelogs:
-  [`kafka`](source/kafka/CHANGELOG.md), [`statemachine`](source/statemachine/CHANGELOG.md).
 
 ## Examples
 

@@ -63,7 +63,9 @@
 //
 // # Stability
 //
-// Experimental (pre-v1); the API may change until the suite locks v1.0.0.
+// Stable at v1.0.0: the adapter surface is frozen (see CHANGELOG.md for the
+// frozen-contract terms). The typed power seams ([WithSASL], [WithBalancer],
+// [WithClientOptions], [WithClient]) may track franz-go releases.
 package kafka
 
 import (
