@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -58,13 +60,19 @@ func (s *subscription) asRequester() (requester, bool) {
 // at or after t, taking effect on the next [Subscription.Next]. It resolves the
 // timestamp to per-partition offsets with a ListOffsets request, then applies
 // them with SetOffsets — the live-reposition path a group consumer supports
-// without being recreated.
+// without being recreated. Partitions are enumerated from committed offsets
+// when present, else discovered from broker metadata, so a cold group (nothing
+// committed yet) still seeks across its consume topics.
 func (s *subscription) SeekToTime(ctx context.Context, t time.Time) error {
 	r, ok := s.asRequester()
 	if !ok {
 		return fmt.Errorf("source/kafka: seek to time: %w", errSeekUnavailable)
 	}
-	offsets, err := listOffsets(ctx, r, s.assignedTopics(r), t.UnixMilli())
+	parts, err := assignedPartitions(ctx, r)
+	if err != nil {
+		return fmt.Errorf("source/kafka: seek to time: %w", err)
+	}
+	offsets, err := listOffsets(ctx, r, parts, t.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("source/kafka: seek to time: %w", err)
 	}
@@ -88,50 +96,130 @@ func (s *subscription) SeekToCursor(_ context.Context, c source.Cursor) error {
 
 // SeekToStart repositions every assigned partition to its earliest retained
 // record (logical offset -2).
-func (s *subscription) SeekToStart(_ context.Context) error {
-	return s.seekLogical(-2)
+func (s *subscription) SeekToStart(ctx context.Context) error {
+	return s.seekLogical(ctx, -2)
 }
 
 // SeekToEnd repositions every assigned partition to its tail (logical offset
 // -1), skipping the backlog so only records produced after the seek are
 // delivered.
-func (s *subscription) SeekToEnd(_ context.Context) error {
-	return s.seekLogical(-1)
+func (s *subscription) SeekToEnd(ctx context.Context) error {
+	return s.seekLogical(ctx, -1)
 }
 
 // seekLogical applies a Kafka logical offset (-2 earliest, -1 latest) to every
-// currently-assigned partition via SetOffsets.
-func (s *subscription) seekLogical(logical int64) error {
+// currently-assigned partition via SetOffsets. Partitions are enumerated from
+// committed offsets when present, else discovered from broker metadata for the
+// consume topics — so a cold group (nothing committed) still seeks instead of
+// silently no-oping.
+func (s *subscription) seekLogical(ctx context.Context, logical int64) error {
 	r, ok := s.asRequester()
 	if !ok {
 		return fmt.Errorf("source/kafka: seek: %w", errSeekUnavailable)
 	}
+	parts, err := assignedPartitions(ctx, r)
+	if err != nil {
+		return fmt.Errorf("source/kafka: seek: %w", err)
+	}
 	set := map[string]map[int32]kgo.EpochOffset{}
-	for topic, parts := range r.CommittedOffsets() {
+	for topic, ps := range parts {
 		set[topic] = map[int32]kgo.EpochOffset{}
-		for p := range parts {
+		for _, p := range ps {
 			set[topic][p] = kgo.EpochOffset{Offset: logical, Epoch: -1}
 		}
-	}
-	if len(set) == 0 {
-		return nil
 	}
 	s.client.SetOffsets(set)
 	return nil
 }
 
-// assignedTopics reports the topics the consumer is currently assigned, the set
-// SeekToTime resolves offsets across.
-func (s *subscription) assignedTopics(r requester) []string {
+// assignedPartitions enumerates the partitions the consumer works across:
+// committed offsets where present per topic, broker metadata discovery for any
+// consume topic without commits (a cold group), and the consume topics
+// themselves when nothing at all has been committed.
+func assignedPartitions(ctx context.Context, r requester) (map[string][]int32, error) {
 	committed := r.CommittedOffsets()
-	if len(committed) > 0 {
-		topics := make([]string, 0, len(committed))
-		for t := range committed {
-			topics = append(topics, t)
-		}
-		return topics
+	consume := r.GetConsumeTopics()
+	if len(committed) == 0 && len(consume) == 0 {
+		return map[string][]int32{}, nil
 	}
-	return r.GetConsumeTopics()
+	topics := make([]string, 0, len(committed)+len(consume))
+	seen := map[string]bool{}
+	add := func(ts []string) {
+		for _, t := range ts {
+			if t != "" && !seen[t] {
+				seen[t] = true
+				topics = append(topics, t)
+			}
+		}
+	}
+	for t := range committed {
+		add([]string{t})
+	}
+	add(consume)
+
+	out := make(map[string][]int32, len(topics))
+	var discover []string
+	for _, t := range topics {
+		for p := range committed[t] {
+			out[t] = append(out[t], p)
+		}
+		if len(out[t]) == 0 {
+			discover = append(discover, t)
+		}
+	}
+	if len(discover) > 0 {
+		found, err := topicPartitions(ctx, r, discover)
+		if err != nil {
+			return nil, err
+		}
+		for t, ps := range found {
+			out[t] = append(out[t], ps...)
+		}
+	}
+	for _, t := range topics {
+		if len(out[t]) == 0 {
+			delete(out, t)
+		}
+	}
+	return out, nil
+}
+
+// topicPartitions discovers a topic's partition ids from broker metadata via a
+// MetadataRequest — the fallback that lets seek/lag act before the group's
+// first commit. A per-topic or per-partition error code is returned as an
+// error.
+func topicPartitions(ctx context.Context, r requester, topics []string) (map[string][]int32, error) {
+	req := kmsg.NewPtrMetadataRequest()
+	for _, t := range topics {
+		rt := kmsg.NewMetadataRequestTopic()
+		rt.Topic = kmsg.StringPtr(t)
+		req.Topics = append(req.Topics, rt)
+	}
+	resp, err := r.Request(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	mr, ok := resp.(*kmsg.MetadataResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type %T", resp)
+	}
+	out := make(map[string][]int32, len(topics))
+	for _, t := range mr.Topics {
+		name := ""
+		if t.Topic != nil {
+			name = *t.Topic
+		}
+		if t.ErrorCode != 0 {
+			return nil, &kmsgError{code: t.ErrorCode, topic: name}
+		}
+		for _, p := range t.Partitions {
+			if p.ErrorCode != 0 {
+				return nil, &kmsgError{code: p.ErrorCode, topic: name, partition: p.Partition}
+			}
+			out[name] = append(out[name], p.Partition)
+		}
+	}
+	return out, nil
 }
 
 // --- ConsumerGroups ---------------------------------------------------------
@@ -218,8 +306,11 @@ func (s *subscription) PartitionOrdered() {}
 // --- LagReporter ------------------------------------------------------------
 
 // Lag reports the number of unconsumed records between the committed position
-// and the stream tail across all assigned partitions. It resolves the tail with
-// a ListOffsets request (timestamp -1) and subtracts the committed offsets.
+// and the stream tail across all partitions with a committed offset. It
+// resolves the tail with a ListOffsets request (timestamp -1) and subtracts
+// the committed offsets. Partitions with no commit yet are excluded — without
+// a commit there is no baseline to measure from — and a cold group (no commits
+// at all) reports [ErrNoCommittedOffsets] rather than a misleading 0.
 func (s *subscription) Lag(ctx context.Context) (int64, error) {
 	r, ok := s.asRequester()
 	if !ok {
@@ -227,13 +318,15 @@ func (s *subscription) Lag(ctx context.Context) (int64, error) {
 	}
 	committed := r.CommittedOffsets()
 	if len(committed) == 0 {
-		return 0, nil
+		return 0, fmt.Errorf("source/kafka: lag: %w", ErrNoCommittedOffsets)
 	}
-	topics := make([]string, 0, len(committed))
-	for t := range committed {
-		topics = append(topics, t)
+	parts := map[string][]int32{}
+	for t, ps := range committed {
+		for p := range ps {
+			parts[t] = append(parts[t], p)
+		}
 	}
-	ends, err := listOffsets(ctx, r, topics, -1)
+	ends, err := listOffsets(ctx, r, parts, -1)
 	if err != nil {
 		return 0, fmt.Errorf("source/kafka: lag: %w", err)
 	}
@@ -376,19 +469,18 @@ func (s *subscription) Begin(ctx context.Context, m source.Message, fn func(ctx 
 	return nil
 }
 
-// listOffsets resolves per-partition offsets for the given topics at timestamp
-// ts (millis; -1 latest, -2 earliest) via a ListOffsets request, returning the
-// EpochOffset map SetOffsets consumes. Partitions are discovered from the
-// requester's committed offsets so the request targets exactly what the
-// consumer holds.
-func listOffsets(ctx context.Context, r requester, topics []string, ts int64) (map[string]map[int32]kgo.EpochOffset, error) {
-	committed := r.CommittedOffsets()
+// listOffsets resolves per-partition offsets for the given topic→partitions
+// map at timestamp ts (millis; -1 latest, -2 earliest) via a ListOffsets
+// request, returning the EpochOffset map SetOffsets consumes. The caller
+// enumerates partitions (assignedPartitions), so a cold group's discovered
+// partitions are included.
+func listOffsets(ctx context.Context, r requester, parts map[string][]int32, ts int64) (map[string]map[int32]kgo.EpochOffset, error) {
 	req := kmsg.NewPtrListOffsetsRequest()
 	req.ReplicaID = -1
-	for _, topic := range topics {
+	for _, topic := range slices.Sorted(maps.Keys(parts)) {
 		rt := kmsg.NewListOffsetsRequestTopic()
 		rt.Topic = topic
-		for p := range committed[topic] {
+		for _, p := range parts[topic] {
 			rp := kmsg.NewListOffsetsRequestTopicPartition()
 			rp.Partition = p
 			rp.Timestamp = ts
@@ -427,7 +519,8 @@ func listOffsets(ctx context.Context, r requester, topics []string, ts int64) (m
 	return out, nil
 }
 
-// kmsgError reports a per-partition error code from a ListOffsets response.
+// kmsgError reports a per-topic or per-partition error code from a Kafka
+// protocol response (ListOffsets, Metadata).
 type kmsgError struct {
 	code      int16
 	topic     string
@@ -435,5 +528,8 @@ type kmsgError struct {
 }
 
 func (e *kmsgError) Error() string {
-	return fmt.Sprintf("list offsets %s[%d]: kafka error code %d", e.topic, e.partition, e.code)
+	if e.topic == "" {
+		return fmt.Sprintf("kafka error code %d", e.code)
+	}
+	return fmt.Sprintf("kafka error code %d on %s[%d]", e.code, e.topic, e.partition)
 }

@@ -40,9 +40,11 @@ type Partition struct {
 
 // Seekable is a [Subscription] that can reposition its read cursor to replay or
 // skip ahead: the basis for replay-driven state reconstruction. Seeking takes
-// effect on the next [Subscription.Next]. Satisfied by Kafka (live SetOffsets)
-// and JetStream (by recreating the consumer at the target). A backend that
-// cannot reposition simply does not implement it.
+// effect on the next [Subscription.Next]. Satisfied by Kafka (live SetOffsets;
+// partitions are enumerated from committed offsets when present, else
+// discovered from broker metadata, so seeking works before the group's first
+// commit) and JetStream (by recreating the consumer at the target). A backend
+// that cannot reposition simply does not implement it.
 type Seekable interface {
 	// SeekToTime repositions delivery to the first message at or after t.
 	SeekToTime(ctx context.Context, t time.Time) error
@@ -210,9 +212,13 @@ type Deduper interface {
 // LagReporter is a [Subscription] that can report how far behind the tail it is,
 // the headline health signal for a consumer. The [Hopper] feeds it into a lag
 // gauge when present. Satisfied by backends that expose a high-water mark
-// (Kafka end offsets, JetStream pending counts).
+// (Kafka end offsets, JetStream pending counts). Backends measure from the
+// committed position; Kafka reports an error until the group's first offset
+// commit, and excludes never-committed partitions from the count.
 type LagReporter interface {
 	// Lag returns the number of unconsumed messages between the committed position
-	// and the stream tail, across all assigned partitions/subjects.
+	// and the stream tail, across all assigned partitions/subjects. A backend
+	// with no committed position yet reports an error rather than a misleading
+	// zero.
 	Lag(ctx context.Context) (int64, error)
 }
