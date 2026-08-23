@@ -64,6 +64,11 @@ jobs:
     env:
       MODULE: ${{ needs.resolve.outputs.module }}
       THRESHOLD: "80"
+      # Every released module must build standalone: SDK-backed modules like
+      # source/kafka are deliberately excluded from go.work, so building them
+      # with the root workspace present fails outright. Disable the workspace
+      # for the whole gate; replace directives cover intra-repo dependencies.
+      GOWORK: "off"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -80,7 +85,12 @@ jobs:
       - name: govulncheck
         working-directory: ${{ env.MODULE }}
         run: go run "$GOVULNCHECK" ./...
+      # Lint runs only on the newest Go leg: golangci-lint is compiled by the
+      # active toolchain, and an older one (go1.25) refuses a module targeting
+      # a newer language version (module toolchain directives), which would
+      # fail the 1.25.x legs spuriously. Test -race still covers those legs.
       - name: golangci-lint
+        if: matrix.go == '1.26.6'
         working-directory: ${{ env.MODULE }}
         run: go run "$GOLANGCI_LINT" run --config "$GITHUB_WORKSPACE/.golangci.yml" ./...
       - name: coverage gate
