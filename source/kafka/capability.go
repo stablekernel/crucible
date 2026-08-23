@@ -434,10 +434,15 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 // reassignment.
 //
 // Poison handling on a transactional subscription flows through Begin too:
-// settling [source.Term] directly is rejected with [ErrTermInsideTransaction].
-// Inside fn, produce the rejected record to the dead-letter topic via the
-// handed [source.Tx] and return nil, so the DLQ write and the consumed offset
-// commit atomically.
+// settling [source.Term] directly is rejected with [ErrTermInsideTransaction];
+// every such attempt leaves the record unmarked, so a handler retrying Term in
+// a loop simply sees the record again on its next fetch — route it through
+// Begin instead. Inside fn, produce the rejected record to the dead-letter
+// topic via the handed [source.Tx] and return nil, so the DLQ write and the
+// consumed offset commit atomically. Begin is the only settle path for m while
+// it runs: mixing a direct [Subscription.Settle] for m into an open Begin is a
+// programming error; the direct settle marks independently and can double-
+// commit or race the transaction's End.
 func (s *subscription) Begin(ctx context.Context, m source.Message, fn func(ctx context.Context, tx source.Tx) error) error {
 	if s.transactSess == nil {
 		return fmt.Errorf("source/kafka: transactional: %w", errNotTransactional)

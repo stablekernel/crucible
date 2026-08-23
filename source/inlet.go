@@ -48,16 +48,22 @@ type Inlet interface {
 // goroutines and must be safe for that.
 type Subscription interface {
 	// Next returns the next message. It blocks until one is available, returns
-	// ctx.Err() if ctx is canceled, or returns ErrDrained once the subscription
-	// has been closed and all delivered messages settled. After Close, a
-	// backend must not deliver new messages: only messages already returned to
-	// the buffer before Close may still be yielded, and once none remain,
-	// Next blocks until in-flight settles finish and then reports ErrDrained.
+	// ctx.Err() if ctx is canceled — including while it waits for in-flight
+	// settles during a drain, which takes precedence over ErrDrained — or
+	// returns ErrDrained once the subscription has been closed and all
+	// delivered messages settled. After Close, a backend must not deliver new
+	// messages: only messages already handed out or buffered before Close may
+	// still be yielded (for [Batched.NextBatch], this includes records fetched
+	// but not yet returned), and once none remain, Next blocks until in-flight
+	// settles finish and then reports ErrDrained.
 	Next(ctx context.Context) (Message, error)
 	// Settle applies a handler [Result] to a message previously returned by Next:
 	// ack/commit, schedule redelivery, route to dead-letter, or extend the
 	// deadline, per Result.Action. It is the single point where a delivery
-	// decision reaches the backend.
+	// decision reaches the backend. Settling a message more than once is safe:
+	// every call is applied and recorded (a duplicate mark is idempotent at
+	// every backend), and in-flight accounting never goes negative, so drain
+	// semantics are unaffected.
 	Settle(ctx context.Context, m Message, r Result) error
 	// Close begins a graceful drain: Next stops yielding new messages, and once
 	// in-flight messages are settled, Next returns ErrDrained. Close is
