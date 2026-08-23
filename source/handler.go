@@ -44,12 +44,13 @@ const (
 	ActionAck Action = iota
 	// ActionNak asks for redelivery: the message failed transiently and should
 	// be tried again (JetStream naks natively with optional delay; Kafka pauses
-	// and re-seeks the record's partition so it is fetched again). Redelivery
-	// is guaranteed within a live subscription; across process restarts or
-	// rebalances, backends whose redelivery rides persisted offsets (Kafka)
-	// honor the last committed position, so a concurrently committed higher
-	// offset can pass a nacked record — each adapter documents its exact
-	// semantics. Result.Requeue is an optional backoff delay.
+	// and re-seeks the record's partition so it is fetched again). Within the
+	// constraints each adapter documents (Kafka's concurrent-commit caveat is
+	// described in its README), redelivery happens in the live subscription;
+	// across process restarts or rebalances, backends whose redelivery rides
+	// persisted offsets (Kafka) honor the last committed position, so a
+	// concurrently committed higher offset can pass a nacked record.
+	// Result.Requeue is an optional backoff delay.
 	ActionNak
 	// ActionTerm rejects the message permanently: it must not be redelivered
 	// (JetStream Term; Kafka routes it to a dead-letter topic, then commits).
