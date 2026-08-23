@@ -58,17 +58,24 @@ divergence from JetStream's native nak semantics.
 ## Capabilities
 
 The subscription satisfies these optional `source` capability interfaces,
-discovered by the engine via type assertion — no franz-go type leaks into the
-exported API:
+discovered by the engine via type assertion. The neutral seam stays
+vendor-free — no franz-go type crosses the `source.Inlet` / `Subscription` /
+`Message` surface; the typed option and escape-hatch seams below deliberately
+do expose it:
 
 - `Seekable` — live offset reposition via `SetOffsets` (and `ListOffsets` for
-  time-based seeks), the basis for replay.
+  time-based seeks), the basis for replay. Partitions are enumerated from the
+  group's committed offsets when present, else discovered from broker metadata,
+  so seeking works before the first commit.
 - `ConsumerGroups` — `GroupID` plus assign/revoke hooks; the adapter
   drain-and-commits marked offsets on a graceful revoke and skips the commit on
   an ungraceful loss.
 - `PartitionOrdered` — per-partition order, the guarantee the Hopper keys its
   ordered lanes on (`PartitionKey()` is `"topic/partition"`).
-- `LagReporter` — end-offset minus committed offset across assigned partitions.
+- `LagReporter` — end offset minus committed offset across committed
+  partitions. Before the group's first commit there is no baseline: `Lag`
+  reports an error (`ErrNoCommittedOffsets`, matchable with `errors.Is`)
+  rather than a misleading zero.
 - `Transactional` — Kafka exactly-once consume-process-produce, available when
   the inlet is built with `WithTransactional()`.
 
@@ -76,10 +83,22 @@ exported API:
 cannot move partitions mid-batch; the subscription releases the rebalance only
 between fetches.
 
+## Cold start (initial start offset)
+
+A brand-new consumer group — one with no committed offsets — starts at the
+**earliest retained record** of each assigned partition (franz-go's default).
+Build the inlet with `WithStartOffset(kafka.StartLatest)` to skip backlog and
+consume only records produced after joining instead. The option maps onto
+`kgo.ConsumeStartOffset`; partitions that already have a committed offset
+always resume from the commit regardless of this setting.
+
 ## Vendor escape hatch
 
-No franz-go type appears in an exported signature. Reach the underlying
-`*kgo.Client` through `Inlet.As(**kgo.Client)`, and a delivered record through
+The neutral surface carries no vendor types. Typed power seams expose franz-go
+deliberately: `WithSASL` takes `sasl.Mechanism` values, `WithBalancer` takes
+`kgo.GroupBalancer` values, `WithClientOptions` appends raw `kgo.Opt` entries,
+and `WithClient` injects a pre-built `*kgo.Client`. Reach that client through
+`Inlet.As(**kgo.Client)` and a delivered record through
 `source.Message.As(**kgo.Record)`. The client lifecycle is the inlet's unless
 one is injected with `WithClient`, in which case it is the caller's.
 

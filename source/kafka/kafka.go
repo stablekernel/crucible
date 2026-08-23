@@ -8,11 +8,12 @@
 //
 // # Ack model
 //
-// Delivery is at-least-once: the adapter never commits an offset before its
-// handler reports success. The franz-go client is configured with
-// AutoCommitMarks, so only records the engine settles successfully are marked,
-// and the marked offsets are committed on graceful drain and on rebalance.
-// Each handler [source.Result] maps onto Kafka as follows:
+// Delivery is at-least-once within a live subscription: the adapter never
+// commits an offset before its handler reports success. The franz-go client is
+// configured with AutoCommitMarks, so only records the engine settles
+// successfully are marked, and the marked offsets are committed on graceful
+// drain and on rebalance. Each handler [source.Result] maps onto Kafka as
+// follows:
 //
 //   - Ack marks the record for commit (commit-after-process).
 //   - Nak never marks the record and redelivers it in-session: the partition is
@@ -27,6 +28,13 @@
 //   - Manual is a no-op: the handler settled the record itself through
 //     [source.Message.As] and the underlying *kgo.Client.
 //
+// # Cold start
+//
+// A brand-new consumer group (no committed offsets) starts at the earliest
+// retained record in each assigned partition — franz-go's default. Build the
+// inlet with [WithStartOffset] to start at the stream tail instead. Once a
+// group has committed offsets, restarts always resume from them.
+//
 // # Capabilities
 //
 // The [Subscription] this adapter opens satisfies several optional capability
@@ -38,12 +46,17 @@
 // exactly-once, via a group transact session) when constructed with
 // [WithTransactional].
 //
-// # Vendor escape hatch
+// # Vendor boundary and escape hatch
 //
-// No franz-go type appears in an exported signature. A power user who must
-// drop to the driver reaches the underlying *kgo.Client through the inlet's
-// As method ([Inlet.As]) and a delivered record through [source.Message.As]
-// with a **kgo.Record target.
+// The neutral seam stays vendor-free: no franz-go type crosses the
+// [source.Inlet], [source.Subscription], or [source.Message] surface, and the
+// capability interfaces ([source.Seekable], [source.ConsumerGroups], …) carry
+// only crucible types. Typed power seams do expose franz-go deliberately:
+// [WithSASL] takes sasl.Mechanism values, [WithBalancer] takes
+// kgo.GroupBalancer values, [WithClientOptions] appends raw kgo.Opt entries,
+// and [WithClient] injects a pre-built *kgo.Client. Power users reach the
+// underlying *kgo.Client through the inlet's As method ([Inlet.As]) and a
+// delivered record through [source.Message.As] with a **kgo.Record target.
 //
 // # Stability
 //
@@ -71,6 +84,12 @@ var ErrNoSeedBrokers = errors.New("source/kafka: no seed brokers configured")
 // [WithDLQTopic]. Match it with errors.Is.
 var ErrNoDLQTopic = errors.New("source/kafka: term requested but no dead-letter topic configured")
 
+// ErrNoCommittedOffsets reports that [source.LagReporter] was called before
+// the group committed its first offset. Without a commit there is no baseline
+// to measure lag from; poll and settle at least one record first. Match it
+// with errors.Is.
+var ErrNoCommittedOffsets = errors.New("source/kafka: lag requires at least one committed offset")
+
 // errTransactionalSingleSubscribe reports a second [Inlet.Subscribe] on a
 // transactional inlet. The exactly-once session backing a transactional inlet
 // fences a single consumer, so only one subscription per transactional inlet is
@@ -92,6 +111,42 @@ type config struct {
 	transactID  string
 	extraOpts   []kgo.Opt
 	client      *kgo.Client
+
+	startOffset    StartOffset
+	startOffsetSet bool
+}
+
+// StartOffset selects where a brand-new consumer group — one with no committed
+// offsets — begins consuming each assigned partition. Once a group has
+// committed offsets, restarts always resume from them; this policy governs
+// only the cold start.
+type StartOffset uint8
+
+const (
+	// StartEarliest begins a cold group at the earliest retained record of each
+	// partition (franz-go's default, and this package's zero value): a new
+	// consumer sees the full history of its topics.
+	StartEarliest StartOffset = iota
+	// StartLatest begins a cold group at each partition's tail: only records
+	// produced after the subscription joins are delivered.
+	StartLatest
+)
+
+// WithStartOffset sets where a brand-new consumer group (no committed offsets)
+// starts consuming: [StartEarliest] (the default) reads from the earliest
+// retained record, [StartLatest] reads only records produced after joining.
+// It maps onto franz-go's kgo.ConsumeStartOffset(kgo.NewOffset().AtStart()|AtEnd());
+// partitions that already have a committed offset always resume from the
+// commit regardless of this setting. Values outside the [StartOffset]
+// constants fall back to the default.
+func WithStartOffset(o StartOffset) Option {
+	return func(c *config) {
+		switch o {
+		case StartEarliest, StartLatest:
+			c.startOffset = o
+			c.startOffsetSet = true
+		}
+	}
 }
 
 // Option configures an [Inlet]. Options are additive with zero-value defaults;
@@ -309,7 +364,20 @@ func (in *Inlet) consumeOpts(sc source.SubscribeConfig) []kgo.Opt {
 	if len(in.cfg.balancers) > 0 {
 		opts = append(opts, kgo.Balancers(in.cfg.balancers...))
 	}
+	opts = in.appendStartOffset(opts)
 	return opts
+}
+
+// appendStartOffset appends the typed cold-start policy onto an option set.
+func (in *Inlet) appendStartOffset(opts []kgo.Opt) []kgo.Opt {
+	if !in.cfg.startOffsetSet {
+		return opts
+	}
+	off := kgo.NewOffset().AtStart()
+	if in.cfg.startOffset == StartLatest {
+		off = kgo.NewOffset().AtEnd()
+	}
+	return append(opts, kgo.ConsumeStartOffset(off))
 }
 
 // transactOpts assembles the franz-go options for an EOS group transact session:
@@ -335,6 +403,7 @@ func (in *Inlet) transactOpts(sc source.SubscribeConfig) []kgo.Opt {
 	if len(in.cfg.balancers) > 0 {
 		opts = append(opts, kgo.Balancers(in.cfg.balancers...))
 	}
+	opts = in.appendStartOffset(opts)
 	return opts
 }
 

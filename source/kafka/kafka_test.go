@@ -416,3 +416,45 @@ func (foreignMessage) Subject() string         { return "other" }
 func (foreignMessage) PartitionKey() string    { return "" }
 func (foreignMessage) Cursor() source.Cursor   { return nil }
 func (foreignMessage) As(any) bool             { return false }
+
+// TestWithStartOffsetOptionConfigAndMapping pins the typed cold-start option:
+// valid constants record the policy, unknown values are ignored, and
+// appendStartOffset appends exactly one franz-go option when (and only when)
+// the policy was set.
+func TestWithStartOffsetOptionConfigAndMapping(t *testing.T) {
+	t.Parallel()
+
+	// StartLatest records the policy and appends exactly one option.
+	cLatest := &config{}
+	WithStartOffset(StartLatest)(cLatest)
+	if !cLatest.startOffsetSet || cLatest.startOffset != StartLatest {
+		t.Fatalf("config = (set %v, offset %v), want (true, StartLatest)", cLatest.startOffsetSet, cLatest.startOffset)
+	}
+	inLatest := &Inlet{cfg: *cLatest}
+	if got := len(inLatest.appendStartOffset(nil)); got != 1 {
+		t.Errorf("appendStartOffset(StartLatest) appended %d opts, want 1", got)
+	}
+
+	// StartEarliest (the zero value) is also an explicit, recorded policy.
+	cEarliest := &config{}
+	WithStartOffset(StartEarliest)(cEarliest)
+	if !cEarliest.startOffsetSet || cEarliest.startOffset != StartEarliest {
+		t.Fatalf("config = (set %v, offset %v), want (true, StartEarliest)", cEarliest.startOffsetSet, cEarliest.startOffset)
+	}
+	inEarliest := &Inlet{cfg: *cEarliest}
+	if got := len(inEarliest.appendStartOffset(nil)); got != 1 {
+		t.Errorf("appendStartOffset(StartEarliest) appended %d opts, want 1", got)
+	}
+
+	// An out-of-range value is ignored: the default (earliest) stays in force
+	// and no franz-go option is appended.
+	cUnknown := &config{}
+	WithStartOffset(StartOffset(99))(cUnknown)
+	if cUnknown.startOffsetSet {
+		t.Error("startOffsetSet = true for unknown StartOffset, want false")
+	}
+	inUnknown := &Inlet{cfg: *cUnknown}
+	if got := len(inUnknown.appendStartOffset(nil)); got != 0 {
+		t.Errorf("appendStartOffset(unset) appended %d opts, want 0", got)
+	}
+}
