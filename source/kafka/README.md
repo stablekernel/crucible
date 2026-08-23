@@ -35,7 +35,7 @@ and the marked offsets are committed on graceful drain and on rebalance
 | `Ack`         | mark the record for commit (commit-after-process)           |
 | `Nak`         | never mark; pause, re-seek to the record's offset, resume — the record is fetched again in this session |
 | `NakAfter(d)` | same as `Nak`, waiting out `d` between pause and re-seek (best-effort) |
-| `Term`        | produce the record to the dead-letter topic, then mark (transactional subscriptions: rejected with `ErrTermInsideTransaction`; route poison through `Begin` instead). If the DLQ produce fails, `Settle` returns the error and the record is **not** marked — it is redelivered; nothing is silently lost      |
+| `Term`        | produce the record to the dead-letter topic, then mark (transactional subscriptions: rejected with `ErrTermInsideTransaction`, leaving the record unmarked so it is redelivered; route poison through `Begin` instead). If the DLQ produce fails, `Settle` returns the error and the record is **not** marked — it is redelivered; nothing is silently lost      |
 | `InProgress`  | no-op (Kafka has no per-message ack deadline)               |
 | `Manual`      | no-op (the handler settled via `Message.As` + the client)   |
 

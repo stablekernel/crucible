@@ -439,10 +439,11 @@ func toRecordHeaders(hs source.Headers) []kgo.RecordHeader {
 // a loop simply sees the record again on its next fetch — route it through
 // Begin instead. Inside fn, produce the rejected record to the dead-letter
 // topic via the handed [source.Tx] and return nil, so the DLQ write and the
-// consumed offset commit atomically. Begin is the only settle path for m while
-// it runs: mixing a direct [Subscription.Settle] for m into an open Begin is a
-// programming error; the direct settle marks independently and can double-
-// commit or race the transaction's End.
+// consumed offset commit atomically. Begin is the only settle path for m when
+// used transactionally: mixing a direct [Subscription.Settle] for m into an
+// open Begin is a caller error and its behavior is undefined — the direct
+// settle marks independently of the transaction, so it can double-advance the
+// partition or race End's commit/abort.
 func (s *subscription) Begin(ctx context.Context, m source.Message, fn func(ctx context.Context, tx source.Tx) error) error {
 	if s.transactSess == nil {
 		return fmt.Errorf("source/kafka: transactional: %w", errNotTransactional)
