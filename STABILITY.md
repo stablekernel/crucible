@@ -10,11 +10,11 @@ each module currently carries.
 
 | Label | What it promises |
 | --- | --- |
-| **stable (v1.x)** | Frozen public contract. Breaking changes only in a new major version. `state` is here. |
+| **stable (v1.x)** | Frozen public contract. Breaking changes only in a new major version. `state` and `source` are here. |
 | **stable contract (pre-1.0)** | The module version is still `v0.x`, but a named part of its behavior is a committed contract that will not break silently. `state/expr` commits its expression *semantics* this way. |
 | **released (v0.x)** | Released and usable, versioned independently, free to move at its own pace. Being pre-1.0, a minor release may still break. `gen` and `cmd/crucible` are here. |
 | **advisory** | Ships inside a stable module but sits *outside* its frozen contract and may change in a minor release. The `state` subpackages (`analysis`, `evolution`, `conformance`, `verify`) are advisory. |
-| **experimental** | Usable, tested, and benchmarked, but the API may change before it reaches v1. Pin a version and expect churn. The IO edges (`sink`, `source`) and host-side runtimes (`durable`, `cluster`, `transport`, `wasm`, `telemetry`) are experimental. |
+| **experimental** | Usable, tested, and benchmarked, but the API may change before it reaches v1. Pin a version and expect churn. The IO edge (`sink`) and host-side runtimes (`durable`, `cluster`, `transport`, `wasm`, `telemetry`) are experimental. |
 | **planned** | Not yet implemented. `broker` is planned. |
 
 ## Using pre-1.0 modules
@@ -30,3 +30,9 @@ Promoting an experimental module to v1 means committing to a frozen public contr
 under the same terms as `state`. The graduation criteria and a per-module
 compatibility matrix are tracked in
 [issue #179](https://github.com/stablekernel/crucible/issues/179).
+
+`source` graduated at v1.0.0 (with its Kafka inlet released as
+`source/kafka` v1.0.0): the neutral surface is frozen, the delivery and drain
+contracts are pinned by regression tests, and the frozen-contract terms are
+recorded in [`source/CHANGELOG.md`](source/CHANGELOG.md) and
+[`source/kafka/CHANGELOG.md`](source/kafka/CHANGELOG.md).
