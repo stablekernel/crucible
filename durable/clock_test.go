@@ -414,3 +414,68 @@ func recoverTimerBytes(t *testing.T, ctx context.Context, m *state.Machine[strin
 	}
 	return string(b)
 }
+
+// TestClock_StartInTimedState_ArmsTimer proves Start arms the `after` timer of the
+// state an instance starts in, as a plain kernel Cast does, and that recovery
+// reaches the same state.
+func TestClock_StartInTimedState_ArmsTimer(t *testing.T) {
+	ctx := context.Background()
+	m := timerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("timer-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *timerCtx]{durable.WithRunnerClock[string, string, *timerCtx](clk)}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, &timerCtx{}, state.WithInitialState("arming"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	clk.Advance(6 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := h.Instance().Current(); got != "done" {
+		t.Fatalf("state %q 6s after starting in arming, want done", got)
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestClock_TickWithNothingDue_AppendsNoRecord proves a timer loop ticking while a
+// timer is pending but not yet due does not grow the journal.
+func TestClock_TickWithNothingDue_AppendsNoRecord(t *testing.T) {
+	ctx := context.Background()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("timer-1")
+	clk := state.NewFakeClock(epoch)
+	runner := durable.NewRunner(timerMachine(), store, durable.WithRunnerClock[string, string, *timerCtx](clk))
+	h, err := runner.Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	_, before, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for range 100 {
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	_, after, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("100 ticks before the 5s timer was due grew the journal from %d to %d records", len(before), len(after))
+	}
+}
