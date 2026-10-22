@@ -432,9 +432,10 @@ func TestRunner_EffectDispatch_NonDispatchStore_NoOp(t *testing.T) {
 	}
 }
 
-// timerMachine emits a kernel driver effect (a delayed `after` transition) on the
-// same step a domain effect fires, so the dispatcher must route the driver effect
-// to the Scheduler and only the domain effect to the handler.
+// timerNotifyMachine emits a kernel driver effect (a delayed `after` transition) on
+// the same step a domain effect fires, so the dispatcher must route the driver
+// effect to the Scheduler and only the domain effect to the handler. The timer
+// transition emits a second notify, which only a test that ticks observes.
 func timerNotifyMachine() *state.Machine[string, string, *runCtx] {
 	return state.ForgeFor[*runCtx]("timer").
 		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
@@ -445,7 +446,7 @@ func timerNotifyMachine() *state.Machine[string, string, *runCtx] {
 		State("done").Final().
 		Initial("idle").
 		Transition("idle").On("go").GoTo("waiting").Do("notify").
-		Transition("waiting").After(time.Second).GoTo("done").
+		Transition("waiting").After(time.Second).GoTo("done").Do("notify").
 		Quench()
 }
 
@@ -504,5 +505,121 @@ func TestMemStore_DispatchSet_MarkAndQuery(t *testing.T) {
 	}
 	if dispatched["1#0#demo.charge"] {
 		t.Fatalf("unmarked id reported dispatched")
+	}
+}
+
+// entryNotifyMachine emits a host effect on entering the state an instance starts
+// in, so the effect originates in Start rather than Fire.
+func entryNotifyMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("entryNotify").
+		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
+			return notifyEffect{To: "ops@example.com"}, nil
+		}).
+		State("ready").OnEntry("notify").
+		Initial("ready").
+		Quench()
+}
+
+// TestRunner_EffectDispatch_Start_AppliesEntryEffect proves a domain effect emitted
+// on entering the initial state reaches the handler.
+func TestRunner_EffectDispatch_Start_AppliesEntryEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	r := durable.NewRunner(entryNotifyMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()))
+	if _, err := r.Start(ctx, "i1", &runCtx{}, state.WithInitialState("ready")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := rec.totalApplies(); n != 1 {
+		t.Fatalf("handler applied %d effects, want 1 (the initial state's entry notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_TimerTransition_AppliesEffect proves a domain effect
+// emitted by a timer-driven transition reaches the handler.
+func TestRunner_EffectDispatch_TimerTransition_AppliesEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	clk := state.NewFakeClock(epoch)
+	r := durable.NewRunner(timerNotifyMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()),
+		durable.WithRunnerClock[string, string, *runCtx](clk))
+	h, err := r.Start(ctx, "i1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire go: %v", err)
+	}
+	clk.Advance(2 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if n := rec.totalApplies(); n != 2 {
+		t.Fatalf("handler applied %d effects, want 2 (the timer transition's notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_ServiceSettle_AppliesEffect proves a domain effect
+// emitted by the transition a service result drives reaches the handler.
+func TestRunner_EffectDispatch_ServiceSettle_AppliesEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	var calls int64
+	fn := counterService(&calls)
+	r := durable.NewRunner(fetchThenWaitMachine(fn), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, svcCtx](rec.handler()),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)))
+	h, err := r.Start(ctx, "i1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+	if n := rec.totalApplies(); n != 1 {
+		t.Fatalf("handler applied %d effects, want 1 (the settle transition's notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_FailedThenCheckpointed_AppliedOnce proves an effect
+// whose dispatch failed is still applied exactly once, live or on recovery, after
+// a later checkpoint compacts its step.
+func TestRunner_EffectDispatch_FailedThenCheckpointed_AppliedOnce(t *testing.T) {
+	ctx := context.Background()
+	st := durable.NewMemStore()
+	live := newEffectRecorder()
+	live.failKinds["demo.notify"] = errors.New("downstream unavailable")
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithEffectHandler[string, string, *runCtx](live.handler()),
+		durable.WithCheckpointEvery[string, string, *runCtx](2),
+	}
+	h, err := durable.NewRunner(effectMachine(), st, opts...).Start(ctx, "i1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err == nil { // step 0: its notify fails
+		t.Fatalf("Fire go: want the handler error")
+	}
+	delete(live.failKinds, "demo.notify")
+	if _, err = h.Fire(ctx, "bill"); err != nil { // step 1: checkpoint compacts step 0
+		// A Handle that refuses Fires after a failed dispatch is resumed by Recover.
+		if h, err = durable.Recover(ctx, effectMachine(), st, "i1", opts...); err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if _, err = h.Fire(ctx, "bill"); err != nil {
+			t.Fatalf("Fire bill: %v", err)
+		}
+	}
+
+	healthy := newEffectRecorder()
+	if _, err = durable.Recover(ctx, effectMachine(), st, "i1",
+		durable.WithEffectHandler[string, string, *runCtx](healthy.handler())); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	// go emits notify; bill emits charge and notify. Each applies exactly once.
+	if n := live.totalApplies() + healthy.totalApplies(); n != 3 {
+		t.Fatalf("applied %d effects across live and recovery, want 3", n)
 	}
 }

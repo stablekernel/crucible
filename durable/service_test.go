@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -468,5 +469,101 @@ func TestService_Determinism(t *testing.T) {
 	s2, _, _ := liveFetchRun(t, &c2)
 	if string(s1) != string(s2) {
 		t.Fatalf("two live runs diverged:\n run1=%s\n run2=%s", s1, s2)
+	}
+}
+
+// fetchThenWaitMachine routes its service result into a state that arms a timer,
+// emitting a host effect on the way, so both originate in RunService.
+func fetchThenWaitMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
+	return state.ForgeFor[svcCtx]("fetchThenWait").
+		Service("fetch", fn).
+		Action("notify", func(state.ActionCtx[svcCtx]) (state.Effect, error) {
+			return notifyEffect{To: "ops@example.com"}, nil
+		}).
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("waiting").
+		State("done").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("waiting").Do("notify").
+		Transition("waiting").After(5 * time.Second).On("elapsed").GoTo("done").
+		Quench()
+}
+
+// TestService_TimerArmedBySettle_ReplaysOnRecover proves a timer armed by a service
+// result survives recovery, with an idle tick between the settle and the tick that
+// fires it.
+func TestService_TimerArmedBySettle_ReplaysOnRecover(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchThenWaitMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+	for _, d := range []time.Duration{2 * time.Second, 4 * time.Second} { // idle, then due
+		clk.Advance(d)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	if got := h.Instance().Current(); got != "done" {
+		t.Fatalf("live state %q, want done", got)
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestService_ResultFromCanceledTurn_NotCommittedOnRecover proves a service result
+// whose settle is canceled with the turn's context, and so never reaches the live
+// instance, is not committed by recovery either.
+func TestService_ResultFromCanceledTurn_NotCommittedOnRecover(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		cancel() // the turn's deadline passes while the call is in flight
+		return "late", nil
+	}
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	_, _, _ = h.RunService(turnCtx, state.InvokeID("fetch", "loading", 0))
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := h.Instance().Current(), recovered.Instance().Current(); got != live {
+		t.Fatalf("recovered %q, live %q: the canceled turn's result was committed on recovery", got, live)
 	}
 }

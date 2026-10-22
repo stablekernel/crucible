@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -140,6 +144,17 @@ func recoveredSnapshotBytes[C any](t *testing.T, m *state.Machine[string, string
 		t.Fatalf("marshal recovered snapshot: %v", err)
 	}
 	return b
+}
+
+// handleSnapshot returns the marshaled snapshot of a durable Handle's instance, so
+// a live Handle and a recovered one can be compared byte-for-byte.
+func handleSnapshot[C any](t *testing.T, h *durable.Handle[string, string, C]) string {
+	t.Helper()
+	b, err := state.MarshalSnapshot(h.Instance().Snapshot())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
 }
 
 // TestRecover_ByteIdenticalAcrossFixtures is the acceptance gate: a recovered
@@ -462,5 +477,250 @@ func TestRunner_Start_RejectsDuplicate(t *testing.T) {
 	}
 	if _, err := runner.Start(ctx, id, &runCtx{}, state.WithInitialState("idle")); !errors.Is(err, durable.ErrInstanceExists) {
 		t.Fatalf("want ErrInstanceExists, got %v", err)
+	}
+}
+
+// pollingMachine re-arms a one-second timer every time it fires, so a host timer
+// loop keeps producing steps, while `poke` bumps Count on the same state.
+func pollingMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("polling").
+		Action("bump", func(c state.ActionCtx[*runCtx]) (state.Effect, error) {
+			c.Entity.Count++
+			return nil, nil
+		}).
+		State("idle").
+		State("polling").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("polling").
+		Transition("polling").On("poke").GoTo("polling").Do("bump").
+		Transition("polling").After(time.Second).On("tick").GoTo("polling").Reenter().
+		Quench()
+}
+
+// quantityMachine folds a quantity carried as event data into Count. The quantity
+// is a float64 because event data crosses the journal as JSON (doc.go, Caveats).
+func quantityMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("quantity").
+		Reducer("addQuantity", func(in state.AssignCtx[*runCtx]) *runCtx {
+			c := *in.Entity
+			if q, ok := in.Event.(float64); ok {
+				c.Count += int(q)
+			}
+			return &c
+		}).
+		State("open").
+		Initial("open").
+		Transition("open").On("add").GoTo("open").Assign("addQuantity").
+		Quench()
+}
+
+// flakyAppendStore fails the first Append of one step, then delegates.
+type flakyAppendStore struct {
+	durable.Store
+	failStep int
+	failed   bool
+}
+
+func (s *flakyAppendStore) Append(ctx context.Context, id durable.InstanceID, rec durable.Record, opts ...durable.AppendOption) (int64, error) {
+	if rec.Step == s.failStep && !s.failed {
+		s.failed = true
+		return 0, errors.New("store unavailable")
+	}
+	return s.Store.Append(ctx, id, rec, opts...)
+}
+
+// TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory proves
+// two Handles on one instance (a stalled worker, and the worker that recovered the
+// instance after it) cannot both have their Fires acknowledged while the journal
+// records something else: recovery reproduces the state of any Handle whose Fires
+// all returned nil. Takeover on Recover and optimistic concurrency on the step
+// both satisfy it.
+func TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory(t *testing.T) {
+	ctx := context.Background()
+	m := branchingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("split-1")
+	if _, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("start")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stale, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover(stale): %v", err)
+	}
+	owner, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover(owner): %v", err)
+	}
+	_, ownerErr := owner.Fire(ctx, "goLeft")
+	_, staleErr := stale.Fire(ctx, "goRight")
+	if staleErr == nil {
+		_, staleErr = stale.Fire(ctx, "finish")
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	got := recovered.Instance().Current()
+	if ownerErr == nil && owner.Instance().Current() != got {
+		t.Fatalf("owner's Fire was acknowledged at %q, but recovery yields %q", owner.Instance().Current(), got)
+	}
+	if staleErr == nil && stale.Instance().Current() != got {
+		t.Fatalf("stale Handle's Fires were acknowledged at %q, but recovery yields %q", stale.Instance().Current(), got)
+	}
+}
+
+// TestRunner_FireDuringTimerLoop_LosesNoAcknowledgedSteps proves the "Tick from its
+// own timer loop" pattern that drainClock documents holds while requests Fire on
+// the same Handle: the recovered instance matches the live one, and every
+// acknowledged Fire survives.
+func TestRunner_FireDuringTimerLoop_LosesNoAcknowledgedSteps(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs two CPUs to interleave Fire and Tick")
+	}
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+
+	const n = 200
+	var acked atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // the host's timer loop
+		defer wg.Done()
+		for range n {
+			clk.Advance(time.Second)
+			_, _ = h.Tick(ctx)
+		}
+	}()
+	go func() { // request traffic
+		defer wg.Done()
+		for range n {
+			if _, ferr := h.Fire(ctx, "poke"); ferr == nil {
+				acked.Add(1)
+			}
+		}
+	}()
+	wg.Wait()
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got, want := recovered.Instance().Entity().Count, int(acked.Load()); got != want {
+		t.Fatalf("recovered %d pokes, want %d acknowledged", got, want)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestRecover_FireWithEventData_MatchesLive proves an instance driven with
+// state.WithEventData recovers to the live state: the Handle either journals the
+// data or refuses it, but never acknowledges data that recovery drops.
+func TestRecover_FireWithEventData_MatchesLive(t *testing.T) {
+	ctx := context.Background()
+	m := quantityMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("qty-1")
+	h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("open"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, _ = h.Fire(ctx, "add", state.WithEventData(3.0))
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestRecover_StepAfterTickCheckpoint_IsPersisted proves the next step ordinal
+// survives a checkpoint that compacts tick barriers: a Fire after recovery must
+// not reuse a recorded step, which the Store would drop as an idempotent retry.
+func TestRecover_StepAfterTickCheckpoint_IsPersisted(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	// Four timer-firing ticks put barriers on steps 1, 3, 5 and 7; the checkpoint
+	// at step 7 compacts the whole tail.
+	for range 4 {
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+
+	resumed, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = resumed.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover(again): %v", err)
+	}
+	if live, got := handleSnapshot(t, resumed), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("the acknowledged poke was not persisted:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestRunner_FireAfterFailedAppend_MatchesJournal proves a Fire whose Append failed
+// leaves no trace in the live instance: once a later Fire is acknowledged, the
+// live instance and the journal agree.
+func TestRunner_FireAfterFailedAppend_MatchesJournal(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &flakyAppendStore{Store: durable.NewMemStore(), failStep: 1}
+	id := durable.InstanceID("poll-1")
+	h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); err == nil { // step 1: the Append fails
+		t.Fatalf("Fire(poke): want the Append error")
+	}
+	if _, err = h.Fire(ctx, "poke"); err != nil {
+		return // refusing further Fires after a failed Append is also correct
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("live instance differs from the journal:\n live: %s\n got:  %s", live, got)
 	}
 }

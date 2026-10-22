@@ -381,3 +381,42 @@ func TestTimerCheckpoint_RecoveryDeterministic(t *testing.T) {
 		t.Fatalf("recovery across checkpoint nondeterministic\n first:  %s\n second: %s", first, second)
 	}
 }
+
+// TestTimerCheckpoint_FiredAfterCheckpoint_ByteIdentical proves a timer persisted by
+// a checkpoint and fired later in the tail, after an idle tick, replays at its
+// recorded instant instead of being missed.
+func TestTimerCheckpoint_FiredAfterCheckpoint_ByteIdentical(t *testing.T) {
+	ctx := context.Background()
+	m := pendingTimerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("timer-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *timerCtx]{
+		durable.WithRunnerClock[string, string, *timerCtx](clk),
+		durable.WithCheckpointEvery[string, string, *timerCtx](3),
+	}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, ev := range []string{"arm", "poke", "poke"} { // checkpoint lands with the timer pending
+		if _, err = h.Fire(ctx, ev); err != nil {
+			t.Fatalf("Fire(%s): %v", ev, err)
+		}
+	}
+	for _, d := range []time.Duration{5 * time.Second, 6 * time.Second} { // idle, then due
+		clk.Advance(d)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
