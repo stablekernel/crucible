@@ -15,8 +15,8 @@ var (
 
 	// ErrStepConflict is reported by Store.Append when a Step is already recorded
 	// with a different Record: the writer's view of the instance has diverged from
-	// the journal, usually because another writer got there first, and nothing was
-	// written.
+	// the journal, usually because another writer got there first. The Record was
+	// not written.
 	ErrStepConflict = errors.New("crucible/durable: step already recorded with a different record")
 
 	// ErrFenced is reported by Store.Append and Store.Checkpoint for a write whose

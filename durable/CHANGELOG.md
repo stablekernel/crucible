@@ -15,7 +15,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `WithOwnerFence` sets the token a Runner carries on every Append and Checkpoint;
   `MarkDispatched` is not fenced. `AppendFence`,
   `CheckpointFence` and `AppendIdempotencyKey` let a backend outside this package
-  read its options. `MemStore` and `FileStore` implement it; `FileStore` persists the
+  read its options. `MemStore` and `FileStore` enforce fencing; `FileStore` persists the
   highest token in a `fence` file and holds its fencing within one open store. A
   Store first sees a token on that owner's first write, so `Recover` alone doesn't
   fence the old owner: a stale write before then is accepted, and the new owner's
@@ -24,6 +24,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 
 - Requires Go 1.27.3.
+- **A `Store` implementation has new work to do.** It must enforce fence tokens and
+  return `ErrStepConflict`, or `WithOwnerFence` protects nothing. Existing
+  implementations still compile, so nothing flags this.
+- **`MemStore.Append` without `WithIdempotencyKey` refuses a Record JSON can't encode,**
+  as `FileStore` already did.
+
 - **`Store.Append` rejects a different record for a recorded step.** It used to keep
   the first and report success, which acknowledged a step the journal didn't hold.
   It now returns `ErrStepConflict`, including for a step a checkpoint has compacted.

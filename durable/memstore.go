@@ -147,6 +147,13 @@ func (s *MemStore) Append(_ context.Context, id InstanceID, rec Record, opts ...
 	return inst.seq, nil
 }
 
+// written reports whether anything reached the instance. A write refused on its first
+// use still creates the entry, to hold the fence, and that doesn't make an instance. It
+// tests throughStep rather than checkpoint, because an empty snapshot is stored as nil.
+func (i *memInstance) written() bool {
+	return i.throughStep != noCheckpoint || len(i.tail) > 0 || len(i.applied) > 0 || len(i.dispatched) > 0
+}
+
 // Load implements Store. It returns the latest checkpoint plus the post-
 // checkpoint Record tail in Step order, or ErrInstanceNotFound.
 func (s *MemStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, error) {
@@ -154,7 +161,7 @@ func (s *MemStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, err
 	defer s.mu.RUnlock()
 
 	inst, ok := s.instances[id]
-	if !ok {
+	if !ok || !inst.written() {
 		return nil, nil, fmt.Errorf("%w: %q", ErrInstanceNotFound, id)
 	}
 
@@ -181,7 +188,7 @@ func (s *MemStore) History(_ context.Context, id InstanceID) ([]byte, []Record, 
 	defer s.mu.RUnlock()
 
 	inst, ok := s.instances[id]
-	if !ok {
+	if !ok || !inst.written() {
 		return nil, nil, fmt.Errorf("%w: %q", ErrInstanceNotFound, id)
 	}
 

@@ -97,8 +97,9 @@ Two stdlib-only reference implementations ship in-tree:
 
 A write can carry a fence token (`WithFence`, `WithCheckpointFence`). A `Store`
 keeps the highest token it has seen for an instance and refuses a lower one with
-`ErrFenced`, writing nothing, so an owner that lost an instance can't keep writing
-to it. `WithOwnerFence` sets the token a `Runner` carries on every `Append` and
+`ErrFenced`, writing nothing, so an owner that lost an instance is refused once the
+new owner has written. `FileStore` fencing holds only within one open store.
+`WithOwnerFence` sets the token a `Runner` carries on every `Append` and
 `Checkpoint`. `Append` also rejects a different record at a recorded step with
 `ErrStepConflict`. An out-of-tree `Store` reads the token with `AppendFence` and
 `CheckpointFence`.

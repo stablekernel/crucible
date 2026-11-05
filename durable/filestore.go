@@ -27,7 +27,7 @@ import (
 //	<root>/<encoded-id>/journal.log     append-only, one JSON Record per line
 //	<root>/<encoded-id>/checkpoint.snap latest checkpoint Snapshot bytes
 //	<root>/<encoded-id>/checkpoint.meta latest checkpoint throughStep
-//	<root>/<encoded-id>/applied.log     append-only idempotency ledger (key\tseq)
+//	<root>/<encoded-id>/applied.log     append-only idempotency ledger, one JSON line per key (key, seq, digest)
 //	<root>/<encoded-id>/dispatched.log  append-only dispatched effect ids
 //	<root>/<encoded-id>/fence           highest fence token seen, once there is one
 //
@@ -177,9 +177,9 @@ func (s *FileStore) instance(id InstanceID) (*fileInstance, bool, error) {
 	return inst, inst.existed, nil
 }
 
-// load reconstructs the instance index from its on-disk files. It returns
-// whether the instance directory existed (an instance ever written). A torn
-// trailing journal line is skipped without error.
+// load reconstructs the instance index from its on-disk files. It returns whether
+// the directory exists, unless it holds only a fence. A torn trailing journal line is
+// skipped without error.
 func (fi *fileInstance) load() (bool, error) {
 	info, err := os.Stat(fi.dir)
 	if err != nil {
@@ -207,9 +207,10 @@ func (fi *fileInstance) load() (bool, error) {
 	if err := fi.loadDispatched(); err != nil {
 		return false, err
 	}
-	// A directory holding only a fence is a Start that crashed before its baseline
-	// checkpoint landed, so the instance was never written: Start may run again.
-	return fi.checkpoint != nil || len(fi.tail) > 0 || len(fi.applied) > 0 || len(fi.dispatched) > 0, nil
+	// A directory holding only a fence is a first write that never landed, such as a
+	// crashed Start, so the instance was never written and Start may run again. A
+	// directory with no fence keeps its old meaning, so it still counts as existing.
+	return fi.fence == 0 || fi.checkpoint != nil || len(fi.tail) > 0 || len(fi.applied) > 0 || len(fi.dispatched) > 0, nil
 }
 
 // loadFence reads the highest fence token seen, if any. The file is written
@@ -598,10 +599,7 @@ func appendLine(path string, line []byte) (err error) {
 		}
 	}()
 
-	buf := make([]byte, 0, len(line)+1)
-	buf = append(buf, line...)
-	buf = append(buf, '\n')
-	if _, err = f.Write(buf); err != nil {
+	if _, err = f.Write(append(line[:len(line):len(line)], '\n')); err != nil {
 		return err
 	}
 	return f.Sync()

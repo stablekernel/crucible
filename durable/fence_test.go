@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stablekernel/crucible/durable"
@@ -404,7 +406,7 @@ func TestRecover_NewerOwnerFencesTheOlder(t *testing.T) {
 	}
 }
 
-// Nothing is written at recovery, so a stale write can land before the new owner's
+// Recovery writes no fence token, so a stale write can land before the new owner's
 // first. The owner hears about it from the step check and recovers the journal as
 // written, so no acknowledged step is lost.
 func TestRecover_StaleWriteBeforeOwnersFirst_ConflictsThenRecovers(t *testing.T) {
@@ -442,5 +444,109 @@ func TestRecover_StaleWriteBeforeOwnersFirst_ConflictsThenRecovers(t *testing.T)
 	}
 	if _, err = owner.Fire(ctx, "finish"); err != nil {
 		t.Fatalf("owner Fire after recovering: %v", err)
+	}
+}
+
+// TestStore_Fence_RacingTokens races owners with rising tokens. Once a token is
+// acknowledged no lower one may be, and tokens never fall along the journal.
+func TestStore_Fence_RacingTokens(t *testing.T) {
+	storeBackends(t, func(t *testing.T, st durable.Store) {
+		ctx := context.Background()
+		const id = durable.InstanceID("inst")
+		var highest, next, violations atomic.Int64
+		var wg sync.WaitGroup
+		for token := int64(1); token <= 8; token++ {
+			wg.Go(func() {
+				for range 40 {
+					step := int(next.Add(1))
+					before := highest.Load()
+					payload, err := json.Marshal(token)
+					if err != nil {
+						t.Errorf("Marshal: %v", err)
+						return
+					}
+					_, err = st.Append(ctx, id, durable.Record{Step: step, Snapshot: payload}, durable.WithFence(token))
+					switch {
+					case err == nil:
+						if token < before {
+							violations.Add(1)
+						}
+						for {
+							seen := highest.Load()
+							if token <= seen || highest.CompareAndSwap(seen, token) {
+								break
+							}
+						}
+					case errors.Is(err, durable.ErrFenced), errors.Is(err, durable.ErrStepOutOfOrder), errors.Is(err, durable.ErrStepConflict):
+					default:
+						t.Errorf("Append: %v", err)
+					}
+				}
+			})
+		}
+		wg.Wait()
+		if n := violations.Load(); n != 0 {
+			t.Fatalf("%d lower tokens acknowledged after a higher one", n)
+		}
+		_, tail, err := st.Load(ctx, id)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		var last int64
+		for _, rec := range tail {
+			var token int64
+			if err := json.Unmarshal(rec.Snapshot, &token); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if token < last {
+				t.Fatalf("token fell from %d to %d at step %d", last, token, rec.Step)
+			}
+			last = token
+		}
+	})
+}
+
+// TestStore_RefusedFirstWrite_IsNotAnInstance proves a first write refused after the
+// fence check leaves an instance Start can still create, on every backend.
+func TestStore_RefusedFirstWrite_IsNotAnInstance(t *testing.T) {
+	storeBackends(t, func(t *testing.T, st durable.Store) {
+		ctx := context.Background()
+		const id = durable.InstanceID("inst")
+		bad := durable.Record{Step: 0, Entries: []state.JournalEntry{{Payload: json.RawMessage("{")}}}
+		if _, err := st.Append(ctx, id, bad, durable.WithFence(1)); err == nil {
+			t.Fatal("Append of an unencodable Record succeeded")
+		}
+		if _, _, err := st.Load(ctx, id); !errors.Is(err, durable.ErrInstanceNotFound) {
+			t.Fatalf("Load = %v, want ErrInstanceNotFound", err)
+		}
+	})
+}
+
+// TestFileStore_EmptyDirectoryWithNoFence_StillExists proves a directory with no fence
+// keeps the meaning it had before fencing.
+func TestFileStore_EmptyDirectoryWithNoFence_StillExists(t *testing.T) {
+	root := t.TempDir()
+	st, err := durable.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	const id = durable.InstanceID("inst")
+	if err = st.MarkDispatched(context.Background(), id, "e"); err != nil {
+		t.Fatalf("MarkDispatched: %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ReadDir = (%v, %v)", entries, err)
+	}
+	dir := filepath.Join(root, entries[0].Name())
+	if err = os.Remove(filepath.Join(dir, "dispatched.log")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	reopened, err := durable.NewFileStore(root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, _, err = reopened.Load(context.Background(), id); err != nil {
+		t.Fatalf("Load of an existing directory = %v, want nil", err)
 	}
 }

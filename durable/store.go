@@ -18,6 +18,11 @@ type InstanceID string
 // checkpoint taken at this step. A Record is identified within its instance by
 // its Step ordinal; appending the same Record at the same Step twice is a no-op,
 // and appending a different one is rejected (see Store.Append).
+//
+// The Stores compare Records by a digest of their JSON form, taken through cloneRecord.
+// A new field needs `json:",omitempty"`, or every digest changes and a retried Append
+// after an upgrade reads as a conflict. It must also be copied in cloneRecord, or the
+// digest ignores it. The same applies to state.JournalEntry and state.EffectEnvelope.
 type Record struct {
 	// Step is the Fire ordinal this Record was produced at, indexing the
 	// instance's recorded Traces. It is the per-instance idempotency key: a
@@ -95,18 +100,23 @@ type Record struct {
 // same when every field matches, with a nil and an empty field counting as equal.
 // An Append carrying WithIdempotencyKey (a backend reads it with
 // AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
-// Record: no comparison is made.
+// Record: no comparison is made. Keys starting "step:" are reserved for the Store's
+// own per-Step key. A Step recorded under an explicit key is not recognized by a
+// later Append without that key, or with a different one: that Append returns
+// ErrStepOutOfOrder.
 //
 // Fencing: an Append or Checkpoint may carry a fence token (WithFence,
 // WithCheckpointFence; a backend reads it with AppendFence and CheckpointFence). A
-// Store keeps the highest token it has seen per instance, durably. A write whose
+// Store keeps the highest token it has seen per instance, as durably as its Records.
+// The token check must be serialized with the write it guards, against the Store's
+// own state. A write whose
 // token is lower returns ErrFenced and writes nothing; this check comes before
 // every other. A token that passes raises the highest even if the write then fails
 // another check, so a new owner's refused first write still fences the old owner.
 // A write with no token counts as token zero, so once an instance has
 // been fenced an unfenced write is refused. An equal token passes, so a retry by
-// the same owner still works. The token is the fence alone: two writers on one
-// token are told apart by ErrStepConflict.
+// the same owner still works. Tokens alone can't separate two writers on one token;
+// ErrStepConflict does.
 //
 // Atomicity: each Append and each Checkpoint is atomic. A concurrent Load never
 // observes a partially written Record or a checkpoint torn against its tail; it

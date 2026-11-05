@@ -23,8 +23,9 @@ type appendConfig struct {
 
 // WithIdempotencyKey sets an explicit idempotency key for an Append, overriding
 // the default of deduplicating on the Record's Step alone. Two Appends carrying
-// the same key for the same instance collapse to one. An empty key is ignored
-// (the Step-based default applies).
+// the same key for the same instance collapse to one, with no comparison of the
+// Records. An empty key is ignored (the Step-based default applies). Keys starting
+// "step:" are reserved for the Store's own per-Step key.
 func WithIdempotencyKey(key string) AppendOption {
 	return func(c *appendConfig) {
 		if key != "" {
@@ -36,8 +37,9 @@ func WithIdempotencyKey(key string) AppendOption {
 // WithFence carries the writer's fence token on an Append: an increasing number,
 // issued by the host with each ownership of the instance. A Store refuses a token
 // lower than the highest it has seen for the instance with ErrFenced (see Store). A
-// non-positive token is ignored. WithCheckpointFence is the Checkpoint counterpart;
-// a Runner sets both from WithOwnerFence.
+// non-positive token is the same as no token, which a fenced instance refuses.
+// WithCheckpointFence is the Checkpoint counterpart; a Runner sets both from
+// WithOwnerFence.
 func WithFence(token int64) AppendOption {
 	return func(c *appendConfig) {
 		if token > 0 {
@@ -80,7 +82,7 @@ type checkpointConfig struct {
 }
 
 // WithCheckpointFence carries the writer's fence token on a Checkpoint, with the
-// same meaning as WithFence on an Append. A non-positive token is ignored.
+// same meaning as WithFence on an Append. A non-positive token is the same as no token, which a fenced instance refuses.
 func WithCheckpointFence(token int64) CheckpointOption {
 	return func(c *checkpointConfig) {
 		if token > 0 {
