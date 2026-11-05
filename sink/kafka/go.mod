@@ -1,10 +1,9 @@
 module github.com/stablekernel/crucible/sink/kafka
 
-go 1.25.11
-toolchain go1.26.4
-require github.com/stablekernel/crucible/sink v0.0.0
+go 1.27.3
 
 require (
+	github.com/stablekernel/crucible/sink v0.0.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.42.0
 	github.com/twmb/franz-go v1.21.2

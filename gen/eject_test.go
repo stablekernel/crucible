@@ -175,7 +175,7 @@ func TestEject_CompilesAndWires(t *testing.T) {
 	}
 
 	tmp := t.TempDir()
-	gomod := "module genout\n\ngo 1.25.11\n\nrequire github.com/stablekernel/crucible/state v0.0.0\n\nreplace github.com/stablekernel/crucible/state => " + stateAbs + "\n"
+	gomod := "module genout\n\ngo 1.27.3\n\nrequire github.com/stablekernel/crucible/state v0.0.0\n\nreplace github.com/stablekernel/crucible/state => " + stateAbs + "\n"
 	writeFile(t, filepath.Join(tmp, "go.mod"), gomod)
 	writeFile(t, filepath.Join(tmp, "gen.go"), string(src))
 

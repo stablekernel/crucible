@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/state/expr
 
-go 1.25.0
+go 1.27.3
 
 require (
 	cel.dev/expr v0.25.2

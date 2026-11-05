@@ -9,6 +9,12 @@ A machine definition is treated as a schema: see the
 counts as an additive (minor) versus breaking (major) change. Use the
 `state/evolution` package to classify a machine change and decide the bump.
 
+## [Unreleased]
+
+### Changed
+
+- Requires Go 1.27.3.
+
 ## [1.0.0] — 2026-06-13
 
 The first stable release. It freezes the data model, the serialized IR, the

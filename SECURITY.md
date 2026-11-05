@@ -2,13 +2,11 @@
 
 ## Supported versions
 
-Crucible follows Go's own support window. Security fixes are provided for:
+Security fixes are provided for the **latest released version** of each module. Its
+`go.mod` states the Go version it requires, which can be newer than Go's oldest
+supported release.
 
-- The **latest released version** of each module, and
-- Versions that build against the **last two minor releases of Go**.
-
-Older versions and versions built against unsupported Go releases do not receive
-security updates.
+Older versions do not receive security updates.
 
 ## Reporting a vulnerability
 

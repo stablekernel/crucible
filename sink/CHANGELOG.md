@@ -7,6 +7,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Requires Go 1.27.3.
+
 ### Added
 
 - Fire-and-forget fan-out `Manifold`: one `Sink(ctx, payload)` call fans a

@@ -9,6 +9,10 @@ dependency-free, and `expr` depends on `state`, never the reverse.
 
 ## [Unreleased]
 
+### Changed
+
+- Requires Go 1.27.3.
+
 ### Added
 
 - `GuardString[C]` convenience constructor: the string-state form of `Guard`,
