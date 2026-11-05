@@ -144,7 +144,8 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		*h.svcBuf = append(*h.svcBuf, entry)
 	}
 
-	rec := Record{Step: h.nextStep, Entries: h.drainServices()}
+	// The clock read belongs to this step when the settle armed a timer.
+	rec := Record{Step: h.nextStep, Entries: append(h.drainServices(), h.drainClock()...)}
 	if err := h.commitStep(ctx, &rec, res.Effects); err != nil {
 		return res, true, err
 	}

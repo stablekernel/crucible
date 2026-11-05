@@ -23,10 +23,10 @@ import (
 // The declared `after` Delay re-arms a fresh timer at now+Delay; a timer pending at
 // a checkpoint has already burned part of its delay, so the durable layer persists
 // each armed timer's absolute deadline alongside the checkpoint and, on recovery,
-// re-arms the remainder (deadline − resumed now) rather than the full declared
-// Delay. The deadline is itself a recorded clock read, so the re-armed timer fires
-// at the same recorded instant regardless of the wall clock at recovery time, and
-// the recovered run is byte-identical to one that never crashed.
+// re-arms it at that deadline rather than for the full declared Delay. The deadline
+// is itself a recorded clock read, so the re-armed timer fires at the same recorded
+// instant regardless of the wall clock at recovery time, and the recovered run is
+// byte-identical to one that never crashed.
 
 // pendingTimer is one armed delayed (`after`) timer the durable Handle tracks
 // alongside the kernel scheduler, so its absolute deadline can be persisted at a
@@ -40,7 +40,7 @@ type pendingTimer struct {
 	// scheduler's pending set key identically.
 	id string
 	// due is the timer's absolute fire deadline (the recorded arming clock read plus
-	// the declared Delay), the value persisted so recovery re-arms the remainder.
+	// the declared Delay), the value persisted so recovery re-arms it at that deadline.
 	due time.Time
 	// event is the delayed event the timer re-fires through Fire when it elapses,
 	// type-erased for the abstract ScheduleAfter surface and re-typed by the
@@ -158,27 +158,20 @@ func mirrorArmed(armed map[string]pendingTimer, effects []state.Effect, now time
 	}
 }
 
-// reArmEffects builds the ScheduleAfter effects that re-arm persisted timers at
-// their recorded absolute deadlines, relative to now: each timer's remaining delay
-// is its deadline minus now, so absorbing the effects through the live scheduler
-// reproduces the same absolute deadline the live run held. A deadline already at or
-// before now yields a non-positive delay, which the scheduler arms as immediately
-// due, so an elapsed-while-down timer fires on the next Tick. Timers whose id is
-// already armed (re-established by tail replay) are skipped, so a timer the tail
-// still carries is not double-armed. Returns the effects and the durable-side
-// pendingTimer table to seed the Handle, both in scheduleID order.
+// reArmEffects builds the ScheduleAfter effects that re-arm persisted timers at their
+// recorded absolute deadlines, relative to now. now can be any fixed instant: the caller
+// holds the scheduler's clock on it while absorbing the effects, so each timer's deadline
+// comes out exact, and an elapsed one fires on the next Tick. Recovery calls it before
+// the tail replays, because the tail can fire these timers. Returns the effects and the
+// durable-side pending-timer table.
 func reArmEffects[E comparable](
 	codec EventCodec[E],
 	wires []pendingTimerWire,
-	already map[string]pendingTimer,
 	now time.Time,
 ) ([]state.Effect, map[string]pendingTimer, error) {
 	var effects []state.Effect
 	seeded := map[string]pendingTimer{}
 	for _, w := range wires {
-		if _, armed := already[w.ID]; armed {
-			continue // tail replay already re-armed this timer; do not double-arm.
-		}
 		ev, err := decodeTimerEvent(codec, w.Event)
 		if err != nil {
 			return nil, nil, fmt.Errorf("durable: decoding pending timer %q event: %w", w.ID, err)

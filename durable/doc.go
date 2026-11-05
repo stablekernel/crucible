@@ -92,8 +92,8 @@
 //
 // Clock (WithRunnerClock): a running instance reads time only through its host
 // scheduler, which arms and ticks delayed `after` transitions. The Runner wraps
-// the real clock in a recording clock on the live path so every Now() reading the
-// scheduler consumes is journaled as a JournalClockRead in the step's Record.
+// the real clock in a recording clock on the live path so the Now() readings of a step
+// are journaled as JournalClockRead entries in its Record. An idle Tick records nothing.
 // On recovery a replay clock returns those readings in order, making timer-driven
 // transitions wall-clock-independent: the same timers fire at the same recorded
 // instants regardless of the wall clock at recovery time. A timer also survives

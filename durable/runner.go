@@ -111,6 +111,7 @@ type Handle[S comparable, E comparable, C any] struct {
 
 	sched    *state.Scheduler[S, E, C]
 	recClock *recordingClock         // owns the clock-read accumulator and its mutex
+	carried  []state.JournalEntry    // a read recovery took for an older settle, for the next step's Record
 	timers   map[string]pendingTimer // armed `after` timers with absolute deadlines, persisted per checkpoint
 
 	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
@@ -144,7 +145,9 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 	if h.recClock == nil {
 		return nil
 	}
-	return h.recClock.drain()
+	out := append(h.carried, h.recClock.drain()...)
+	h.carried = nil
+	return out
 }
 
 // absorbDrivers feeds a transition's effects into every wired host driver so the
@@ -221,10 +224,10 @@ func (h *Handle[S, E, C]) armNow(before int) time.Time {
 }
 
 // armTimersFrom mirrors the ScheduleAfter/CancelScheduled effects a chained timer
-// transition emitted into the Handle's timer table at the tick instant now, so a
-// timer a fired transition re-armed (the next link in an `after` chain) is tracked
-// for the next checkpoint. It is the Tick-side analog of absorbTimers, sharing the
-// tick's single recorded instant rather than reading the clock again.
+// transition emitted into the Handle's timer table at now, the instant the scheduler
+// armed them, so a timer a fired transition re-armed (the next link in an `after` chain)
+// is tracked for the next checkpoint. It is the Tick-side analog of absorbTimers, using a
+// recorded instant rather than reading the clock again.
 func (h *Handle[S, E, C]) armTimersFrom(effects []state.Effect, now time.Time) {
 	for _, eff := range effects {
 		switch e := eff.(type) {
@@ -239,28 +242,32 @@ func (h *Handle[S, E, C]) armTimersFrom(effects []state.Effect, now time.Time) {
 	}
 }
 
-// tickInstant returns the single clock instant a tick's recorded reads share (the
-// FakeClock does not advance within a tick; a SystemClock's intra-tick drift is
-// sub-timer). It reads the first recorded JournalClockRead. ok is false when the
-// tick recorded no clock read (it fired nothing), so the caller skips reconciliation.
-func tickInstant(entries []state.JournalEntry) (time.Time, bool) {
+// absorbRead returns the clock instant the scheduler armed result i's timers at, in a
+// tick that fired n timers. A Scheduler.Tick reads the clock once to pick each due timer
+// and once to absorb its effects, and a transition reads no clock, so result i's instant
+// is read 2i+1 of the tick's own reads, the last tickReads(n) in entries.
+func absorbRead(entries []state.JournalEntry, i, n int) (time.Time, bool) {
+	var reads []int64
 	for _, e := range entries {
 		if e.Kind == state.JournalClockRead {
-			return time.Unix(0, e.ClockUnixNano).UTC(), true
+			reads = append(reads, e.ClockUnixNano)
 		}
 	}
-	return time.Time{}, false
+	at := len(reads) - tickReads(n) + 2*i + 1
+	if at < 0 || at >= len(reads) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, reads[at]).UTC(), true
 }
 
-// dropFiredTimers removes from the Handle's timer table the timers a Tick fired, so
-// a checkpoint taken after the tick does not persist an already-fired timer. The
-// scheduler removes a due timer before re-firing it; the Handle mirrors that by
-// dropping every timer whose deadline is at or before now, matching the scheduler's
-// dueLocked selection.
-func (h *Handle[S, E, C]) dropFiredTimers(now time.Time) {
-	for id, pt := range h.timers {
-		if !pt.due.After(now) {
-			delete(h.timers, id)
+// dropFiredTimers removes from table every timer the scheduler no longer holds, so a
+// checkpoint taken after a tick does not persist one that fired. It asks the scheduler
+// rather than comparing deadlines, because a timer can come due partway through a tick,
+// or arm and fire within one.
+func dropFiredTimers[S comparable, E comparable, C any](table map[string]pendingTimer, sched *state.Scheduler[S, E, C]) {
+	for id := range table {
+		if !sched.HasPending(id) {
+			delete(table, id)
 		}
 	}
 }
@@ -281,6 +288,9 @@ func (h *Handle[S, E, C]) ID() InstanceID { return h.id }
 // state.WithInitialState) configure the initial configuration. Starting an
 // InstanceID that already exists in the Store reports ErrInstanceExists rather
 // than clobbering its recorded baseline.
+//
+// Start arms the initial state's `after` timers and carries them in the baseline, so a
+// Tick fires them and recovery re-arms them.
 //
 // Start applies the initial entry's domain effects before the baseline write, and only
 // if the entry succeeded: a failed entry still returns a Handle and a nil error, and
@@ -309,6 +319,20 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	castOpts := append([]state.CastOption[S]{state.WithClock[S](recClock), state.WithUnboundedHistory[S]()}, opts...)
 	inst := r.machine.Cast(input, castOpts...)
 
+	// Arm the timers of the state the instance starts in, and carry their deadlines in
+	// the baseline, which is what a recovery re-arms them from. The arming clock read
+	// belongs to no step, so it doesn't reach the first Record.
+	initial := inst.InitialEffects()
+	sched := state.NewScheduler(inst)
+	timers := map[string]pendingTimer{}
+	if hasTimerEffect(initial) {
+		sched.Absorb(ctx, initial)
+		reads := recClock.drain()
+		if n := len(reads); n > 0 {
+			mirrorArmed(timers, initial, time.Unix(0, reads[n-1].ClockUnixNano).UTC())
+		}
+	}
+
 	// Encode a baseline checkpoint at baselineStep (below the first fired step), so the
 	// instance is reconstructable from the Store before any event is fired. The baseline
 	// is the cast snapshot; the tail then accumulates fired steps on top of it. Encoding
@@ -317,9 +341,9 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start snapshot for %q: %w", id, err)
 	}
-	// Wrap the baseline snapshot in a checkpoint envelope (no timers armed yet) so
-	// every checkpoint a recover loads carries the same durable envelope shape.
-	baseEnv, err := marshalCheckpoint(snap, nil, 0)
+	// Wrap the baseline snapshot in a checkpoint envelope so every checkpoint a recover
+	// loads carries the same durable envelope shape.
+	baseEnv, err := marshalCheckpoint(snap, timers, 0)
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start checkpoint envelope for %q: %w", id, err)
 	}
@@ -328,7 +352,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// re-derive these effects after the baseline, so they're at-least-once. An entry that
 	// failed applies none, as a failed Fire dispatches none.
 	if inst.InitialErr() == nil {
-		if err := r.applyStartEffects(ctx, id, dispatchableEffects(baselineStep, inst.InitialEffects())); err != nil {
+		if err := r.applyStartEffects(ctx, id, dispatchableEffects(baselineStep, initial)); err != nil {
 			return nil, err
 		}
 	}
@@ -364,9 +388,9 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		id:       id,
 		inst:     inst,
 		nextStep: 0,
-		sched:    state.NewScheduler(inst),
+		sched:    sched,
 		recClock: recClock,
-		timers:   map[string]pendingTimer{},
+		timers:   timers,
 		svc:      svc,
 		svcBuf:   &svcBuf,
 		actors:   actors,
@@ -469,9 +493,13 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 // due order, re-firing the delayed events through the durable instance and
 // recording the clock readings the tick consumed. A host calls it from its own
 // timer loop (with a real clock) or a test calls it after advancing a fake clock.
-// It records one tick barrier — carrying the consumed clock readings and the
-// count of timers fired — so recovery re-derives the same timers at their
-// recorded instants. It returns the FireResults of the timers it fired, in order.
+// When a timer fired it records one tick barrier — carrying the consumed clock readings
+// and the count of timers fired — so recovery re-derives the same timers at their
+// recorded instants. A tick that fires nothing records nothing. It returns the
+// FireResults of the timers it fired, in order. A timer whose transition fails is
+// consumed and reported only in its FireResult's Err, not in Tick's error. Tick applies
+// the step's domain effects: a failed dispatch, or a KindedEffect that won't marshal,
+// fails the Handle.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -495,25 +523,25 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 		}
 	}
 
+	// A tick that fired nothing changes nothing, so it records nothing, and its clock
+	// read goes with it: replay runs no tick for it, so it consumes no recorded reading.
+	if len(results) == 0 {
+		if h.recClock != nil {
+			h.recClock.drain()
+		}
+		return results, nil
+	}
 	step := h.nextStep
 	rec := Record{Step: step, Tick: true, TickSteps: len(results), Entries: h.drainClock()}
 	// Reconcile the Handle's timer table with the tick: drop the timers it fired and
 	// arm any a chained transition scheduled, so a checkpoint after the tick persists
-	// exactly the still-pending deadlines. The clock does not advance within one tick
-	// (a FakeClock advances only between ticks; a SystemClock's intra-tick drift is
-	// sub-timer), so the tick's recorded reads share one instant: use it for both the
-	// drop (timers due at or before it fired) and any chained re-arm.
-	if now, ok := tickInstant(rec.Entries); ok {
-		h.dropFiredTimers(now)
-		for i := range results {
+	// exactly the still-pending deadlines.
+	for i := range results {
+		if now, ok := absorbRead(rec.Entries, i, len(results)); ok {
 			h.armTimersFrom(results[i].Effects, now)
 		}
 	}
-	// A tick that read no clock and fired nothing records nothing: there is no
-	// nondeterminism to journal and no step was produced.
-	if len(rec.Entries) == 0 && rec.TickSteps == 0 {
-		return results, nil
-	}
+	dropFiredTimers(h.timers, h.sched)
 	var effects []state.Effect
 	for i := range results {
 		effects = append(effects, results[i].Effects...)
@@ -667,12 +695,32 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	actorBuf := make([]state.JournalEntry, 0)
 	actors := r.newActorSystem(inst)
 
-	// armed mirrors the scheduler's pending timers re-established by tail replay,
-	// with their recorded deadlines, so a persisted-but-compacted timer is re-armed
-	// only when the tail did not already re-arm it, and the Handle's table is seeded
-	// with every still-pending timer's deadline for the next checkpoint.
+	// armed mirrors the scheduler's pending timers with their recorded deadlines. It starts
+	// from the timers the checkpoint carries, tail replay updates it, and it seeds the
+	// Handle's table for the next checkpoint.
 	armed := map[string]pendingTimer{}
 
+	// Re-arm the timers pending at the checkpoint before the tail replays, because the
+	// tail can fire them. Their deadlines are absolute, so any fixed instant works as the
+	// arming clock read, and holding the replay clock on one keeps this read from
+	// consuming a recorded reading.
+	const armedAt = 0
+	reEffects, reSeeded, reErr := reArmEffects(r.cfg.eventCodec, persistedTimers, time.Unix(armedAt, 0).UTC())
+	if reErr != nil {
+		return nil, fmt.Errorf("durable: re-arming pending timers for %q: %w", id, reErr)
+	}
+	if len(reEffects) > 0 {
+		repClock.hold(time.Unix(armedAt, 0).UTC())
+		sched.Absorb(ctx, reEffects)
+		repClock.release()
+	}
+	for id, pt := range reSeeded {
+		armed[id] = pt
+	}
+
+	reads := 0 // clock readings through the current Record
+	settles := settleClock{clock: repClock}
+	carry := false
 	for i := range tail {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
 		// state short of the journal, so check it before each Record.
@@ -680,6 +728,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
 		rec := &tail[i]
+		reads += clockReadCount(rec)
+		settles.next(rec)
 		switch {
 		case hasActorEntry(rec):
 			// Re-fire each recorded parent transition the live delivery drove, in
@@ -705,26 +755,32 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 				}
 				settled = append(settled, effects...)
 			}
+			// Arm the timers the settle scheduled, as the live RunService did.
+			if hasTimerEffect(settled) {
+				at, lost := settles.absorb(rec, reads, func() { sched.Absorb(ctx, settled) })
+				mirrorArmed(armed, settled, at)
+				carry = carry || lost
+			}
 			if err := r.dispatchReplayEffects(ctx, id, rec.Step, settled); err != nil {
 				return nil, err
 			}
+		case rec.Tick && rec.TickSteps == 0:
+			// Only an older journal holds a tick that fired nothing. Don't tick: a timer
+			// re-armed from a checkpoint could be due by now, and the Record says otherwise.
 		case rec.Tick:
 			// Re-derive the timers the live tick fired: ticking the replay clock
 			// returns the recorded readings, so the same deadlines come due and the
 			// same timers fire, at their recorded instants. Mirror the tick into the
 			// armed table — drop the timers it fired, arm any a chained transition
 			// re-scheduled — so the deadline table tracks the still-pending set.
+			repClock.skipTo(reads - tickReads(rec.TickSteps))
 			tickRes := sched.Tick(ctx)
-			if now, ok := tickInstant(rec.Entries); ok {
-				for id, pt := range armed {
-					if !pt.due.After(now) {
-						delete(armed, id)
-					}
-				}
-				for ri := range tickRes {
+			for ri := range tickRes {
+				if now, ok := absorbRead(rec.Entries, ri, rec.TickSteps); ok {
 					mirrorArmed(armed, tickRes[ri].Effects, now)
 				}
 			}
+			dropFiredTimers(armed, sched)
 			var ticked []state.Effect
 			for ri := range tickRes {
 				ticked = append(ticked, tickRes[ri].Effects...)
@@ -753,13 +809,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			// the recorded clock read the Absorb consumed (captured at the recorded
 			// step rather than the live wall clock).
 			if hasTimerEffect(res.Effects) {
+				repClock.skipTo(reads - 1)
 				sched.Absorb(ctx, res.Effects)
-				// The step's recorded clock read (the one the live Absorb consumed) is
-				// the instant to derive each re-armed deadline from, so the mirror uses
-				// recorded time, not the live wall clock.
-				if now, ok := tickInstant(rec.Entries); ok {
-					mirrorArmed(armed, res.Effects, now)
-				}
+				// The recorded read the Absorb consumed is the instant to derive each
+				// deadline from, so the mirror uses recorded time, not the wall clock.
+				mirrorArmed(armed, res.Effects, repClock.lastRead())
 			}
 			// Arm this step's services so a service it entered is in flight for the
 			// recorded settlement that follows, mirroring the live Fire path.
@@ -778,7 +832,15 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 
 	// Drain any clock readings the replay re-recorded after the cursor exhausted
 	// (none in the common case where replay consumes exactly the recorded
-	// readings): they belong to no new step and must not leak into the next Fire.
+	// readings): they belong to no new step and must not leak into the next Fire. The
+	// exception is a read an older settle lost: the next step's Record carries it, so a
+	// later replay arms that settle's timers at the same instant. Skip the cursor to the
+	// end, so no reading left in the tail reaches the live clock.
+	repClock.skipTo(reads)
+	var carried []state.JournalEntry
+	if carry {
+		carried = append(carried, buf...)
+	}
 	buf = buf[:0]
 
 	// Arm the live actors at the resume point from the final configuration's
@@ -790,28 +852,6 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	if actors != nil {
 		actors.Absorb(ctx, inst.StartEffects())
 	}
-
-	// Re-arm any timer that was pending at the checkpoint but whose arming
-	// ScheduleAfter was compacted out of the tail, so it survives compaction: the
-	// tail replay could not re-arm it (its arm is gone), so re-arm it here at its
-	// persisted absolute deadline. Already-armed timers (re-established by the tail)
-	// are skipped, so a timer the tail still carried is never double-armed. The
-	// remaining delay is the persisted deadline minus the recovery clock's now, so
-	// the re-armed timer fires at its recorded instant — an already-elapsed deadline
-	// arms as immediately due and fires on the next Tick.
-	reEffects, reSeeded, reErr := reArmEffects(r.cfg.eventCodec, persistedTimers, armed, repClock.Now())
-	if reErr != nil {
-		return nil, fmt.Errorf("durable: re-arming pending timers for %q: %w", id, reErr)
-	}
-	if len(reEffects) > 0 {
-		sched.Absorb(ctx, reEffects)
-	}
-	for id, pt := range reSeeded {
-		armed[id] = pt
-	}
-	// The re-arm reads the recovery clock to compute remaining delays; that reading
-	// belongs to no recorded step and must not leak into the next Fire's Record.
-	buf = buf[:0]
 
 	// The next step ordinal continues past the highest assigned step. Step ordinals
 	// are assigned monotonically: each Record consumes one ordinal regardless of how
@@ -840,6 +880,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		nextStep: next,
 		sched:    sched,
 		recClock: recClock,
+		carried:  carried,
 		timers:   armed,
 		svc:      svc,
 		svcBuf:   &svcBuf,
