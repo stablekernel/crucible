@@ -54,11 +54,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   The same record is still an idempotent no-op, and an Append with
   `WithIdempotencyKey` still dedups on the key alone. A `FileStore` ledger line from
   before this change has no digest, so its step keeps the old no-op behavior. A
-  recovered instance that reuses a step number now fails with `ErrStepConflict`
-  instead of silently dropping the step.
+  recovered instance that reuses a step number with a different record now fails with
+  `ErrStepConflict` instead of silently dropping the step.
 
 ### Fixed
 
+- **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
+  now records the step that follows it, in a `nextStep` field of its envelope. Recovery
+  used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a
+  recorded step, and high past a multi-Trace actor delivery, which skipped ordinals. A
+  checkpoint written before this change can still reuse a step: a different record fails
+  with `ErrStepConflict`, and an identical one is acknowledged without a new Record.
 - **`WithEventData` survives recovery.** `Handle.Fire` records the payload in the new
   `Record.EventData` and `Record.EventDataError`, and `Recover` and `StateAt` supply it
   on replay. This needs `state.FireEventData`, so `durable` requires `state` v1.1.0 or

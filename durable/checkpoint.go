@@ -61,8 +61,8 @@ type pendingTimerWire struct {
 }
 
 // checkpointEnvelope is the durable layer's wrapper around the bytes a Store keeps
-// for a checkpoint: the opaque state.Snapshot bytes plus the pending-timer table
-// armed at the checkpoint instant. The durable layer fully owns the checkpoint
+// for a checkpoint: the opaque state.Snapshot bytes, the pending-timer table armed at
+// the checkpoint instant, and the next step ordinal. The durable layer fully owns the checkpoint
 // bytes (it both marshals them at Checkpoint and unmarshals them at recover), so
 // wrapping the kernel snapshot in this envelope is additive and invisible to the
 // Store, which treats checkpoint bytes as opaque. A checkpoint with no armed timer
@@ -77,14 +77,21 @@ type checkpointEnvelope struct {
 	// recovery whose compacted tail no longer carries the arming ScheduleAfter can
 	// still re-arm them at their recorded instants.
 	Timers []pendingTimerWire `json:"timers,omitempty"`
+	// NextStep is the step ordinal the first Record after this checkpoint takes. A
+	// recovery whose compacted tail is empty has no Record to derive it from, and the
+	// restored Trace count doesn't match the ordinals: a tick barrier consumes one and
+	// leaves no Trace, and an actor delivery can leave several Traces on one ordinal.
+	// Zero means none was recorded: a Start baseline, or a checkpoint from before this
+	// field.
+	NextStep int `json:"nextStep,omitempty"`
 }
 
 // marshalCheckpoint wraps the marshaled kernel snapshot and the armed pending
 // timers into a checkpoint envelope's bytes. Timers are emitted in scheduleID
 // order so the persisted form is deterministic regardless of the map iteration
-// order they were collected in.
-func marshalCheckpoint(snap []byte, timers map[string]pendingTimer) ([]byte, error) {
-	env := checkpointEnvelope{Snapshot: snap}
+// order they were collected in. nextStep is the ordinal that follows the checkpoint.
+func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int) ([]byte, error) {
+	env := checkpointEnvelope{Snapshot: snap, NextStep: nextStep}
 	if len(timers) > 0 {
 		ids := make([]string, 0, len(timers))
 		for id := range timers {
@@ -113,18 +120,19 @@ func marshalCheckpoint(snap []byte, timers map[string]pendingTimer) ([]byte, err
 }
 
 // unmarshalCheckpoint splits a checkpoint envelope's bytes back into the kernel
-// snapshot bytes and the persisted pending-timer wires. It tolerates a bare
-// (pre-envelope) snapshot: bytes that are not a checkpoint envelope are returned
-// as the snapshot with no timers, so an older checkpoint still restores. A
-// checkpoint envelope is distinguished by carrying a non-empty "snapshot" member.
-func unmarshalCheckpoint(b []byte) ([]byte, []pendingTimerWire, error) {
+// snapshot bytes, the persisted pending-timer wires and the next step ordinal. It
+// tolerates a bare (pre-envelope) snapshot: bytes that are not a checkpoint envelope
+// are returned as the snapshot with no timers and a zero ordinal, so an older
+// checkpoint still restores. A checkpoint envelope is distinguished by carrying a
+// non-empty "snapshot" member.
+func unmarshalCheckpoint(b []byte) ([]byte, []pendingTimerWire, int, error) {
 	var env checkpointEnvelope
 	if err := json.Unmarshal(b, &env); err != nil || len(env.Snapshot) == 0 {
 		// Not an envelope (or an envelope without the wrapped snapshot member): treat
 		// the bytes as a bare kernel snapshot, the pre-timer-survival checkpoint form.
-		return b, nil, nil
+		return b, nil, 0, nil
 	}
-	return env.Snapshot, env.Timers, nil
+	return env.Snapshot, env.Timers, env.NextStep, nil
 }
 
 // decodeTimerEvent decodes a persisted timer event wire back into the machine's
