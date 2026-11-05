@@ -100,9 +100,18 @@ Two stdlib-only reference implementations ship in-tree:
   retains the full record history (enabling time-travel below).
 - **`FileStore`** (`NewFileStore`): on-disk, a directory of per-instance
   subdirectories, each an append-only journal, an atomic checkpoint, an
-  idempotency ledger, and a dispatched-effect log. Each append flushes to stable
-  storage; each checkpoint uses write-temp-plus-rename for crash-safe atomicity.
+  idempotency ledger, a dispatched-effect log and, once fenced, a `fence` file.
+  Each append flushes to stable storage; each checkpoint uses
+  write-temp-plus-rename for crash-safe atomicity.
   Use it for durability across restarts without a database.
+
+A write can carry a fence token (`WithFence`, `WithCheckpointFence`). A `Store`
+keeps the highest token it has seen for an instance and refuses a lower one with
+`ErrFenced`, writing nothing, so an owner that lost an instance can't keep writing
+to it. `WithOwnerFence` sets the token a `Runner` carries on every `Append` and
+`Checkpoint`. `Append` also rejects a different record at a recorded step with
+`ErrStepConflict`. An out-of-tree `Store` reads the token with `AppendFence` and
+`CheckpointFence`.
 
 Persistent database backends (PostgreSQL, DynamoDB, ...) implement `Store` out of
 tree, so their drivers never burden this module's dependency or vulnerability
