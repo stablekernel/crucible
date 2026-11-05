@@ -91,6 +91,7 @@ Two stdlib-only reference implementations ship in-tree:
 - **`FileStore`** (`NewFileStore`): on-disk, a directory of per-instance
   subdirectories, each an append-only journal, an atomic checkpoint, an
   idempotency ledger, a dispatched-effect log and, once fenced, a `fence` file.
+  `Append` refuses a Record over its 16 MiB line limit with `ErrRecordTooLarge`.
   Each append flushes to stable storage; each checkpoint uses
   write-temp-plus-rename for crash-safe atomicity.
   Use it for durability across restarts without a database.
@@ -126,8 +127,13 @@ in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 
 ## A note on serialized payloads
 
-Events, service done-data, actor done-data, and actor messages are recorded as
-their JSON form. A parent reducer that type-asserts a non-JSON Go type from
-`AssignCtx.Event` observes the JSON-decoded shape on a replayed `onDone`. A
+Events, service done-data, actor done-data, and actor messages are recorded as their
+JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
+observes the JSON-decoded shape on a replayed `onDone`. A `WithEventData` payload is
+JSON-decoded live as well as on replay, so a reducer gets the same value both ways: a
+struct is a map and an integer a `float64`. An error stays an error with the same
+message, with any invalid UTF-8 replaced. `Handle.Fire` refuses a payload it can't
+record, or one over `WithMaxEventDataBytes` (8 MiB by default), with
+`ErrEventDataEncoding`, and nothing applies. A
 typed-codec option to carry the concrete Go value across the journal boundary is
 reserved for a later, additive change.

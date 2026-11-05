@@ -22,6 +22,8 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	checkpointEvery int
 	// eventCodec reconstructs a recorded event for replay; it defaults to JSON.
 	eventCodec EventCodec[E]
+	// maxEventData caps a WithEventData payload's JSON form, in bytes.
+	maxEventData int
 	// clock is the real time seam wrapped by the recording clock on the live path
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
@@ -145,6 +147,25 @@ func WithEffectHandler[S comparable, E comparable, C any](h EffectHandler) Optio
 	}
 }
 
+// defaultMaxEventDataBytes keeps a payload alone inside FileStore's 16 MiB journal line,
+// after a Record encodes its JSON form in base64.
+const defaultMaxEventDataBytes = 8 << 20
+
+// WithMaxEventDataBytes sets the largest state.WithEventData payload Handle.Fire
+// accepts, measured as its JSON form, or for an error, its message's. A larger one
+// refuses the Fire with ErrEventDataEncoding before the kernel runs. It defaults to
+// 8 MiB, which leaves a payload room in FileStore's journal line; raise it for a Store
+// with no such limit. The cap covers the payload only, so a Record can still exceed a
+// line with its Event, Entries or Effects, and FileStore then reports ErrRecordTooLarge
+// after the kernel ran. A non-positive n is ignored.
+func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if n > 0 {
+			c.maxEventData = n
+		}
+	}
+}
+
 // WithOwnerFence sets the fence token a Runner carries on every Append and
 // Checkpoint, so a Handle that has lost the instance to a newer owner gets ErrFenced
 // instead of committing. Pass the token the host's lease issued; a retry by the same
@@ -168,6 +189,8 @@ func resolveRunner[S comparable, E comparable, C any](opts ...Option[S, E, C]) r
 	c := runnerConfig[S, E, C]{
 		eventCodec: jsonEventCodec[E]{},
 		clock:      state.SystemClock(),
+
+		maxEventData: defaultMaxEventDataBytes,
 	}
 	for _, opt := range opts {
 		opt(&c)
