@@ -136,6 +136,16 @@ opts in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 `WithHistory`); `StateAt` falls back to `Load` (latest checkpoint plus tail)
 otherwise.
 
+## Handles across goroutines
+
+`Fire`, `Tick`, `RunService` and `DeliverToActor` are safe to call from different
+goroutines: each holds the Handle's lock for the whole step. A host callback must not
+call back into its Handle. `Instance()` is outside the lock.
+
+A step that may not have been recorded fails the Handle with `ErrHandleFailed`. `Recover`
+a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a
+newer owner holds the instance, so stop.
+
 ## Caveat: serialized payloads
 
 Events, service done-data, actor done-data, and actor messages are recorded as their
