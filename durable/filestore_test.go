@@ -104,7 +104,7 @@ func TestFileStore_Append_PerStepIdempotency(t *testing.T) {
 	}
 }
 
-func TestFileStore_Append_FirstWriterWins(t *testing.T) {
+func TestFileStore_Append_DifferentRecordConflicts(t *testing.T) {
 	ctx := context.Background()
 	st := newFileStore(t)
 	const id = durable.InstanceID("inst")
@@ -113,8 +113,8 @@ func TestFileStore_Append_FirstWriterWins(t *testing.T) {
 	if _, err := st.Append(ctx, id, first); err != nil {
 		t.Fatalf("Append first: %v", err)
 	}
-	if _, err := st.Append(ctx, id, recOf(0, "usurper")); err != nil {
-		t.Fatalf("Append second: %v", err)
+	if _, err := st.Append(ctx, id, recOf(0, "usurper")); !errors.Is(err, durable.ErrStepConflict) {
+		t.Fatalf("Append second: err = %v, want ErrStepConflict", err)
 	}
 
 	_, tail, err := st.Load(ctx, id)

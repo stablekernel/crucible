@@ -131,7 +131,7 @@ func TestMemStore_Append_PerStepIdempotency(t *testing.T) {
 	}
 }
 
-func TestMemStore_Append_FirstWriterWins(t *testing.T) {
+func TestMemStore_Append_DifferentRecordConflicts(t *testing.T) {
 	ctx := context.Background()
 	st := durable.NewMemStore()
 	const id = durable.InstanceID("inst")
@@ -140,9 +140,10 @@ func TestMemStore_Append_FirstWriterWins(t *testing.T) {
 	if _, err := st.Append(ctx, id, first); err != nil {
 		t.Fatalf("Append first: %v", err)
 	}
-	// A second append at the same step with different content must not overwrite.
-	if _, err := st.Append(ctx, id, recOf(0, "usurper")); err != nil {
-		t.Fatalf("Append second: %v", err)
+	// A second append at the same step with different content must not overwrite,
+	// and must not be reported as applied.
+	if _, err := st.Append(ctx, id, recOf(0, "usurper")); !errors.Is(err, durable.ErrStepConflict) {
+		t.Fatalf("Append second: err = %v, want ErrStepConflict", err)
 	}
 
 	_, tail, err := st.Load(ctx, id)

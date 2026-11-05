@@ -432,9 +432,10 @@ func TestRunner_EffectDispatch_NonDispatchStore_NoOp(t *testing.T) {
 	}
 }
 
-// timerMachine emits a kernel driver effect (a delayed `after` transition) on the
-// same step a domain effect fires, so the dispatcher must route the driver effect
-// to the Scheduler and only the domain effect to the handler.
+// timerNotifyMachine emits a kernel driver effect (a delayed `after` transition) on
+// the same step a domain effect fires, so the dispatcher must route the driver
+// effect to the Scheduler and only the domain effect to the handler. The timer
+// transition emits a second notify, which only a test that ticks observes.
 func timerNotifyMachine() *state.Machine[string, string, *runCtx] {
 	return state.ForgeFor[*runCtx]("timer").
 		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
@@ -445,7 +446,7 @@ func timerNotifyMachine() *state.Machine[string, string, *runCtx] {
 		State("done").Final().
 		Initial("idle").
 		Transition("idle").On("go").GoTo("waiting").Do("notify").
-		Transition("waiting").After(time.Second).GoTo("done").
+		Transition("waiting").After(time.Second).GoTo("done").Do("notify").
 		Quench()
 }
 

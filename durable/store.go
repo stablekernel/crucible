@@ -16,11 +16,13 @@ type InstanceID string
 // (Entries), the effects the step emitted (Effects, each carrying a stamped
 // EffectID for idempotent dispatch), and optionally a full marshaled Snapshot
 // checkpoint taken at this step. A Record is identified within its instance by
-// its Step ordinal; appending the same Step twice is a no-op (see Store.Append).
+// its Step ordinal; appending the same Record at the same Step twice is a no-op,
+// and appending a different one is rejected (see Store.Append).
 type Record struct {
 	// Step is the Fire ordinal this Record was produced at, indexing the
 	// instance's recorded Traces. It is the per-instance idempotency key: a
-	// Store treats a second Append at the same Step as already-applied.
+	// Store treats a second Append of the same Record at the same Step as
+	// already-applied.
 	Step int
 
 	// Event is the structured, JSON form of the driving event the Fire at this
@@ -80,14 +82,31 @@ type Record struct {
 // that same Step order. A Store preserves the relative order of Entries and
 // Effects within each Record verbatim.
 //
-// Idempotency: Append is idempotent per (InstanceID, Step). Appending a Step
-// that is already present is a no-op — the stored Record is retained unchanged
-// and the original append sequence is returned — so an at-least-once caller
-// (a crash-and-retry between persist and acknowledge) never double-applies a
-// step. The first writer of a Step wins. The idempotency record for a Step
-// survives a Checkpoint that compacts that Step away, so a delayed retry of an
-// already-checkpointed Step is still recognized as a no-op rather than rejected
-// as out of order.
+// Idempotency: Append is idempotent per (InstanceID, Step). Appending the same
+// Record at a Step already present is a no-op — the stored Record is retained
+// unchanged and the original append sequence is returned — so an at-least-once
+// caller (a crash-and-retry between persist and acknowledge) never double-applies
+// a step. Appending a different Record at that Step is rejected with
+// ErrStepConflict, because two writers disagree about the step and dropping one
+// would acknowledge a step the journal doesn't hold. The idempotency record for a
+// Step survives a Checkpoint that compacts that Step away, so a delayed retry of an
+// already-checkpointed Step is still recognized rather than rejected as out of
+// order, and a different Record there is still a conflict. Two Records are the
+// same when every field matches, with a nil and an empty field counting as equal.
+// An Append carrying WithIdempotencyKey (a backend reads it with
+// AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
+// Record: no comparison is made.
+//
+// Fencing: an Append or Checkpoint may carry a fence token (WithFence,
+// WithCheckpointFence; a backend reads it with AppendFence and CheckpointFence). A
+// Store keeps the highest token it has seen per instance, durably. A write whose
+// token is lower returns ErrFenced and writes nothing; this check comes before
+// every other. A token that passes raises the highest even if the write then fails
+// another check, so a new owner's refused first write still fences the old owner.
+// A write with no token counts as token zero, so once an instance has
+// been fenced an unfenced write is refused. An equal token passes, so a retry by
+// the same owner still works. The token is the fence alone: two writers on one
+// token are told apart by ErrStepConflict.
 //
 // Atomicity: each Append and each Checkpoint is atomic. A concurrent Load never
 // observes a partially written Record or a checkpoint torn against its tail; it
@@ -103,10 +122,12 @@ type Record struct {
 // All methods are safe for concurrent use by multiple goroutines.
 type Store interface {
 	// Append persists rec for the instance and returns its monotonic per-instance
-	// append sequence. Appending a Step already recorded for the instance is a
-	// no-op that returns the existing sequence (idempotency). Records must be
+	// append sequence. Appending the same Record at a Step already recorded for the
+	// instance is a no-op that returns the existing sequence (idempotency); a
+	// different Record there is rejected with ErrStepConflict. Records must be
 	// appended in increasing Step order; an out-of-order Step is rejected with
-	// ErrStepOutOfOrder.
+	// ErrStepOutOfOrder. A fence token below the highest seen is rejected with
+	// ErrFenced.
 	Append(ctx context.Context, id InstanceID, rec Record, opts ...AppendOption) (seq int64, err error)
 
 	// Load returns the instance's latest checkpoint Snapshot bytes (nil if the
@@ -119,6 +140,7 @@ type Store interface {
 	// compacts the journal/effect tail through that step, so a subsequent Load
 	// returns this Snapshot plus only the Records appended after throughStep. A
 	// Checkpoint that does not advance throughStep beyond the current checkpoint
-	// is rejected with ErrCheckpointNotAdvancing.
+	// is rejected with ErrCheckpointNotAdvancing. A fence token below the highest
+	// seen is rejected with ErrFenced.
 	Checkpoint(ctx context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error
 }

@@ -2,6 +2,9 @@ package durable
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -60,9 +63,11 @@ type memInstance struct {
 	// non-idempotent Append.
 	seq int64
 	// applied maps an append's idempotency key (the Record Step by default, or an
-	// explicit WithIdempotencyKey value) to the seq assigned on first append, so
-	// a re-append is a no-op returning that seq.
-	applied map[string]int64
+	// explicit WithIdempotencyKey value) to what the first append recorded, so a
+	// re-append is a no-op returning that seq and a different Record is a conflict.
+	applied map[string]appliedRecord
+	// fence is the highest fence token seen for the instance. Zero means none.
+	fence int64
 	// dispatched is the set of effect ids the Runner has applied through its
 	// effect handler. It backs the exactly-once dedup: an effect whose id is
 	// present is skipped on (re)dispatch. It survives checkpoint compaction so a
@@ -88,7 +93,7 @@ func (s *MemStore) instanceLocked(id InstanceID) *memInstance {
 		inst = &memInstance{
 			throughStep: noCheckpoint,
 			maxStep:     noRecord,
-			applied:     make(map[string]int64),
+			applied:     make(map[string]appliedRecord),
 			dispatched:  make(map[string]struct{}),
 		}
 		if s.cfg.initialCapacity > 0 {
@@ -103,20 +108,26 @@ func (s *MemStore) instanceLocked(id InstanceID) *memInstance {
 // is the Record Step by default or the WithIdempotencyKey value when supplied.
 func (s *MemStore) Append(_ context.Context, id InstanceID, rec Record, opts ...AppendOption) (int64, error) {
 	cfg := resolveAppend(opts...)
-	key := cfg.idempotencyKey
-	if key == "" {
-		key = fmt.Sprintf("step:%d", rec.Step)
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	inst := s.instanceLocked(id)
 
+	if cfg.fence < inst.fence {
+		return 0, fencedError(id, cfg.fence, inst.fence)
+	}
+	inst.fence = cfg.fence
+
+	key, digest, err := appendKey(cfg, rec)
+	if err != nil {
+		return 0, err
+	}
+
 	// Idempotency: a re-append of an already-applied key is a no-op returning the
-	// original sequence. The first writer of the key wins.
+	// original sequence, unless it carries a different Record.
 	if existing, ok := inst.applied[key]; ok {
-		return existing, nil
+		return existing.check(id, rec.Step, digest)
 	}
 
 	// Strict per-instance Step ordering: a new Step must exceed every recorded
@@ -132,7 +143,7 @@ func (s *MemStore) Append(_ context.Context, id InstanceID, rec Record, opts ...
 	}
 	inst.maxStep = rec.Step
 	inst.seq++
-	inst.applied[key] = inst.seq
+	inst.applied[key] = appliedRecord{seq: inst.seq, digest: digest}
 	return inst.seq, nil
 }
 
@@ -195,15 +206,20 @@ func (s *MemStore) History(_ context.Context, id InstanceID) ([]byte, []Record, 
 // Checkpoint implements Store. It persists snapshot as the instance's checkpoint at
 // throughStep and compacts the tail through that step. throughStep must advance
 // beyond the current checkpoint. Time-travel retention is a store-level capability
-// (NewMemStore with WithHistory), so the per-checkpoint CheckpointOptions do not
-// change what Load returns here.
+// (NewMemStore with WithHistory), so no CheckpointOption changes what Load returns
+// here.
 func (s *MemStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error {
-	_ = resolveCheckpoint(opts...) // no per-checkpoint option defined; history is store-level (WithHistory)
+	cfg := resolveCheckpoint(opts...)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	inst := s.instanceLocked(id)
+
+	if cfg.fence < inst.fence {
+		return fencedError(id, cfg.fence, inst.fence)
+	}
+	inst.fence = cfg.fence
 
 	if throughStep <= inst.throughStep {
 		return fmt.Errorf("%w: throughStep %d does not advance past checkpoint step %d for instance %q",
@@ -273,6 +289,53 @@ func (s *MemStore) Dispatched(_ context.Context, id InstanceID) (map[string]bool
 		out[eid] = true
 	}
 	return out, nil
+}
+
+// appliedRecord is what a Store keeps for an applied idempotency key: the append
+// sequence, and a digest of the Record so a different one is caught even after a
+// Checkpoint compacts the Record away. The digest is empty when the Record can't be
+// compared: an explicit WithIdempotencyKey, or a ledger line from before digests.
+type appliedRecord struct {
+	seq    int64
+	digest string
+}
+
+// check resolves a re-append of an applied key: the original sequence for the same
+// Record, ErrStepConflict for a different one.
+func (a appliedRecord) check(id InstanceID, step int, digest string) (int64, error) {
+	if a.digest != "" && digest != "" && a.digest != digest {
+		return 0, fmt.Errorf("%w: step %d for instance %q", ErrStepConflict, step, id)
+	}
+	return a.seq, nil
+}
+
+// appendKey returns the idempotency key for an Append, and the digest to compare
+// when that key is the Step. An explicit WithIdempotencyKey gets no digest.
+func appendKey(cfg appendConfig, rec Record) (key, digest string, err error) {
+	if cfg.idempotencyKey != "" {
+		return cfg.idempotencyKey, "", nil
+	}
+	digest, err = recordDigest(rec)
+	if err != nil {
+		return "", "", err
+	}
+	return fmt.Sprintf("step:%d", rec.Step), digest, nil
+}
+
+// recordDigest returns a stable digest of rec. It digests the clone because
+// cloneRecord turns an empty field into nil, so the two compare equal.
+func recordDigest(rec Record) (string, error) {
+	b, err := json.Marshal(cloneRecord(rec))
+	if err != nil {
+		return "", fmt.Errorf("crucible/durable: digesting record step %d: %w", rec.Step, err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// fencedError reports a write whose token is below the highest seen.
+func fencedError(id InstanceID, token, highest int64) error {
+	return fmt.Errorf("%w: token %d is below %d for instance %q", ErrFenced, token, highest, id)
 }
 
 // cloneBytes returns a copy of b, or nil for a nil input, so a returned snapshot is

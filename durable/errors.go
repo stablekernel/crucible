@@ -13,6 +13,17 @@ var (
 	// idempotent re-append of an already-recorded Step).
 	ErrStepOutOfOrder = errors.New("crucible/durable: record step out of order")
 
+	// ErrStepConflict is reported by Store.Append when a Step is already recorded
+	// with a different Record: the writer's view of the instance has diverged from
+	// the journal, usually because another writer got there first, and nothing was
+	// written.
+	ErrStepConflict = errors.New("crucible/durable: step already recorded with a different record")
+
+	// ErrFenced is reported by Store.Append and Store.Checkpoint for a write whose
+	// fence token is lower than the highest the Store has seen for the instance:
+	// a newer owner has taken the instance over. Nothing is written.
+	ErrFenced = errors.New("crucible/durable: write fenced by a newer token")
+
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.
 	ErrCheckpointNotAdvancing = errors.New("crucible/durable: checkpoint does not advance")

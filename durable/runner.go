@@ -272,7 +272,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start checkpoint envelope for %q: %w", id, err)
 	}
-	if err := r.store.Checkpoint(ctx, id, baseEnv, baselineStep); err != nil {
+	if err := r.store.Checkpoint(ctx, id, baseEnv, baselineStep, WithCheckpointFence(r.cfg.fence)); err != nil {
 		return nil, fmt.Errorf("durable: checkpointing start baseline for %q: %w", id, err)
 	}
 
@@ -474,7 +474,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		}
 		rec.Snapshot = env
 	}
-	if _, err := h.runner.store.Append(ctx, h.id, *rec); err != nil {
+	if _, err := h.runner.store.Append(ctx, h.id, *rec, WithFence(h.runner.cfg.fence)); err != nil {
 		return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
 	}
 	return nil
@@ -488,7 +488,7 @@ func (h *Handle[S, E, C]) checkpointStep(ctx context.Context, step int, rec *Rec
 	if !h.checkpointDue(step) {
 		return nil
 	}
-	if err := h.runner.store.Checkpoint(ctx, h.id, rec.Snapshot, step); err != nil {
+	if err := h.runner.store.Checkpoint(ctx, h.id, rec.Snapshot, step, WithCheckpointFence(h.runner.cfg.fence)); err != nil {
 		return fmt.Errorf("durable: checkpointing step %d for %q: %w", step, h.id, err)
 	}
 	return nil
