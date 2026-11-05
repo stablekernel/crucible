@@ -29,8 +29,8 @@ import (
 // The Runner wraps the kernel's reusable host driver, state.ServiceRunner, which
 // turns StartService / StopService effects into real ServiceFn executions and
 // re-fires each result through the invocation's onDone / onError event. On the live
-// path RunService delegates to ServiceRunner.Run (resolve + run + settle), reads
-// the raw outcome the service produced, and journals it as a JournalServiceResult
+// path RunService delegates to ServiceRunner.Tick (resolve + run + settle), reads
+// the outcome in its JSON-decoded form, and journals it as a JournalServiceResult
 // correlated by the invocation id. On recovery the recorded outcomes are replayed
 // in order through ServiceRunner.SettleDone / SettleError — the same settle methods
 // the live run drove — so the kernel re-fires the identical onDone / onError event
@@ -55,7 +55,7 @@ type serviceResultPayload struct {
 	// Result is the JSON-encoded successful return of the ServiceFn, present for a
 	// SettleDone outcome. It is decoded to a Go value and re-fired through onDone so
 	// the transition's Assign reads it from AssignCtx.Event exactly as on the live
-	// run.
+	// run, which settles with the same decoded form (see replayableOutcome).
 	Result json.RawMessage `json:"result,omitempty"`
 	// Error is the failure message for a SettleError outcome. It is reconstructed
 	// into an error and re-fired through onError so the transition's Assign reads it
@@ -80,9 +80,12 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // records its outcome, and settles it — firing the invocation's onDone (on
 // success) or onError (on failure) event through the durable instance and
 // recording the produced step. The service is resolved and executed against the
-// registry supplied with WithServiceRegistry; its raw result or error is journaled
+// registry supplied with WithServiceRegistry; its result or error is journaled
 // as a JournalServiceResult correlated by id so recovery replays it without
-// re-invoking the service.
+// re-invoking the service. The outcome reaches the machine JSON-decoded, live as on
+// replay, and the journal holds that form: a struct is a map, an integer a float64 that
+// loses precision above 2^53, and an error an error with the same message, which
+// errors.Is no longer matches.
 //
 // It returns the routed FireResult and true, or the zero result and false when id
 // names no in-flight service (already settled, stopped, or never started). It returns
@@ -90,11 +93,13 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // before the service started.
 //
 // Once the service has run, it returns true with any error. A failed Append, a result
-// that won't encode, or a ctx that ended during the service returns ErrHandleFailed and
-// records nothing: a recovered Handle has the service in flight again, and RunService
+// or KindedEffect that won't encode, or a ctx that ended during the service returns
+// ErrHandleFailed and records nothing: a recovered Handle has the service in flight again, and RunService
 // runs it a second time. That error also matches the cause, so test ErrHandleFailed
 // first: it alone means Recover is needed. A failed Checkpoint returns the plain error,
 // and the result is recorded.
+// A failed effect dispatch also returns ErrHandleFailed, but the result is recorded:
+// Recover retries the effect and the service doesn't re-run.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -139,12 +144,43 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		*h.svcBuf = append(*h.svcBuf, entry)
 	}
 
-	step := h.nextStep
-	rec := Record{Step: step, Entries: h.drainServices()}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
+	rec := Record{Step: h.nextStep, Entries: h.drainServices()}
+	if err := h.commitStep(ctx, &rec, res.Effects); err != nil {
 		return res, true, err
 	}
 	return res, true, nil
+}
+
+// replayableOutcome gives a service's outcome the form a replay supplies, so the live
+// settle and a replay can't differ: a result in its JSON-decoded form, an error as an
+// error with the same message once any invalid UTF-8 is replaced, which is what the
+// round trip through JSON does. An Error method that panics settles with a message
+// saying so. A result with no JSON form is left as it is, and fails
+// the Handle when recording it fails.
+func replayableOutcome(result any, err error) (any, error) {
+	if err != nil {
+		msg, merr := errorMessage(err)
+		if merr != nil {
+			return nil, merr
+		}
+		b, jerr := marshalPayload(msg)
+		if jerr != nil {
+			return nil, errors.New(msg)
+		}
+		if jerr = json.Unmarshal(b, &msg); jerr != nil {
+			return nil, errors.New(msg)
+		}
+		return nil, errors.New(msg)
+	}
+	b, jerr := marshalPayload(result)
+	if jerr != nil {
+		return result, nil
+	}
+	var decoded any
+	if jerr = json.Unmarshal(b, &decoded); jerr != nil {
+		return result, nil
+	}
+	return decoded, nil
 }
 
 // recordServiceOutcome builds the JournalServiceResult entry for a just-settled
@@ -157,7 +193,7 @@ func recordServiceOutcome(id string, lastResult func() (any, bool), lastErr erro
 		msg := lastErr.Error()
 		sp.Error = &msg
 	} else if result, ok := lastResult(); ok {
-		raw, err := json.Marshal(result)
+		raw, err := marshalPayload(result)
 		if err != nil {
 			return state.JournalEntry{}, fmt.Errorf("marshaling service result: %w", err)
 		}
@@ -179,32 +215,34 @@ func recordServiceOutcome(id string, lastResult func() (any, bool), lastErr erro
 // the recorded payload and calls SettleDone (with the recorded result) or
 // SettleError (with the reconstructed error), so the kernel re-fires the same
 // onDone / onError event with the same data and re-derives identical context. It
-// reports an error only when the recorded entry cannot be decoded or names no
+// returns the effects the settle emitted, and reports an error only when the recorded entry cannot be decoded or names no
 // in-flight service (a corrupt or mis-ordered journal).
-func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) error {
+func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) ([]state.Effect, error) {
 	if svc == nil {
-		return errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
+		return nil, errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
 	}
 	var sp serviceResultPayload
 	if err := json.Unmarshal(entry.Payload, &sp); err != nil {
-		return fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
+		return nil, fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
 	}
 	if sp.Error != nil {
-		if _, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error)); !ok {
-			return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+		res, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error))
+		if !ok {
+			return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 		}
-		return nil
+		return res.Effects, nil
 	}
 	var result any
 	if len(sp.Result) > 0 {
 		if err := json.Unmarshal(sp.Result, &result); err != nil {
-			return fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
+			return nil, fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
 		}
 	}
-	if _, ok := svc.SettleDone(ctx, entry.CorrelationID, result); !ok {
-		return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+	res, ok := svc.SettleDone(ctx, entry.CorrelationID, result)
+	if !ok {
+		return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 	}
-	return nil
+	return res.Effects, nil
 }
 
 // serviceEntries returns the recorded service outcomes carried by a single

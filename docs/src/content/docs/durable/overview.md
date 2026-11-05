@@ -30,10 +30,12 @@ implement the `Store` interface out of tree.
 - **Deterministic replay.** A recovered instance is byte-identical to one that
   never crashed, because recovery replays the recorded driving events and
   nondeterministic results rather than re-executing their sources.
-- **Exactly-once effects.** A domain effect is applied exactly once over the
+- **Exactly-once effects.** A domain effect from a step (not an initial entry, which is at-least-once, or a parent transition an actor drives, which is not dispatched) is applied exactly once over the
   instance's lifetime (the live run plus any number of recoveries), even though
-  the replay loop is at-least-once. Each effect carries a deterministic
-  `EffectID` and is deduplicated through the `Store`'s dispatch set.
+  the replay loop is at-least-once. The exception is a crash or failed mark after the
+  handler returned, or a handoff between owners, where it can apply twice, so keep
+  handlers idempotent on `EffectInstance` plus the `EffectID`. Each effect carries a
+  deterministic `EffectID` and is deduplicated through the `Store`'s dispatch set.
 - **Durability across restart.** Every `Fire` step is write-ahead appended to the
   `Store` before it is acknowledged, so a crash after a successful `Fire` never
   loses the step. Periodic checkpoints bound the tail that recovery replays.
@@ -74,7 +76,7 @@ the first time, and replayed verbatim on recovery:
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
 | **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service, a failed `Append`, a crash) runs again when the host calls `RunService` |
 | **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run, and a running one restarts from its initial state on any `Recover` |
-| **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
+| **Domain effects** | `WithEffectHandler` | dispatch set, a step's effects applied exactly once via deterministic `EffectID` dedup, with the exceptions under Exactly-once effects |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written: a
 shorter interval bounds recovery replay, a longer one cuts checkpoint cost.
@@ -131,19 +133,21 @@ in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 goroutines: each holds the Handle's lock for the whole step. A host callback must not
 call back into its Handle. `Instance()` is outside the lock.
 
-A step that may not have been recorded, or a `Tick`, `RunService` or `DeliverToActor` whose
-context ended partway, fails the Handle with `ErrHandleFailed`. `Recover`
-a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a
-newer owner holds the instance, so stop.
+A step that may not have been recorded, a failed effect dispatch, or a `Tick`, `RunService`
+or `DeliverToActor` whose context ended partway, fails the Handle with `ErrHandleFailed`.
+`Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`:
+then a newer owner holds the instance, so stop. `Recover` retries an unapplied effect, and
+returns `ErrEffectDispatch` while the handler still fails.
 
 ## A note on serialized payloads
 
 Events, service done-data, actor done-data, and actor messages are recorded as their
 JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
-observes the JSON-decoded shape on a replayed `onDone`. A `WithEventData` payload is
-JSON-decoded live as well as on replay, so a reducer gets the same value both ways: a
-struct is a map and an integer a `float64`. An error stays an error with the same
-message, with any invalid UTF-8 replaced. `Handle.Fire` refuses a payload it can't
+observes the JSON-decoded shape of actor done-data on a replayed `onDone`. A
+`WithEventData` payload and a service's result are JSON-decoded live as well as on replay,
+so a reducer gets the same value both ways: a struct is a map and an integer a `float64`,
+which loses precision above 2^53. An error stays an error with the same message, with any
+invalid UTF-8 replaced, and `errors.Is` no longer matches it. `Handle.Fire` refuses a payload it can't
 record, or one over `WithMaxEventDataBytes` (8 MiB by default), with
 `ErrEventDataEncoding`, and nothing applies. A
 typed-codec option to carry the concrete Go value across the journal boundary is

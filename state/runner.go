@@ -97,6 +97,9 @@ type ServiceRunner[S comparable, E comparable, C any] struct {
 	// transition's action. It is atomic so a concurrent reader sees a consistent
 	// snapshot.
 	lastResult atomic.Value // serviceOutcome
+
+	// transform, when set, rewrites a ServiceFn's outcome before Tick settles it.
+	transform func(any, error) (any, error)
 }
 
 // serviceOutcome is the result/error pair a settled service exposes through
@@ -217,6 +220,17 @@ func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result a
 	return res, true
 }
 
+// WithResultTransform sets a function that rewrites a ServiceFn's outcome before Tick
+// settles it, and returns the runner. A host that records outcomes uses it to give the
+// live run the form a replay will see. LastResult and LastError then report the rewritten
+// outcome. It also runs on an UnboundRefError, where only the returned error is used. It
+// doesn't apply to SettleDone or SettleError, which take the outcome as given. Set it
+// before the first Tick: the field isn't guarded.
+func (r *ServiceRunner[S, E, C]) WithResultTransform(f func(result any, err error) (any, error)) *ServiceRunner[S, E, C] {
+	r.transform = f
+	return r
+}
+
 // Tick resolves and runs the in-flight service id against the bound registry,
 // settling it with the ServiceFn's result or error. It is the ServiceRunner's
 // advance verb — the host-driver counterpart of Scheduler.Tick and
@@ -237,10 +251,17 @@ func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) []FireResu
 	}
 	fn := r.resolve(rs.src.Name)
 	if fn == nil {
-		res, _ := r.SettleError(ctx, id, &UnboundRefError{Kind: "service", Name: rs.src.Name})
+		var err error = &UnboundRefError{Kind: "service", Name: rs.src.Name}
+		if r.transform != nil {
+			_, err = r.transform(nil, err)
+		}
+		res, _ := r.SettleError(ctx, id, err)
 		return []FireResult[S]{res}
 	}
 	out, err := fn(ctx, ServiceCtx[C]{Entity: r.inst.entity, Params: rs.src.Params, Input: rs.input})
+	if r.transform != nil {
+		out, err = r.transform(out, err)
+	}
 	if err != nil {
 		res, _ := r.SettleError(ctx, id, err)
 		return []FireResult[S]{res}

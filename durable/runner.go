@@ -98,7 +98,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
 // A running InvokeActor actor restarts from its initial state on any Recover, losing every
 // delivery so far, and a Spawn actor doesn't return. If the cause is ErrFenced, a
-// newer owner holds the instance: stop, because recovering won't help.
+// newer owner holds the instance: stop, because recovering won't help. A failed effect
+// dispatch fails the Handle the same way, and Recover retries the effect.
 type Handle[S comparable, E comparable, C any] struct {
 	runner *Runner[S, E, C]
 	id     InstanceID
@@ -150,10 +151,9 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 // durable seams compose: the scheduler arms or cancels delayed (`after`) timers (and
 // the Handle's timer table mirrors their deadlines for checkpointing), the service
 // runner starts or stops invoked services, and the actor system spawns or stops
-// child-machine actors. It is the shared absorb the live seam methods (Fire,
-// RunService, DeliverToActor, Tick) call for the effects they produced, so a state a
-// settle or delivery enters arms whatever it declares — a service whose onDone spawns
-// an actor, an actor whose onDone arms a timer, and so on. Absorbing a driver's
+// child-machine actors. It is the shared absorb Fire and RunService call for the
+// effects they produced, so a state a settle enters arms whatever it declares, such as
+// a service whose onDone spawns an actor. Absorbing a driver's
 // effects is a no-op when that driver is not wired or the effects name none of its
 // kind.
 func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, effects []state.Effect) {
@@ -281,6 +281,14 @@ func (h *Handle[S, E, C]) ID() InstanceID { return h.id }
 // state.WithInitialState) configure the initial configuration. Starting an
 // InstanceID that already exists in the Store reports ErrInstanceExists rather
 // than clobbering its recorded baseline.
+//
+// Start applies the initial entry's domain effects before the baseline write, and only
+// if the entry succeeded: a failed entry still returns a Handle and a nil error, and
+// Instance().InitialErr reports it. They're at-least-once, unlike a step's: a handler failure or a
+// failed baseline write leaves no instance, so calling Start again re-applies every
+// effect, as does a crash before the baseline. Overlapping Starts on one id, including a
+// stale owner's, each apply them before the Store refuses all but one. To dedupe, key on
+// EffectInstance plus the effect id. A handler wired only at Recover never sees them.
 func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opts ...state.CastOption[S]) (*Handle[S, E, C], error) {
 	if _, _, err := r.store.Load(ctx, id); err == nil {
 		return nil, fmt.Errorf("%w: %q", ErrInstanceExists, id)
@@ -301,10 +309,10 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	castOpts := append([]state.CastOption[S]{state.WithClock[S](recClock), state.WithUnboundedHistory[S]()}, opts...)
 	inst := r.machine.Cast(input, castOpts...)
 
-	// Persist a baseline checkpoint at baselineStep (below the first fired step)
-	// so the instance is reconstructable from the Store before any event is fired.
-	// The baseline is the cast snapshot; the tail then accumulates fired steps on
-	// top of it.
+	// Encode a baseline checkpoint at baselineStep (below the first fired step), so the
+	// instance is reconstructable from the Store before any event is fired. The baseline
+	// is the cast snapshot; the tail then accumulates fired steps on top of it. Encoding
+	// comes before the effects, so an instance that can't be encoded applies none.
 	snap, err := state.MarshalSnapshot(inst.Snapshot())
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start snapshot for %q: %w", id, err)
@@ -315,6 +323,16 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start checkpoint envelope for %q: %w", id, err)
 	}
+	// Apply the initial entry's domain effects before the instance exists: a handler
+	// failure then leaves nothing behind, so the caller can Start again. Nothing can
+	// re-derive these effects after the baseline, so they're at-least-once. An entry that
+	// failed applies none, as a failed Fire dispatches none.
+	if inst.InitialErr() == nil {
+		if err := r.applyStartEffects(ctx, id, dispatchableEffects(baselineStep, inst.InitialEffects())); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := r.store.Checkpoint(ctx, id, baseEnv, baselineStep, WithCheckpointFence(r.cfg.fence)); err != nil {
 		return nil, fmt.Errorf("durable: checkpointing start baseline for %q: %w", id, err)
 	}
@@ -363,7 +381,7 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) *state
 	if r.cfg.serviceReg == nil {
 		return nil
 	}
-	return state.NewServiceRunner(inst, r.cfg.serviceReg)
+	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome)
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to
@@ -382,7 +400,8 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) *state.A
 
 // Fire drives one event through a durable instance identified by id, loading and
 // replaying it from the Store first, then recording the step. Handle.Fire describes
-// how a state.WithEventData payload is handled, and when it's refused. It is the
+// how a state.WithEventData payload is handled, and when it's refused. Loading can
+// return ErrEffectDispatch before the event fires, as Recover can. It is the
 // stateless entry point (no Handle required); for a hot path that fires many
 // events in sequence, hold a Handle from Start or Recover and use Handle.Fire to
 // avoid reloading between steps. Calls on one id aren't serialized, and must not overlap
@@ -400,7 +419,8 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // step's ordinal (write-ahead, before returning), and — when the
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
 // kernel transition error journals nothing (no step was produced) and is
-// returned to the caller.
+// returned to the caller. Between the append and any checkpoint it applies the step's
+// domain effects; a failed dispatch fails the Handle with ErrHandleFailed.
 //
 // A state.WithEventData payload reaches the transition's Assign in its JSON-decoded
 // form, live and on replay alike, so both see the same value: a struct arrives as a
@@ -437,32 +457,8 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	h.absorbDrivers(ctx, res.Effects)
 
 	step := h.nextStep
-	// Stamp this step's domain effects with their deterministic ids and carry them
-	// in the Record so the write-ahead append durably names every effect that must
-	// be dispatched before any dispatch happens.
-	des := dispatchableEffects(step, res.Effects)
-	effEnvs, err := recordEffects(des)
-	if err != nil {
-		return res, h.fail(err)
-	}
-	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: h.drainClock(), Effects: effEnvs}
-	// Write-ahead append the step Record (with its effect ids) BEFORE dispatching, but
-	// hold off compacting it: dispatch happens between the append and the checkpoint so
-	// a crash mid-dispatch leaves the effect recorded in the still-present tail for
-	// recovery to redispatch — never orphaned behind the compaction.
-	if err := h.appendStep(ctx, step, &rec); err != nil {
-		return res, h.fail(err)
-	}
-	h.nextStep++
-	// Dispatch AFTER the append: a crash in this window leaves the effect recorded
-	// but un-marked, so recovery redispatches it (at-least-once), deduped by id to
-	// exactly-once once it lands.
-	if err := h.dispatchEffects(ctx, des); err != nil {
-		return res, err
-	}
-	// Compact through this step only now that its effects are dispatched, so the
-	// checkpoint never discards a not-yet-dispatched effect.
-	if err := h.checkpointStep(ctx, step, &rec); err != nil {
+	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: h.drainClock()}
+	if err := h.commitStep(ctx, &rec, res.Effects); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -518,28 +514,40 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	if len(rec.Entries) == 0 && rec.TickSteps == 0 {
 		return results, nil
 	}
-	if err := h.appendStep(ctx, step, &rec); err != nil {
-		return results, h.fail(err)
+	var effects []state.Effect
+	for i := range results {
+		effects = append(effects, results[i].Effects...)
 	}
-	h.nextStep = rec.followingStep()
-	if err := h.checkpointStep(ctx, step, &rec); err != nil {
-		return results, err
-	}
-	return results, nil
+	return results, h.commitStep(ctx, &rec, effects)
 }
 
-// persistStep write-ahead appends rec, advances the next step, then checkpoints if
-// the policy is due. A failed append fails the Handle, because the kernel already
-// applied the step; a failed checkpoint doesn't, because the Record is durable. This
-// relies on the Append running inline, under the Handle's lock, before the step
-// returns: an Append deferred off this goroutine would acknowledge a step whose
-// outcome isn't known, and the Handle couldn't fail.
-func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record) error {
-	if err := h.appendStep(ctx, step, rec); err != nil {
+// commitStep makes a step durable, in write-ahead order. It stamps the step's domain
+// effects and carries them in rec, appends rec, advances the next step, dispatches the
+// effects, and only then checkpoints, so a checkpoint never compacts an effect that
+// hasn't landed: a crash between append and dispatch leaves it in the tail for recovery
+// to apply, at-least-once and deduped by id.
+//
+// The kernel has already applied the step, so a failed encode or append fails the
+// Handle. So does a failed dispatch: the effect stays in the tail, and Recover retries
+// it. A failed checkpoint doesn't, because the Record is durable. This relies on the
+// Append running inline, under the Handle's lock, before the step returns: an Append
+// deferred off this goroutine would acknowledge a step whose outcome isn't known, and
+// the Handle couldn't fail.
+func (h *Handle[S, E, C]) commitStep(ctx context.Context, rec *Record, effects []state.Effect) error {
+	des := dispatchableEffects(rec.Step, effects)
+	envs, err := recordEffects(des)
+	if err != nil {
+		return h.fail(err)
+	}
+	rec.Effects = envs
+	if err := h.appendStep(ctx, rec.Step, rec); err != nil {
 		return h.fail(err)
 	}
 	h.nextStep = rec.followingStep()
-	return h.checkpointStep(ctx, step, rec)
+	if err := h.dispatchEffects(ctx, des); err != nil {
+		return h.fail(err)
+	}
+	return h.checkpointStep(ctx, rec.Step, rec)
 }
 
 // checkpointDue reports whether the checkpoint policy lands a checkpoint at step.
@@ -549,7 +557,7 @@ func (h *Handle[S, E, C]) checkpointDue(step int) bool {
 
 // appendStep marshals the due checkpoint snapshot into rec (so the Record carries it)
 // and write-ahead appends rec, WITHOUT compacting the tail yet. Splitting the append
-// from the compaction lets the effect-bearing Fire path dispatch a step's domain
+// from the compaction lets commitStep dispatch a step's domain
 // effects after the durable append but before the checkpoint compacts that step away
 // — so a crash between append and dispatch leaves the effect recoverable from the
 // still-present tail rather than orphaned behind the compaction.
@@ -593,7 +601,9 @@ func (h *Handle[S, E, C]) checkpointStep(ctx context.Context, step int, rec *Rec
 // snapshot (firing nothing, no IO), and replays the tail's recorded driving
 // events through the kernel to reach the instance's live state. The returned
 // Handle continues recording subsequent Fires. Recover reports ErrInstanceNotFound
-// for an instance that was never started, and the context's error if ctx ends.
+// for an instance that was never started, and the context's error if ctx ends. It
+// applies any recorded effect not yet marked dispatched, so it returns ErrEffectDispatch
+// and no Handle while the effect handler keeps failing.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -687,10 +697,16 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			// re-fires the identical onDone / onError event with the identical data —
 			// running no service. The settle absorbs its own follow-on StartService
 			// effects, so a chained invoke arms its successor for the next entry.
+			var settled []state.Effect
 			for _, entry := range serviceEntries(rec) {
-				if err := replayService(ctx, svc, entry); err != nil {
+				effects, err := replayService(ctx, svc, entry)
+				if err != nil {
 					return nil, fmt.Errorf("durable: at step %d for %q: %w", rec.Step, id, err)
 				}
+				settled = append(settled, effects...)
+			}
+			if err := r.dispatchReplayEffects(ctx, id, rec.Step, settled); err != nil {
+				return nil, err
 			}
 		case rec.Tick:
 			// Re-derive the timers the live tick fired: ticking the replay clock
@@ -708,6 +724,13 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 				for ri := range tickRes {
 					mirrorArmed(armed, tickRes[ri].Effects, now)
 				}
+			}
+			var ticked []state.Effect
+			for ri := range tickRes {
+				ticked = append(ticked, tickRes[ri].Effects...)
+			}
+			if err := r.dispatchReplayEffects(ctx, id, rec.Step, ticked); err != nil {
+				return nil, err
 			}
 		case len(rec.Event) == 0:
 			continue // a checkpoint-only Record drives no event

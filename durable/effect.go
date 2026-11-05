@@ -34,8 +34,8 @@ import (
 // Each dispatchable effect is stamped with an EffectID that is a pure function of
 // the step it was emitted at, its ordinal among the dispatchable effects of that
 // step, and its kind: "<step>#<ordinal>#<kind>". Every component is deterministic
-// — the step is the Fire ordinal, emission order is fixed by the machine
-// definition, and the kind is the effect's stable discriminant — so the same
+// — the step is its journal ordinal (-1 for Start's entry effects), emission order is
+// fixed by the machine definition, and the kind is the effect's stable discriminant — so the same
 // effect is stamped with the identical id on the live run and on every recovery
 // replay, which re-fires the same events and re-emits the same effects in the
 // same order. That stable identity is what makes the dedup set meaningful across
@@ -49,6 +49,8 @@ import (
 //     (write-ahead: the intent to dispatch is durable before any dispatch).
 //  2. Dispatch each effect whose id is not already in the dispatched set, calling
 //     the handler, and mark each id dispatched in the Store as it succeeds.
+//  3. Checkpoint, if one is due. This comes last so a checkpoint never compacts an
+//     effect that hasn't landed.
 //
 // This yields exactly-once effect application over the at-least-once delivery the
 // runtime is built on:
@@ -59,19 +61,43 @@ import (
 //     once) and, because it is then marked, never again.
 //   - Crash AFTER dispatch (id marked): recovery re-emits the effect but finds its
 //     id already marked and skips it — so it is not redispatched (exactly once).
-//   - Handler error: the effect is left un-marked and the error surfaces wrapped in
-//     ErrEffectDispatch, so a later recovery retries it (at-least-once until it
-//     succeeds; exactly-once thereafter).
+//   - Crash or failed mark AFTER the handler returned: the effect was applied but its
+//     id isn't marked, so recovery applies it again. The handler should be idempotent
+//     on EffectInstance plus the id for this window, and for a handoff, when two owners
+//     can run it at once.
+//   - Handler error: the effect is left un-marked, the error surfaces wrapped in
+//     ErrEffectDispatch and the Handle fails with ErrHandleFailed, so a later recovery
+//     retries it (at-least-once until it succeeds; exactly-once thereafter).
 //
 // The dedup set is held by the Store (DispatchStore) so it shares the Record's
 // durability and survives checkpoint compaction — a delayed redispatch of an
 // already-applied, since-compacted effect is still recognized and skipped.
 
 // EffectHandler applies one emitted domain effect, identified by its stamped
-// EffectID. The Runner calls it exactly once per EffectID over the lifetime of an
-// instance (see WithEffectHandler). A non-nil error leaves the effect un-marked
-// for a later retry and is surfaced to the caller wrapped in ErrEffectDispatch.
+// EffectID. The Runner calls it once per EffectID over the lifetime of an instance
+// (see WithEffectHandler), with three exceptions: a repeated Start can apply the initial
+// entry's effects again (see Runner.Start), an effect applies again if the handler
+// returned but the mark didn't land, and two owners can run it at once during a handoff.
+// An id is unique only within its instance: EffectInstance reads the instance from ctx.
+// A non-nil error leaves the effect un-marked for a later retry and is surfaced to the
+// caller wrapped in ErrEffectDispatch.
 type EffectHandler func(ctx context.Context, effectID string, effect state.Effect) error
+
+// effectInstanceKey is the ctx key for the instance an EffectHandler call belongs to.
+type effectInstanceKey struct{}
+
+// withEffectInstance returns ctx carrying id for the handler.
+func withEffectInstance(ctx context.Context, id InstanceID) context.Context {
+	return context.WithValue(ctx, effectInstanceKey{}, id)
+}
+
+// EffectInstance returns the instance an EffectHandler call belongs to, from the ctx the
+// handler received. A handler that keeps its own dedupe record must key on this plus the
+// effect id, because effect ids repeat across instances.
+func EffectInstance(ctx context.Context) (InstanceID, bool) {
+	id, ok := ctx.Value(effectInstanceKey{}).(InstanceID)
+	return id, ok
+}
 
 // DispatchStore is the dedup seam for idempotent effect dispatch: the Store
 // tracks which effect ids an instance has applied, so a (re)dispatch skips the
@@ -193,6 +219,24 @@ func (h *Handle[S, E, C]) dispatchEffects(ctx context.Context, des []dispatchabl
 	return h.runner.dispatch(ctx, h.id, des)
 }
 
+// applyStartEffects invokes the handler for the initial entry's domain effects. Like
+// dispatch it is a no-op without a handler or a DispatchStore. It marks nothing, because
+// the instance doesn't exist yet and nothing replays these effects.
+func (r *Runner[S, E, C]) applyStartEffects(ctx context.Context, id InstanceID, des []dispatchableEffect) error {
+	if len(des) == 0 || r.cfg.effectHandler == nil {
+		return nil
+	}
+	if _, ok := r.store.(DispatchStore); !ok {
+		return nil
+	}
+	for _, de := range des {
+		if err := r.cfg.effectHandler(withEffectInstance(ctx, id), de.id, de.effect); err != nil {
+			return fmt.Errorf("%w: effect %q for %q: %w", ErrEffectDispatch, de.id, id, err)
+		}
+	}
+	return nil
+}
+
 // dispatchReplayEffects re-dispatches a replayed step's domain effects during
 // recovery: it re-stamps the re-emitted effects with the same deterministic ids
 // (step and emission order reproduce exactly) and applies only those not already
@@ -225,8 +269,8 @@ func (r *Runner[S, E, C]) dispatch(ctx context.Context, id InstanceID, des []dis
 		if dispatched[de.id] {
 			continue
 		}
-		if err := r.cfg.effectHandler(ctx, de.id, de.effect); err != nil {
-			return fmt.Errorf("%w: effect %q for %q: %v", ErrEffectDispatch, de.id, id, err)
+		if err := r.cfg.effectHandler(withEffectInstance(ctx, id), de.id, de.effect); err != nil {
+			return fmt.Errorf("%w: effect %q for %q: %w", ErrEffectDispatch, de.id, id, err)
 		}
 		if err := ds.MarkDispatched(ctx, id, de.id); err != nil {
 			return fmt.Errorf("durable: marking effect %q dispatched for %q: %w", de.id, id, err)

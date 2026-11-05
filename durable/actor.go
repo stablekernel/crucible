@@ -137,9 +137,9 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		*h.actorBuf = append(*h.actorBuf, entries...)
 	}
 
-	step := h.nextStep
-	rec := Record{Step: step, Entries: h.drainActors()}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
+	rec := Record{Step: h.nextStep, Entries: h.drainActors()}
+	// nil: a parent transition an actor drives isn't dispatched (see doc.go).
+	if err := h.commitStep(ctx, &rec, nil); err != nil {
 		return true, err
 	}
 	return true, nil
