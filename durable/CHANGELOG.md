@@ -116,6 +116,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
+- **A step whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
+  or `DeliverToActor` used to record a result the live instance never applied, which
+  recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`
+  wrapping the error and records nothing. After `Recover` the service stays in flight and
+  must tolerate running again, the timer is re-armed, and the actor restarts. `Recover`
+  and `StateAt` now fail on a canceled context, rather than returning state short of the
+  journal.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a

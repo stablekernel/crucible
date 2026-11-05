@@ -57,9 +57,10 @@ var (
 
 	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService, DeliverToActor
 	// and View once a step applied to the live instance but may not have been recorded,
-	// or an effect handler failed, on that call and every later one. It wraps the cause.
-	// Call Handle.Drain, then Recover a new Handle with the same options to continue,
-	// unless the cause is ErrFenced: then a newer owner holds the instance, so stop.
+	// a Tick, RunService or DeliverToActor's context ended partway, or an effect handler
+	// failed, on that call and every later one. It wraps the cause. Call Handle.Drain,
+	// then Recover a new Handle with the same options to continue, unless the cause is
+	// ErrFenced: then a newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
 
 	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor

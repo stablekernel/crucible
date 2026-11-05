@@ -16,14 +16,15 @@ import (
 // (configuration, context, event payload, machine definition) and MUST be recorded
 // to reproduce a run.
 //
-// # Run exactly once, replay the result
+// # Run once per recorded result, replay the result
 //
-// A durable service runs exactly once, on the live path, and its result is
-// recorded; on recovery the recorded result is replayed back through the same
-// settle seam, and the service is NEVER re-invoked. This is the standard
-// durable-execution guarantee: the external call (with its side effects and its
-// nondeterministic output) happens once, and recovery is a pure replay against the
-// kernel rather than a re-execution of the host's services.
+// A durable service runs on the live path and its result is recorded; on recovery the
+// recorded result is replayed back through the same settle seam, and that service is
+// NEVER re-invoked. This is the standard durable-execution guarantee: recovery is a pure
+// replay against the kernel rather than a re-execution of the host's services. A result
+// that wasn't recorded, after a context canceled during the service, a failed Append or a
+// crash, has nothing to replay, so it stays in flight, runs again when the host calls
+// RunService, and must tolerate a second run.
 //
 // The Runner wraps the kernel's reusable host driver, state.ServiceRunner, which
 // turns StartService / StopService effects into real ServiceFn executions and
@@ -75,7 +76,7 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 	return out
 }
 
-// RunService runs the in-flight invoked service identified by id exactly once,
+// RunService runs the in-flight invoked service identified by id,
 // records its outcome, and settles it — firing the invocation's onDone (on
 // success) or onError (on failure) event through the durable instance and
 // recording the produced step. The service is resolved and executed against the
@@ -84,14 +85,18 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // re-invoking the service.
 //
 // It returns the routed FireResult and true, or the zero result and false when id
-// names no in-flight service (already settled, stopped, or never started), or false
-// and the error when the Handle had already failed or ctx has ended. If the service
-// settled but its outcome couldn't be recorded or appended, it returns the result,
-// true and ErrHandleFailed: the Handle has failed. If another goroutine failed the
-// Handle while this step was recording, it returns the result, true and ErrHandleFailed
-// saying the step was recorded. A failed checkpoint returns the result, true and that
-// error, and the Handle carries on. A recovered Handle has an
-// unrecorded service in flight again, and RunService runs it a second time.
+// names no in-flight service (already settled, stopped, or never started). It returns
+// false and an error when no registry is wired, the Handle has failed, or ctx ended
+// before the service started.
+//
+// Once the service has run, it returns true with any error. A failed Append, a result
+// that won't encode, or a ctx that ended during the service returns ErrHandleFailed and
+// records nothing: a recovered Handle has the service in flight again, and RunService
+// runs it a second time. If another goroutine failed the Handle while this step was
+// recording, it returns the result, true and ErrHandleFailed saying the step was
+// recorded. That error also matches the cause, so test ErrHandleFailed first: it alone
+// means Recover is needed. A failed Checkpoint returns the plain error, and the result
+// is recorded.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
@@ -112,6 +117,14 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 	res := results[0]
+
+	// A context canceled during the service stops the settle's Fire before it applies,
+	// so the instance never saw this result: journaling it would commit it on recovery.
+	// The runner has already dropped the service, so this Handle can't run it again;
+	// Recover re-arms it.
+	if res.Err != nil && ctx.Err() != nil {
+		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, res.Err))
+	}
 
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
 	// that arms a timer, starts another service, or spawns an actor. Absorb those

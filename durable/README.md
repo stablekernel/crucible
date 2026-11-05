@@ -82,8 +82,8 @@ the first time, and replayed verbatim on recovery:
 | Seam | Wire with | Recorded as |
 | --- | --- | --- |
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
-| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; the service runs once, then recovery replays its result through the kernel's settle seam |
-| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; the behavior runs once, then recovery re-fires the recorded parent transition |
+| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service, a failed `Append`, a crash) runs again when the host calls `RunService` |
+| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run, and a running one restarts from its initial state on any `Recover` |
 | **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written (a
@@ -151,16 +151,18 @@ context not derived from the step's. A step waiting for the lock stops when its 
 ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
-A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
-effect handler that returns an error or panics. Before `Recover`, call `Handle.Drain`,
-which waits until no step of the failed Handle is still recording and no effect is still
-being sent, so the recovered Handle loads every recorded step and can't send an effect
-twice. Give `Drain` a context of its own, not the failed call's, and don't `Recover`
-until it returns nil: an error means it didn't finish draining. A step that was recording when another goroutine failed the Handle returns
-`ErrHandleFailed` saying it was recorded; `Recover` sends any of its effects. To move a healthy Handle's instance to a new Handle, stop
-calling the old one and let its calls return first: a step can start after `Drain`
-returns. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
-instance, so stop.
+A step that may not have been recorded, or a `Tick`, `RunService` or `DeliverToActor` whose
+context ended partway, fails the Handle with `ErrHandleFailed`. So does an effect handler
+that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no
+step of the failed Handle is still recording and no effect is still being sent, so the
+recovered Handle loads every recorded step and can't send an effect twice. Give `Drain` a
+context of its own, not the failed call's, and don't `Recover` until it returns nil: an
+error means it didn't finish draining. A step that was recording when another goroutine
+failed the Handle returns `ErrHandleFailed` saying it was recorded; `Recover` sends any of
+its effects. To move a healthy Handle's instance to a new Handle, stop calling the old one
+and let its calls return first: a step can start after `Drain` returns. `Recover` a new
+Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer
+owner holds the instance, so stop.
 
 ## Caveat: serialized payloads
 

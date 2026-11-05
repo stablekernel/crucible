@@ -17,15 +17,14 @@ import (
 // NOT a pure function of (configuration, context, event payload, machine
 // definition) and MUST be recorded to reproduce a run.
 //
-// # Run exactly once, replay the result
+// # Run once per recorded result, replay the result
 //
-// A durable actor's behavior runs exactly once, on the live path, and the result
-// it routes into the parent is recorded; on recovery the recorded result is
-// replayed back through the SAME parent transition the live run drove, and the
-// actor behavior is NEVER re-instantiated. This is the standard durable-execution
-// guarantee: the child machine (with its side effects and its nondeterministic
-// output) runs once, and recovery is a pure replay against the parent kernel rather
-// than a re-execution of the actor tree.
+// A durable actor's behavior runs on the live path and the result it routes into the
+// parent is recorded; on recovery the recorded result is replayed back through the SAME
+// parent transition the live run drove, so a settled actor never re-runs. This is the
+// standard durable-execution guarantee: recovery is a pure replay against the parent
+// kernel rather than a re-execution of the actor tree. An actor still running at recovery
+// restarts from its initial state, because its own state isn't journaled.
 //
 // The Runner wraps the kernel's reusable host driver, state.ActorSystem, which
 // turns SpawnActor / StopActor effects into running child actors, owns each actor's
@@ -90,25 +89,23 @@ type actorMessagePayload struct {
 	HasData bool `json:"hasData,omitempty"`
 }
 
-// DeliverToActor routes event into the running actor identified by ref exactly
-// once, runs the actor (settling it when it reaches its final state), records each
+// DeliverToActor routes event into the running actor identified by ref, runs the actor (settling it when it reaches its final state), records each
 // parent transition the delivery drove, and persists the produced step. The actor
 // behavior is resolved and run against the palette supplied with WithActorPalette;
 // the done-data, error, or parent-driving message it routes is journaled as a
 // JournalActorMessage correlated by the actor id so recovery replays it without
 // re-instantiating the actor.
 //
-// It returns false for a ref that names no live actor (already settled, stopped, or
-// never spawned), and false with the error when the Handle had already failed or ctx
-// has ended. If the actor received the event but the delivery couldn't be recorded or
-// appended, it returns true and ErrHandleFailed: the Handle has failed. If another
-// goroutine failed the Handle while this step was recording, it returns true and
-// ErrHandleFailed saying the step was recorded. A failed checkpoint returns true and
-// that error, and the Handle carries on. The kernel
-// transitions the delivery drove do not themselves fail. When a delivery wasn't
-// recorded, on a recovered Handle an InvokeActor actor restarts from its initial state,
-// and a Spawn actor doesn't return. Resending a recorded delivery repeats
-// any message it sends the parent.
+// It returns whether the actor was found running: false for a ref that names no live
+// actor (already settled, stopped, or never spawned), or false and an error when no
+// palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
+// actor ran it returns true with any error. A failed Append, a result that won't encode,
+// or a ctx that ended during the delivery returns ErrHandleFailed and records nothing: on
+// a recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
+// actor doesn't return. If another goroutine failed the Handle while this step was
+// recording, it returns true and ErrHandleFailed saying the step was recorded. A failed
+// Checkpoint returns the plain error, and the delivery is recorded. Resending a recorded
+// delivery repeats any message it sends the parent.
 func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return false, err
@@ -125,6 +122,11 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
 	if !delivered {
 		return false, nil
+	}
+	// A context that ended during the delivery can stop a parent Fire partway, and a
+	// refused Fire leaves a Trace replay can't re-fire. Record nothing.
+	if err := ctx.Err(); err != nil {
+		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 
 	output, settled, settleErr := h.actorOutcome()

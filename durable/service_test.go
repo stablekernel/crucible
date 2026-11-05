@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -469,4 +470,204 @@ func TestService_Determinism(t *testing.T) {
 	if string(s1) != string(s2) {
 		t.Fatalf("two live runs diverged:\n run1=%s\n run2=%s", s1, s2)
 	}
+}
+
+// TestService_ResultFromCanceledTurn_NotCommittedOnRecover proves a service result
+// whose settle is canceled with the turn's context, and so never reaches the live
+// instance, is not committed by recovery either.
+func TestService_ResultFromCanceledTurn_NotCommittedOnRecover(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		cancel() // the turn's deadline passes while the call is in flight
+		return "late", nil
+	}
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	_, _, _ = h.RunService(turnCtx, state.InvokeID("fetch", "loading", 0))
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	// Compare state, not bytes: live keeps the Trace of the refused settle.
+	if live, got := h.Instance().Current(), recovered.Instance().Current(); got != live || live != "loading" {
+		t.Fatalf("recovered %q, live %q, want both loading: the canceled turn's result was committed", got, live)
+	}
+	if notes := recovered.Instance().Entity().Notes; len(notes) != 0 {
+		t.Fatalf("recovered notes %v, want none", notes)
+	}
+}
+
+// TestService_CanceledTurn_RecoverRerunsTheService proves the canceled result isn't
+// journaled, the Handle refuses further steps, and a recovered Handle can run the
+// service to completion.
+func TestService_CanceledTurn_RecoverRerunsTheService(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	calls := 0
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		calls++
+		cancel()
+		return "late", nil
+	}
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	invoke := state.InvokeID("fetch", "loading", 0)
+	if _, _, err = h.RunService(turnCtx, invoke); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunService = %v, want context.Canceled", err)
+	}
+	if _, err = h.Fire(ctx, "start"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire after the cancel = %v, want ErrHandleFailed", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok, err := recovered.RunService(ctx, invoke); err != nil || !ok {
+		t.Fatalf("RunService after Recover = (%v, %v)", ok, err)
+	}
+	if calls != 2 {
+		t.Fatalf("service ran %d times, want 2", calls)
+	}
+}
+
+// TestRecover_CanceledContext_DoesNotLoseARecordedResult proves a canceled Recover
+// reports the cancellation rather than a Handle short of the journal.
+func TestRecover_CanceledContext_DoesNotLoseARecordedResult(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("loading"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetch", "loading", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.Recover(canceled, m, store, id, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = %v, want context.Canceled", err)
+	}
+}
+
+// TestStateAt_CanceledContext_ReportsIt proves a canceled historical read reports the
+// cancellation, not a view short of the journal.
+func TestStateAt_CanceledContext_ReportsIt(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchMachine(fn)
+	store := durable.NewMemStore(durable.WithHistory())
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("loading"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetch", "loading", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.StateAt(canceled, m, store, id, 0, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("StateAt = %v, want context.Canceled", err)
+	}
+}
+
+// TestRecover_CanceledContext_ChainedServices_ReportsIt proves a canceled replay of two
+// chained services reports the cancellation, not a journal that looks corrupt.
+func TestRecover_CanceledContext_ChainedServices_ReportsIt(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := chainMachine(fn, fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("chain-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](chainRegistry(fn, fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("first"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("chain", "first", 0))
+	mustRunService(t, h, state.InvokeID("chain", "second", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.Recover(canceled, m, store, id, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = %v, want context.Canceled", err)
+	}
+}
+
+// TestTick_ContextEndedPartway_RecordsNothing proves a due timer the kernel refused isn't
+// journaled: the Handle fails and the journal doesn't grow.
+func TestTick_ContextEndedPartway_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := timerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("timer-1")
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	clk := &cancelingClock{Clock: state.NewFakeClock(epoch)}
+	opts := []durable.Option[string, string, *timerCtx]{durable.WithRunnerClock[string, string, *timerCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	_, before, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	clk.Clock.(*state.FakeClock).Advance(6 * time.Second)
+	clk.onNow = cancel // the turn ends as the Tick reads the clock
+	if _, err = h.Tick(turn); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	clk.onNow = nil
+	_, after, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("journal grew from %d to %d records", len(before), len(after))
+	}
+}
+
+// cancelingClock runs onNow once on the next clock read.
+type cancelingClock struct {
+	state.Clock
+	onNow func()
+}
+
+func (c *cancelingClock) Now() time.Time {
+	if c.onNow != nil {
+		f := c.onNow
+		c.onNow = nil
+		f()
+	}
+	return c.Clock.Now()
 }

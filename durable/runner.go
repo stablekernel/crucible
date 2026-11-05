@@ -40,15 +40,16 @@ import (
 // deadline or testing dueness — is journaled and returned verbatim on recovery,
 // making timer-driven transitions durable and replay wall-clock-independent.
 //
-// Invoked services are the second recorded seam: a service runs exactly once on
-// the live path (Handle.RunService, against the registry supplied with
-// WithServiceRegistry) and its result is journaled as a JournalServiceResult; on
-// recovery the recorded result is replayed back through the kernel's settle seam,
-// so the service is never re-invoked and the same onDone / onError event re-fires
-// with the same data.
+// Invoked services are the second recorded seam: a service runs on the live path
+// (Handle.RunService, against the registry supplied with WithServiceRegistry) and its
+// result is journaled as a JournalServiceResult; on recovery the recorded result is
+// replayed back through the kernel's settle seam, so that service is never re-invoked
+// and the same onDone / onError event re-fires with the same data. A result that wasn't
+// recorded has nothing to replay, so the service runs again when the host calls
+// RunService.
 //
 // Child-machine actors are the third recorded seam: an actor's behavior runs
-// exactly once on the live path (Handle.DeliverToActor, against the palette
+// on the live path (Handle.DeliverToActor, against the palette
 // supplied with WithActorPalette) and each parent transition the delivery drives —
 // the actor's onDone / onError, or a message it sends — is journaled as a
 // JournalActorMessage; on recovery the recorded transition is replayed by re-firing
@@ -101,13 +102,14 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // lock; Instance returns it outside the lock. A stateless Runner.Fire builds its own
 // Handle, so it isn't serialized with this one.
 //
-// A step that applied to the kernel but may not have been recorded leaves the Handle out
-// of step with the journal. That call and every later one return ErrHandleFailed,
-// wrapping the cause, which can be a context that ended during the Store write. Before
-// recovering, call Drain: a step on another goroutine may still be recording, which a
-// recovered Handle wouldn't load, or sending an effect, which it would send again. Recovering a healthy Handle's instance
-// instead needs this Handle's calls to have returned first. Recover a new Handle with the same
-// options to continue. A service
+// A step that applied to the kernel but may not have been recorded, or a Tick, RunService
+// or DeliverToActor whose context ended partway, leaves the Handle out of step with the
+// journal. That call and every later one return ErrHandleFailed, wrapping the cause,
+// which can be a context that ended during the Store write. Before recovering, call
+// Drain: a step on another goroutine may still be recording, which a recovered Handle
+// wouldn't load, or sending an effect, which it would send again. Recovering a healthy
+// Handle's instance instead needs this Handle's calls to have returned first. Recover a
+// new Handle with the same options to continue. A service
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
 // A running InvokeActor actor restarts from its initial state on any Recover, losing every
 // delivery so far, and a Spawn actor doesn't return. If the cause is ErrFenced, a
@@ -749,6 +751,16 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 		return nil, err
 	}
 	results := h.sched.Tick(h.stepContext(ctx))
+	// A context that ended partway makes the kernel refuse a due timer's Fire after the
+	// scheduler consumed it. Journaling that would commit on recovery what live never
+	// applied, so record nothing: Recover re-arms the timer.
+	if err := ctx.Err(); err != nil {
+		for i := range results {
+			if results[i].Err != nil {
+				return results, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
+			}
+		}
+	}
 
 	step := h.nextStep
 	rec := Record{Step: step, Tick: true, TickSteps: len(results), Entries: h.drainClock()}
@@ -888,7 +900,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 // snapshot (firing nothing, no IO), and replays the tail's recorded driving
 // events through the kernel to reach the instance's live state. The returned
 // Handle continues recording subsequent Fires. Recover reports ErrInstanceNotFound
-// for an instance that was never started.
+// for an instance that was never started, and the context's error if ctx ends.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -959,6 +971,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	armed := map[string]pendingTimer{}
 
 	for i := range tail {
+		// A canceled context can stop a replayed settle or tick with no error, leaving
+		// state short of the journal, so check it before each Record.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
+		}
 		rec := &tail[i]
 		switch {
 		case hasActorEntry(rec):
@@ -1106,6 +1123,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 				next = last + 1
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 	}
 	return &Handle[S, E, C]{
 		runner:   r,
