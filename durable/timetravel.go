@@ -101,7 +101,8 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 // historical read applies no side effect.
 //
 // step must be in [BaselineStep, lastRecordedStep]; a step outside that range
-// reports ErrStepOutOfRange, and an unknown instance reports ErrInstanceNotFound.
+// reports ErrStepOutOfRange, an unknown instance reports ErrInstanceNotFound, and an
+// ended ctx reports its error.
 func StateAt[S comparable, E comparable, C any](
 	ctx context.Context,
 	m *state.Machine[S, E, C],
@@ -241,6 +242,11 @@ func replayThrough[S comparable, E comparable, C any](
 	}
 
 	for i := range bounded {
+		// A canceled context can stop a replayed settle or tick with no error, leaving
+		// state short of the journal, so check it before each Record.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		rec := &bounded[i]
 		switch {
 		case hasActorEntry(rec):
@@ -282,7 +288,9 @@ func replayThrough[S comparable, E comparable, C any](
 			// applies no side effect.
 		}
 	}
-	return nil
+	// A canceled context can stop a replayed settle or tick without an error reaching
+	// here, which would hand back a view short of the journal.
+	return ctx.Err()
 }
 
 // boundRecords returns the prefix of records whose first ordinal falls at or below

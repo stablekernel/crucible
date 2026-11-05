@@ -55,7 +55,8 @@ var (
 
 	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService and
 	// DeliverToActor once a step applied to the live instance but may not have been
-	// recorded, on that call and every later one. It wraps the cause. Recover a new
+	// recorded, or a Tick, RunService or DeliverToActor's context ended partway, on that
+	// call and every later one. It wraps the cause. Recover a new
 	// Handle with the same options to continue, unless the cause is ErrFenced: then a
 	// newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
