@@ -245,6 +245,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
+- **`WithCheckpointEvery` now bounds the tail of a timer-driven instance.** A `Tick` that
+  fires timers takes several step ordinals, so it could skip the interval forever and the
+  tail grew without limit. A checkpoint now lands on the first step that reaches or passes
+  the interval. Such an instance now compacts, so on a Store without `HistoryStore`,
+  `StateAt` can't reach the steps before its latest checkpoint: it returns the
+  checkpoint's later state with a nil error, or `ErrStepOutOfRange` if the tail is empty.
 - **Timers survive recovery.** `Start` now arms the initial state's timers, which it never
   did, so a new instance starting in a timed state fires a timer it didn't before. It
   carries them in the baseline; an instance started earlier keeps its initial timer

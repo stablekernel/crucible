@@ -1309,11 +1309,11 @@ func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record
 	if h.out.failed != nil {
 		return nil
 	}
-	if h.checkpointDue(rec.Step) && rec.Snapshot != nil && (h.out.pending == nil || rec.Step > h.out.pending.step) {
+	if h.checkpointDue(rec) && rec.Snapshot != nil && (h.out.pending == nil || rec.Step > h.out.pending.step) {
 		h.out.pending = &dueCheckpoint{step: rec.Step, snapshot: rec.Snapshot}
 	}
 	cp := h.out.pending
-	if cp == nil || (cp.waitDue && !h.checkpointDue(rec.Step)) {
+	if cp == nil || (cp.waitDue && !h.checkpointDue(rec)) {
 		return nil
 	}
 	for step := range h.out.dispatching {
@@ -1343,9 +1343,12 @@ func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record
 	return nil
 }
 
-// checkpointDue reports whether the checkpoint policy lands a checkpoint at step.
-func (h *Handle[S, E, C]) checkpointDue(step int) bool {
-	return h.runner.cfg.checkpointEvery > 0 && (step+1)%h.runner.cfg.checkpointEvery == 0
+// checkpointDue reports whether rec crosses a checkpoint boundary. It compares the
+// ordinals rec spans rather than testing rec's own Step, because a tick barrier consumes
+// several ordinals and can step over the one a fixed multiple would land on.
+func (h *Handle[S, E, C]) checkpointDue(rec *Record) bool {
+	every := h.runner.cfg.checkpointEvery
+	return every > 0 && rec.followingStep()/every > rec.Step/every
 }
 
 // appendStep marshals the due checkpoint snapshot into rec (so the Record carries it)
@@ -1365,7 +1368,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		// They ran before the step's own work, so they come first.
 		rec.Entries = append(before, rec.Entries...)
 	}
-	if h.checkpointDue(step) {
+	if h.checkpointDue(rec) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint at step %d for %q: %w", step, h.id, err)
