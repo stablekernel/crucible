@@ -47,8 +47,15 @@ var (
 	// ErrRecordTooLarge is reported by FileStore.Append for a Record whose journal line
 	// exceeds the store's line limit, which a later Load could not read back, even
 	// without its Snapshot. No journal line is written, but a Handle's kernel has already
-	// applied the step.
+	// applied the step, so the Handle fails with ErrHandleFailed.
 	ErrRecordTooLarge = errors.New("crucible/durable: record too large for the journal")
+
+	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService and
+	// DeliverToActor once a step applied to the live instance but may not have been
+	// recorded, on that call and every later one. It wraps the cause. Recover a new
+	// Handle with the same options to continue, unless the cause is ErrFenced: then a
+	// newer owner holds the instance, so stop.
+	ErrHandleFailed = errors.New("crucible/durable: handle is out of step with the journal")
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.

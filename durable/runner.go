@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/stablekernel/crucible/state"
@@ -76,11 +77,33 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // clock that journals every reading the scheduler consumes, so timer-driven
 // transitions are durable and replay wall-clock-independent. Obtain a Handle from
 // Runner.Start or Recover.
+//
+// Fire, Tick, RunService and DeliverToActor are safe to call from different
+// goroutines: each holds the Handle's lock for the whole step, including the Store
+// write, effect dispatch and any service it runs. Any host callback run during a step
+// (an effect handler, service, guard, action, reducer or actor behavior) must not call
+// back into the same Handle, or it deadlocks. A step waits for the lock without watching
+// its context, so a slow service delays other steps past their deadlines; a Tick,
+// RunService or DeliverToActor whose context has ended by then returns that error and
+// changes nothing, and the kernel refuses a Fire. Instance returns the
+// live instance outside that lock, so read it only while no step is running. A
+// stateless Runner.Fire builds its own Handle, so it isn't serialized with this one.
+//
+// A step that applied to the kernel but may not have been recorded leaves the Handle out
+// of step with the journal. That call and every later one return ErrHandleFailed,
+// wrapping the cause. Recover a new Handle with the same options to continue. A service
+// whose result wasn't recorded is in flight again, so RunService runs it a second time.
+// A running InvokeActor actor restarts from its initial state on any Recover, losing every
+// delivery so far, and a Spawn actor doesn't return. If the cause is ErrFenced, a
+// newer owner holds the instance: stop, because recovering won't help.
 type Handle[S comparable, E comparable, C any] struct {
-	runner   *Runner[S, E, C]
-	id       InstanceID
-	inst     *state.Instance[S, E, C]
+	runner *Runner[S, E, C]
+	id     InstanceID
+	inst   *state.Instance[S, E, C]
+
+	mu       sync.Mutex // serializes the steps, and guards the instance and every field below
 	nextStep int
+	failed   error // the error that took the Handle out of step with the journal, nil until then
 
 	sched    *state.Scheduler[S, E, C]
 	recClock *recordingClock         // owns the clock-read accumulator and its mutex
@@ -91,6 +114,21 @@ type Handle[S comparable, E comparable, C any] struct {
 
 	actors   *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
 	actorBuf *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
+}
+
+// refuse reports ErrHandleFailed once the Handle is out of step with the journal.
+func (h *Handle[S, E, C]) refuse() error {
+	if h.failed == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %q: %w", ErrHandleFailed, h.id, h.failed)
+}
+
+// fail records err as the reason the Handle is out of step with the journal, and
+// returns the same refusal every later step gets.
+func (h *Handle[S, E, C]) fail(err error) error {
+	h.failed = err
+	return h.refuse()
 }
 
 // drainClock returns and clears the clock readings accumulated since the last
@@ -227,7 +265,8 @@ func (h *Handle[S, E, C]) dropFiredTimers(now time.Time) {
 // Instance returns the underlying kernel Instance the Handle wraps, for reads
 // such as Configuration, Snapshot, or Current. Drive it through the Handle's Fire
 // (or the Runner's) so steps continue to be recorded; firing the bare Instance
-// bypasses durability.
+// bypasses durability. Read it only while no step is running: it's outside the Handle's
+// lock. After ErrHandleFailed it shows state the journal may not hold.
 func (h *Handle[S, E, C]) Instance() *state.Instance[S, E, C] { return h.inst }
 
 // ID returns the InstanceID the Handle records under.
@@ -343,7 +382,8 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) *state.A
 // how a state.WithEventData payload is handled, and when it's refused. It is the
 // stateless entry point (no Handle required); for a hot path that fires many
 // events in sequence, hold a Handle from Start or Recover and use Handle.Fire to
-// avoid reloading between steps.
+// avoid reloading between steps. Calls on one id aren't serialized, and must not overlap
+// each other or a live Handle.
 func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts ...state.FireOption) (state.FireResult[S], error) {
 	h, err := r.recover(ctx, id)
 	if err != nil {
@@ -370,6 +410,11 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // kernel runs. The payload is read on the calling goroutine with no lock of its own, so
 // don't mutate it concurrently with Fire.
 func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireOption) (state.FireResult[S], error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.refuse(); err != nil {
+		return state.FireResult[S]{}, err
+	}
 	// Encode the WithEventData payload before the kernel runs, so a payload that
 	// can't be recorded refuses the Fire rather than applying a step it can't record.
 	payload, opts, err := encodeEventData(opts, h.runner.cfg.maxEventData)
@@ -395,7 +440,7 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	des := dispatchableEffects(step, res.Effects)
 	effEnvs, err := recordEffects(des)
 	if err != nil {
-		return res, err
+		return res, h.fail(err)
 	}
 	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: h.drainClock(), Effects: effEnvs}
 	// Write-ahead append the step Record (with its effect ids) BEFORE dispatching, but
@@ -403,7 +448,7 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	// a crash mid-dispatch leaves the effect recorded in the still-present tail for
 	// recovery to redispatch — never orphaned behind the compaction.
 	if err := h.appendStep(ctx, step, &rec); err != nil {
-		return res, err
+		return res, h.fail(err)
 	}
 	h.nextStep++
 	// Dispatch AFTER the append: a crash in this window leaves the effect recorded
@@ -429,6 +474,16 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 // count of timers fired — so recovery re-derives the same timers at their
 // recorded instants. It returns the FireResults of the timers it fired, in order.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.refuse(); err != nil {
+		return nil, err
+	}
+	// A context that ended in the lock queue must stop here: the scheduler would consume
+	// a due timer whose Fire the kernel then refuses.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	results := h.sched.Tick(ctx)
 
 	step := h.nextStep
@@ -450,20 +505,24 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	if len(rec.Entries) == 0 && rec.TickSteps == 0 {
 		return results, nil
 	}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
+	if err := h.appendStep(ctx, step, &rec); err != nil {
+		return results, h.fail(err)
+	}
+	h.nextStep = rec.followingStep()
+	if err := h.checkpointStep(ctx, step, &rec); err != nil {
 		return results, err
 	}
-	h.nextStep += len(results) + 1
 	return results, nil
 }
 
-// persistStep checkpoints if the policy is due, then write-ahead appends rec
-// before the step is acknowledged to the caller. The checkpoint is taken at the
-// barrier's own step so a Load after it returns this Snapshot plus the later tail.
+// persistStep write-ahead appends rec, advances the next step, then checkpoints if
+// the policy is due. A failed append fails the Handle, because the kernel already
+// applied the step; a failed checkpoint doesn't, because the Record is durable.
 func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record) error {
 	if err := h.appendStep(ctx, step, rec); err != nil {
-		return err
+		return h.fail(err)
 	}
+	h.nextStep = rec.followingStep()
 	return h.checkpointStep(ctx, step, rec)
 }
 
