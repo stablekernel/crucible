@@ -641,7 +641,7 @@ func TestRecover_ChainedTimerAfterSlowAction_NotFiredEarly(t *testing.T) {
 	id := durable.InstanceID("timer-1")
 	opts := []durable.Option[string, string, *timerCtx]{
 		durable.WithRunnerClock[string, string, *timerCtx](clk),
-		durable.WithCheckpointEvery[string, string, *timerCtx](2),
+		durable.WithCheckpointEvery[string, string, *timerCtx](3), // the first tick checkpoints, the second stays in the tail
 	}
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
 	if err != nil {
@@ -654,12 +654,16 @@ func TestRecover_ChainedTimerAfterSlowAction_NotFiredEarly(t *testing.T) {
 	if _, err = h.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	if _, err = h.Fire(ctx, "poke"); err != nil {
-		t.Fatalf("Fire(poke): %v", err)
-	}
 	clk.now = epoch.Add(other)
 	if _, err = h.Tick(ctx); err != nil {
 		t.Fatalf("Tick: %v", err)
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(tail) == 0 {
+		t.Fatal("tail is empty, want the second tick left for replay")
 	}
 	recovered, err := durable.Recover(ctx, m, store, id, opts...)
 	if err != nil {
@@ -918,5 +922,50 @@ func TestRecover_TimerDueAfterTheFirstRead_NotPersisted(t *testing.T) {
 	}
 	if len(again) != 0 {
 		t.Fatalf("recovered Tick fired %d timers, want 0", len(again))
+	}
+}
+
+// TestTimerCheckpoint_BarriersCannotStepOverTheInterval proves a checkpoint still lands
+// when tick barriers keep stepping over the configured multiple.
+func TestTimerCheckpoint_BarriersCannotStepOverTheInterval(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Two Fires put the barriers on even steps, so none lands on the step before a multiple
+	// of 8, where a plain run checkpoints.
+	for _, ev := range []string{"start", "poke"} {
+		if _, err = h.Fire(ctx, ev); err != nil {
+			t.Fatalf("Fire(%s): %v", ev, err)
+		}
+	}
+	for range 50 {
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(tail) > 8 {
+		t.Fatalf("tail holds %d records after 50 ticks, want the checkpoint to bound it", len(tail))
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
 	}
 }
