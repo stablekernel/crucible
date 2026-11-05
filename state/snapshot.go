@@ -227,8 +227,8 @@ const (
 // Clock.Now() reads, and host randomness — each correlated by a stable id reused
 // from the effect that armed it (invocationID / actorInvocationID / scheduleID).
 type JournalEntry struct {
-	// Step is the Fire ordinal the result resolved at, indexing the instance's
-	// recorded Traces, so replay applies the recorded value at the right step.
+	// Step is the ordinal the result resolved at, so replay applies the recorded value
+	// at the right step.
 	Step int `json:"step"`
 	// Kind classifies which nondeterministic source produced the result.
 	Kind JournalKind `json:"kind"`

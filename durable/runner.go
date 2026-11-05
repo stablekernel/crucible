@@ -26,7 +26,7 @@ import (
 // (configuration, context, event payload, machine definition). The only input a
 // Runner must record to reproduce a run is therefore the driving event and any
 // payload it carried: each Fire appends a Record{Step, Event} where Step is the
-// produced Trace ordinal and Event is the kernel's structured Trace.EventPayload,
+// step's ordinal and Event is the kernel's structured Trace.EventPayload,
 // plus the payload's JSON form for a state.WithEventData Fire. Periodically — governed by
 // the checkpoint policy (WithCheckpointEvery) — the Runner also persists a full
 // marshaled Snapshot and compacts the journal tail through that step, so recovery
@@ -252,8 +252,8 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	buf := make([]state.JournalEntry, 0)
 	recClock := newRecordingClock(r.cfg.clock, &buf)
 	// Force unbounded full-trace history: the runner journals each step's Trace
-	// (notably the EventPayload) and derives both the step ordinal and the checkpoint
-	// snapshots from the instance's retained Trace history, so a recover can replay it
+	// (notably the EventPayload) and derives the checkpoint snapshots from the
+	// instance's retained Trace history, so a recover can replay it
 	// byte-identically. WithUnboundedHistory elevates to full trace and retains every
 	// step; it is prepended so a caller's opts cannot downgrade it.
 	castOpts := append([]state.CastOption[S]{state.WithClock[S](recClock), state.WithUnboundedHistory[S]()}, opts...)
@@ -269,7 +269,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	}
 	// Wrap the baseline snapshot in a checkpoint envelope (no timers armed yet) so
 	// every checkpoint a recover loads carries the same durable envelope shape.
-	baseEnv, err := marshalCheckpoint(snap, nil)
+	baseEnv, err := marshalCheckpoint(snap, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start checkpoint envelope for %q: %w", id, err)
 	}
@@ -354,7 +354,7 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 
 // Fire drives one event through the Handle's live instance and records the step:
 // it Fires the kernel, appends a Record carrying the driving event at the
-// produced Trace ordinal (write-ahead, before returning), and — when the
+// step's ordinal (write-ahead, before returning), and — when the
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
 // kernel transition error is recorded as a no-op (no step was produced) and
 // returned to the caller.
@@ -487,7 +487,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		// Wrap the kernel snapshot with the absolute deadlines of the timers armed at
 		// this checkpoint, so a recovery whose compacted tail no longer carries their
 		// arming ScheduleAfter can re-arm them at their recorded instants.
-		env, err := marshalCheckpoint(snap, h.timers)
+		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint envelope at step %d for %q: %w", step, h.id, err)
 		}
@@ -537,10 +537,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		return nil, fmt.Errorf("durable: instance %q has no checkpoint to restore", id)
 	}
 
-	// Unwrap the durable checkpoint envelope: the kernel snapshot bytes plus the
-	// absolute deadlines of the timers that were armed at the checkpoint. A bare
+	// Unwrap the durable checkpoint envelope: the kernel snapshot bytes, the absolute
+	// deadlines of the timers armed at the checkpoint, and the next step ordinal. A bare
 	// (pre-envelope) checkpoint yields the snapshot with no persisted timers.
-	kernelSnap, persistedTimers, err := unmarshalCheckpoint(snapBytes)
+	kernelSnap, persistedTimers, checkpointNext, err := unmarshalCheckpoint(snapBytes)
 	if err != nil {
 		return nil, fmt.Errorf("durable: unmarshaling checkpoint envelope for %q: %w", id, err)
 	}
@@ -716,15 +716,16 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// scheduler-tick barrier, which consumed one ordinal per timer it fired plus the
 	// barrier's own. The next ordinal is therefore the last tail Record's Step plus
 	// its own span. When the tail is empty (a fresh checkpoint compacted every
-	// Record), no actor or tick step survives in it, so the restored Trace count —
-	// one per pre-checkpoint step — gives the next ordinal directly.
-	next := len(inst.History())
+	// Record), the checkpoint carries the next ordinal. A Start baseline carries none and
+	// has no Traces, so its count of zero is right. A checkpoint from before this field
+	// also falls back to the Trace count, which can be off (see
+	// checkpointEnvelope.NextStep).
+	next := checkpointNext
+	if next == 0 {
+		next = len(inst.History())
+	}
 	if n := len(tail); n > 0 {
-		last := &tail[n-1]
-		next = last.Step + 1
-		if last.Tick {
-			next = last.Step + last.TickSteps + 1
-		}
+		next = tail[n-1].followingStep()
 	}
 	return &Handle[S, E, C]{
 		runner:   r,
