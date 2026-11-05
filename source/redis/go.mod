@@ -1,7 +1,7 @@
 module github.com/stablekernel/crucible/source/redis
 
-go 1.25.11
-toolchain go1.26.4
+go 1.27.3
+
 replace github.com/stablekernel/crucible/source => ../
 
 replace github.com/stablekernel/crucible/telemetry => ../../telemetry

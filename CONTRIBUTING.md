@@ -90,7 +90,7 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 - One shared **golangci-lint** config plus **gofumpt**, **staticcheck**, and
   **govulncheck**, all in CI, with **pinned tool versions** so every contributor
   and CI run uses the same toolchain.
-- **Trunk-based development** with a CI matrix over Go versions × OS, and
+- **Trunk-based development** with a CI matrix over OS, and
   **conventional + signed commits**.
 
 ### Supply chain
@@ -104,7 +104,8 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 
 Requirements:
 
-- **Go**: one of the last two minor releases (see [Supported versions](./SECURITY.md)).
+- **Go**: 1.27.3, the version every `go.mod` and `go.work` declares. CI reads it from
+  `go.work`.
 - **[Mage](https://magefile.org)**: the build tool. Install with
   `go install github.com/magefile/mage@latest`, or run targets via
   `go run github.com/magefile/mage <target>`.
@@ -135,7 +136,7 @@ Run `mage -l` to list everything. Each target iterates the suite's modules.
 
 Before you push, **tests, lint, vet, and `govulncheck` must all pass.** The
 quickest way to verify locally is `mage check`. CI runs the same gates across a
-Go-version × OS matrix on every PR.
+OS matrix on every PR.
 
 Docs-only pull requests (changing only `*.md`, `docs/`, `LICENSE`, or `NOTICE`)
 skip the Go matrix automatically and are gated solely by the aggregate `gate`
@@ -223,7 +224,7 @@ is a tag push; the `Release` workflow does the rest.
 
 4. **The workflow takes over.** On the tag push, `Release` re-runs the full
    validation gate (lint, `-race` tests, `govulncheck`, coverage threshold) for
-   the tagged module across the Go × OS matrix, then publishes a GitHub release
+   the tagged module across the OS matrix, then publishes a GitHub release
    with generated notes. A tag never publishes unless the gate is green.
 
 ## Questions & design

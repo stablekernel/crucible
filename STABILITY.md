@@ -24,6 +24,11 @@ benchmarked, not stubs. The label is about *contract stability*, not quality: pi
 exact version, read the module's `CHANGELOG.md` before upgrading, and expect the API
 to move until the module graduates to v1.
 
+## Go version
+
+Every module declares the same Go version. Raising it is at least a minor release for
+each module, and the module's changelog says so.
+
 ## Graduation to v1
 
 Promoting an experimental module to v1 means committing to a frozen public contract

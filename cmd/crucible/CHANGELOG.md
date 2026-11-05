@@ -7,6 +7,10 @@ versioned independently of the `state` module.
 
 ## [Unreleased]
 
+### Changed
+
+- Requires Go 1.27.3.
+
 ### Added
 
 - Machine visualizer: `render -format svg` renders the machine directly to a

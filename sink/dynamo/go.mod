@@ -1,14 +1,13 @@
 module github.com/stablekernel/crucible/sink/dynamo
 
-go 1.25.11
-toolchain go1.26.4
-require github.com/stablekernel/crucible/sink v0.0.0
+go 1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.9
 	github.com/aws/aws-sdk-go-v2/config v1.32.20
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.19
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.6
+	github.com/stablekernel/crucible/sink v0.0.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/localstack v0.42.0
 )

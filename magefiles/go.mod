@@ -1,5 +1,5 @@
 module github.com/stablekernel/crucible/magefiles
 
-go 1.25
-toolchain go1.26.4
+go 1.27.3
+
 require github.com/magefile/mage v1.17.2

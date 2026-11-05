@@ -9,6 +9,8 @@ time-travel operations between nodes over real gRPC (HTTP/2).
 
 Import path: `github.com/stablekernel/crucible/transport`
 
+Requires Go 1.27.3.
+
 ## What it is
 
 `cluster` spreads a `state` machine and its child-machine actors across nodes over

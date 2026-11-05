@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/cmd/crucible
 
-go 1.25.0
+go 1.27.3
 
 require (
 	github.com/stablekernel/crucible/gen v0.1.0
@@ -22,10 +22,10 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mazznoer/csscolorparser v0.1.5 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/yuin/goldmark v1.7.4 // indirect
+	github.com/yuin/goldmark v1.7.17 // indirect
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0 // indirect
 	golang.org/x/image v0.21.0 // indirect
-	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )

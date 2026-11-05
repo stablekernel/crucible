@@ -5,6 +5,12 @@ All notable changes to `crucible/source/kafka` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Requires Go 1.27.3.
+
 ## [1.0.1] — 2026-08-23
 
 Release engineering only: no code changes. The v1.0.0 tag's release workflow

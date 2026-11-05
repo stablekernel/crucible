@@ -66,7 +66,7 @@ var sourceDestinations = []string{
 
 // Pinned tool versions — keep in sync with .github/workflows/ci.yml.
 const (
-	golangciLint = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"
+	golangciLint = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
 	govulncheck  = "golang.org/x/vuln/cmd/govulncheck@v1.3.0"
 	// benchstat ships only pseudo-versions from golang.org/x/perf; pinned so
 	// local BenchCompare runs match the CI benchmark gate exactly.
