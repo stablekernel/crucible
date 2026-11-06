@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -133,12 +134,12 @@ func StateAt[S comparable, E comparable, C any](
 	bounded := boundRecords(records, step)
 	repClock := newReplayClock(clockReadings(bounded), cfg.clock)
 
-	inst, err := restoreBaseline(m, baseline, repClock)
+	inst, timers, err := restoreBaseline(m, baseline, repClock)
 	if err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded); err != nil {
+	if err := replayThrough(ctx, inst, &cfg, bounded, timers, repClock); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -195,30 +196,29 @@ func lastStep(records []Record) int {
 
 // restoreBaseline unwraps the baseline checkpoint envelope and restores a detached
 // kernel instance from it under the bounded replay clock, so the reconstruction
-// reads recorded instants rather than the wall clock. The baseline carries no armed
-// timers (it is the pre-event cast), so its envelope's timer table is empty and only
-// the snapshot matters here.
+// reads recorded instants rather than the wall clock. It also returns the timers the
+// baseline carries, which the replay must re-arm before it runs.
 func restoreBaseline[S comparable, E comparable, C any](
 	m *state.Machine[S, E, C],
 	baseline []byte,
 	repClock state.Clock,
-) (*state.Instance[S, E, C], error) {
-	kernelSnap, _, _, err := unmarshalCheckpoint(baseline)
+) (*state.Instance[S, E, C], []pendingTimerWire, error) {
+	kernelSnap, timers, _, err := unmarshalCheckpoint(baseline)
 	if err != nil {
-		return nil, fmt.Errorf("unmarshaling baseline envelope: %w", err)
+		return nil, nil, fmt.Errorf("unmarshaling baseline envelope: %w", err)
 	}
 	snap, err := state.UnmarshalSnapshot[S, E, C](kernelSnap)
 	if err != nil {
-		return nil, fmt.Errorf("unmarshaling baseline snapshot: %w", err)
+		return nil, nil, fmt.Errorf("unmarshaling baseline snapshot: %w", err)
 	}
 	// Reconstruct in the same full-trace, unbounded-history mode the runner records
 	// in, so a time-travel reconstruction's Trace history is byte-identical to the
 	// live run it replays.
 	inst, err := m.Restore(snap, state.WithRestoreClock[S](repClock), state.WithRestoreUnboundedHistory[S]())
 	if err != nil {
-		return nil, fmt.Errorf("restoring baseline snapshot: %w", err)
+		return nil, nil, fmt.Errorf("restoring baseline snapshot: %w", err)
 	}
-	return inst, nil
+	return inst, timers, nil
 }
 
 // replayThrough replays the bounded record window forward into inst, reproducing the
@@ -233,14 +233,32 @@ func replayThrough[S comparable, E comparable, C any](
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
 	bounded []Record,
+	timers []pendingTimerWire,
+	repClock *replayClock,
 ) error {
 	sched := state.NewScheduler(inst)
+
+	// Re-arm the baseline's timers before the window replays, because it can fire them.
+	// As in Recover, the deadlines are absolute, so a held instant keeps this read from
+	// consuming a recorded reading.
+	armedAt := time.Unix(0, 0).UTC()
+	reEffects, _, err := reArmEffects(cfg.eventCodec, timers, armedAt)
+	if err != nil {
+		return fmt.Errorf("re-arming baseline timers: %w", err)
+	}
+	if len(reEffects) > 0 {
+		repClock.hold(armedAt)
+		sched.Absorb(ctx, reEffects)
+		repClock.release()
+	}
 
 	svc := newReplayServiceRunner(inst, cfg)
 	if svc != nil {
 		svc.Absorb(ctx, inst.StartEffects())
 	}
 
+	reads := 0 // clock readings through the current Record
+	settles := settleClock{clock: repClock}
 	for i := range bounded {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
 		// state short of the journal, so check it before each Record.
@@ -248,6 +266,8 @@ func replayThrough[S comparable, E comparable, C any](
 			return err
 		}
 		rec := &bounded[i]
+		reads += clockReadCount(rec)
+		settles.next(rec)
 		switch {
 		case hasActorEntry(rec):
 			for _, entry := range actorEntries(rec) {
@@ -257,11 +277,19 @@ func replayThrough[S comparable, E comparable, C any](
 			}
 		case hasServiceEntry(rec):
 			for _, entry := range serviceEntries(rec) {
-				if _, err := replayService(ctx, svc, entry); err != nil {
+				effects, err := replayService(ctx, svc, entry)
+				if err != nil {
 					return fmt.Errorf("at step %d: %w", rec.Step, err)
 				}
+				if hasTimerEffect(effects) {
+					settles.absorb(rec, reads, func() { sched.Absorb(ctx, effects) })
+				}
 			}
+		case rec.Tick && rec.TickSteps == 0:
+			// Only an older journal holds a tick that fired nothing. Don't tick: a timer
+			// re-armed from a checkpoint could be due by now, and the Record says otherwise.
 		case rec.Tick:
+			repClock.skipTo(reads - tickReads(rec.TickSteps))
 			sched.Tick(ctx)
 		case len(rec.Event) == 0:
 			continue // a checkpoint-only Record drives no event
@@ -279,6 +307,7 @@ func replayThrough[S comparable, E comparable, C any](
 				return fmt.Errorf("replaying step %d: %w", rec.Step, res.Err)
 			}
 			if hasTimerEffect(res.Effects) {
+				repClock.skipTo(reads - 1)
 				sched.Absorb(ctx, res.Effects)
 			}
 			if svc != nil {

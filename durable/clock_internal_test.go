@@ -167,3 +167,26 @@ func TestHasTimerEffect(t *testing.T) {
 		t.Fatal("no effects must not count as a timer effect")
 	}
 }
+
+// TestSettleClock_ReadLessSettlesPeekWithoutConsuming confirms read-less settles take the
+// readings after their Record in order and leave the cursor, so the next Record can still
+// read its own, and that a settle past the last reading reports it lost.
+func TestSettleClock_ReadLessSettlesPeekWithoutConsuming(t *testing.T) {
+	at := func(n int64) time.Time { return time.Unix(0, n).UTC() }
+	c := newReplayClock([]int64{10, 20}, state.NewFakeClock(clockEpoch))
+	s := settleClock{clock: c}
+	rec := &Record{}
+	for _, want := range []int64{10, 20} {
+		got, lost := s.absorb(rec, 0, func() { c.Now() })
+		if lost || !got.Equal(at(want)) {
+			t.Fatalf("absorb: got %v lost %v, want %d", got, lost, want)
+		}
+	}
+	got, lost := s.absorb(rec, 0, func() { c.Now() })
+	if !lost || !got.Equal(clockEpoch) {
+		t.Fatalf("a settle past the last reading: got %v lost %v, want the fallback clock", got, lost)
+	}
+	if c.cursor != 0 {
+		t.Fatalf("cursor at %d, want 0: a settle must leave the next Record's readings", c.cursor)
+	}
+}

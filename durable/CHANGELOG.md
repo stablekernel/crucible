@@ -91,6 +91,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
   and `DeliverToActor` now advance the next step as soon as the append lands.
+- **Timers survive recovery.** `Start` now arms the initial state's timers, which it never
+  did, so a new instance starting in a timed state fires a timer it didn't before. It
+  carries them in the baseline; an instance started earlier keeps its initial timer
+  unarmed. Recovery re-arms checkpointed timers before the tail replays, so one fired in
+  the tail isn't missed, and a timer armed by a service result now replays. `StateAt`
+  re-arms baseline timers too, so its result changes when one fires in the window, and it
+  fails if a timer's event won't decode with the options passed.
+- **A tick that fires nothing records nothing.** It used to append a Record every time,
+  so a timer loop grew the journal while a timer was pending. An idle `Tick` doesn't touch
+  the Store, so it can't report `ErrFenced` or a Store failure: a stale owner finds out on
+  its next real step. Replay still reads older journals, whose idle Records and misplaced
+  settle clock reads it aligns on. Two kinds of older journal can't be repaired, and can
+  recover differently or fail `Recover`: an instance that continued after an older
+  recovery missed a fired timer, and a checkpoint taken after a tick that followed a settle
+  or whose clock moved mid-tick, which can hold a wrong timer table.
 - **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
   dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
   baseline and before writing it, and only if the entry succeeded. Those effects are

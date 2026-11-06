@@ -31,9 +31,9 @@ import (
 // step may absorb several effects. The recordingClock accumulates reads into a
 // shared buffer the Handle flushes into the Record.Entries of the step during
 // which they occurred (the step whose Fire/Tick produced them), in read order.
-// Replay is order-driven, not step-keyed: the replayClock walks every recorded
-// JournalClockRead across the loaded tail in recorded order and returns each
-// reading once, so the scheduler re-derives identical deadlines.
+// Replay walks every recorded JournalClockRead across the loaded tail in recorded
+// order, aligning on each Record because a step's own readings are the last in it, so
+// the scheduler re-derives identical deadlines.
 
 // recordingClock wraps a real state.Clock and records every Now() reading as a
 // JournalClockRead into a shared buffer, in read order. After delegates to the
@@ -117,18 +117,20 @@ func (c *recordingClock) armReadingAt(i int) (time.Time, bool) {
 // readings and returns each once.
 //
 // When the cursor is exhausted — a Now() beyond the recorded readings, which
-// happens on the live re-arm after replay — it falls through to a real clock so
+// happens on live continuation after replay — it falls through to a real clock so
 // post-recovery timing continues against wall time. The fallthrough never affects
 // the replayed prefix, which is fully determined by the journal.
 type replayClock struct {
 	mu       sync.Mutex
 	readings []int64
 	cursor   int
+	held     *time.Time // a fixed reading set by hold, nil otherwise
+	last     time.Time  // the last reading Now returned, see lastRead
 	fallback state.Clock
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
-// to fallback once the readings are exhausted (the live re-arm after replay).
+// to fallback once the readings are exhausted (live continuation after replay).
 func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 	return &replayClock{readings: readings, fallback: fallback}
 }
@@ -138,12 +140,115 @@ func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 func (c *replayClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cursor < len(c.readings) {
-		t := time.Unix(0, c.readings[c.cursor]).UTC()
-		c.cursor++
-		return t
+	if c.held != nil {
+		return *c.held
 	}
-	return c.fallback.Now()
+	if c.cursor < len(c.readings) {
+		c.last = time.Unix(0, c.readings[c.cursor]).UTC()
+		c.cursor++
+		return c.last
+	}
+	c.last = c.fallback.Now()
+	return c.last
+}
+
+// skipTo moves the cursor forward to reading n and never back. Replay aligns on each
+// Record this way, because a step's own readings are the last ones in its Record: an
+// older journal left a settle's reading at the front of the next Record, which replay
+// either consumed at the settle or must pass over.
+func (c *replayClock) skipTo(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cursor < n {
+		c.cursor = n
+	}
+}
+
+// lastRead returns the instant the last Now returned outside a hold: the one a
+// Scheduler.Absorb just armed its timers at.
+func (c *replayClock) lastRead() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
+// readingAt returns reading i without moving the cursor.
+func (c *replayClock) readingAt(i int) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < 0 || i >= len(c.readings) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, c.readings[i]).UTC(), true
+}
+
+// settleClock aligns a replayed settle's Absorb. A settle's own reading ends its Record.
+// An older journal's settle Record holds none: its reading opens the next Record, if the
+// process that took the settle lived to take the next step. If not, that Record holds
+// only its own readings, so a settle must not consume them. It peeks instead, and each
+// Record still aligns from its end.
+type settleClock struct {
+	clock *replayClock
+	older int // read-less settles since the last Record that held a reading
+}
+
+// next records that replay reached rec.
+func (s *settleClock) next(rec *Record) {
+	if clockReadCount(rec) > 0 {
+		s.older = 0
+	}
+}
+
+// absorb runs absorb for a settle's timers at the reading they were armed at, and returns
+// that instant. lost is true when the journal holds no such reading, so the fallback
+// clock supplied it, and the caller should carry that read into the next step's Record.
+func (s *settleClock) absorb(rec *Record, end int, absorb func()) (at time.Time, lost bool) {
+	if clockReadCount(rec) > 0 {
+		s.clock.skipTo(end - 1)
+		absorb()
+		return s.clock.lastRead(), false
+	}
+	if t, ok := s.clock.readingAt(end + s.older); ok {
+		s.older++
+		s.clock.hold(t)
+		absorb()
+		s.clock.release()
+		return t, false
+	}
+	t := s.clock.fallback.Now()
+	s.clock.hold(t)
+	absorb()
+	s.clock.release()
+	return t, true
+}
+
+// tickReads returns how many clock readings a tick that fired n timers takes: one to pick
+// each timer, one to absorb its effects, and a last read that finds nothing due.
+func tickReads(n int) int { return 2*n + 1 }
+
+// clockReadCount returns how many clock readings rec holds.
+func clockReadCount(rec *Record) int {
+	n := 0
+	for _, e := range rec.Entries {
+		if e.Kind == state.JournalClockRead {
+			n++
+		}
+	}
+	return n
+}
+
+// hold makes Now return t without consuming a reading, until release.
+func (c *replayClock) hold(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = &t
+}
+
+// release ends a hold.
+func (c *replayClock) release() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = nil
 }
 
 // After delegates to the fallback clock; replay drives elapses through Now + Tick

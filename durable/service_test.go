@@ -487,8 +487,570 @@ func fetchThenWaitMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, str
 		Initial("idle").
 		Transition("idle").On("start").GoTo("loading").
 		Transition("loading").On("ok").GoTo("waiting").Do("notify").
+		Transition("waiting").On("poke").GoTo("waiting").
 		Transition("waiting").After(5 * time.Second).On("elapsed").GoTo("done").
 		Quench()
+}
+
+// TestService_TimerArmedBySettle_ReplaysOnRecover proves a timer armed by a service
+// result survives recovery, with an idle tick between the settle and the tick that
+// fires it.
+func TestService_TimerArmedBySettle_ReplaysOnRecover(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchThenWaitMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	clk.Advance(time.Second) // the settle's read differs from the earlier ones
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+	for _, d := range []time.Duration{2 * time.Second, 4 * time.Second} { // idle, then due
+		clk.Advance(d)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	if got := h.Instance().Current(); got != "done" {
+		t.Fatalf("live state %q, want done", got)
+	}
+
+	// A clock still at the start proves the timer replays at its recorded instant.
+	recovered, err := durable.Recover(ctx, m, store, id, append(opts, durable.WithRunnerClock[string, string, svcCtx](state.NewFakeClock(epoch)))...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("service ran %d times, want 1: recovery replays the recorded result", got)
+	}
+}
+
+// TestStateAt_TimerArmedBySettle_Fires proves a historical read arms a timer from a
+// recorded service result, so it fires in the replayed window as it did live.
+func TestStateAt_TimerArmedBySettle_Fires(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchThenWaitMachine(fn)
+	store := durable.NewMemStore(durable.WithHistory())
+	id := durable.InstanceID("fetch-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+	clk.Advance(6 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	view, err := durable.StateAt(ctx, m, store, id, 2, opts...) // the tick's barrier
+	if err != nil {
+		t.Fatalf("StateAt: %v", err)
+	}
+	if got := view.Instance().Current(); got != "done" {
+		t.Fatalf("StateAt state %q, want done", got)
+	}
+}
+
+// TestRecover_TimerArmedBySettle_SurvivesALaterCheckpoint proves recovery keeps a timer
+// armed by a replayed service result in the table the next checkpoint persists, so a
+// second recovery from that checkpoint still fires it.
+func TestRecover_TimerArmedBySettle_SurvivesALaterCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchThenWaitMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+		durable.WithCheckpointEvery[string, string, svcCtx](3),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+
+	first, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("first Recover: %v", err)
+	}
+	for range 3 { // cross a checkpoint boundary after the settle has replayed
+		if _, err = first.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke): %v", err)
+		}
+	}
+
+	second, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("second Recover: %v", err)
+	}
+	clk.Advance(6 * time.Second)
+	if _, err = second.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := second.Instance().Current(); got != "done" {
+		t.Fatalf("state %q after the second recovery, want done", got)
+	}
+}
+
+// fetchChainMachine arms a timer on a service result, then chains a second one.
+func fetchChainMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
+	return state.ForgeFor[svcCtx]("fetchChain").
+		Service("fetch", fn).
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("waiting").
+		State("next").
+		State("done").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("waiting").
+		Transition("waiting").On("poke").GoTo("waiting").
+		Transition("waiting").After(5 * time.Second).On("first").GoTo("next").
+		Transition("next").After(5 * time.Second).On("second").GoTo("done").
+		Quench()
+}
+
+// olderSettle splits a settle Record as an older journal wrote it: the Record without its
+// clock read, and that read, which the older code left for the next Record to carry.
+func olderSettle(settle durable.Record) (durable.Record, state.JournalEntry) {
+	var read state.JournalEntry
+	var kept []state.JournalEntry
+	for _, e := range settle.Entries {
+		if e.Kind == state.JournalClockRead {
+			read = e
+			continue
+		}
+		kept = append(kept, e)
+	}
+	settle.Entries = kept
+	return settle, read
+}
+
+// clockReadAt is a recorded clock read d after epoch.
+func clockReadAt(d time.Duration) state.JournalEntry {
+	return state.JournalEntry{Kind: state.JournalClockRead, ClockUnixNano: epoch.Add(d).UnixNano()}
+}
+
+// startFetchChain starts a fetchChainMachine and settles its service.
+func startFetchChain(
+	t *testing.T,
+	m *state.Machine[string, string, svcCtx],
+	store durable.Store,
+	id durable.InstanceID,
+	opts []durable.Option[string, string, svcCtx],
+) *durable.Handle[string, string, svcCtx] {
+	t.Helper()
+	ctx := context.Background()
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchChain", "loading", 0))
+	return h
+}
+
+// appendAll appends recs to store, failing the test on any error.
+func appendAll(t *testing.T, store durable.Store, id durable.InstanceID, recs ...durable.Record) {
+	t.Helper()
+	for _, rec := range recs {
+		if _, err := store.Append(context.Background(), id, rec); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+}
+
+// TestRecover_OlderJournal_SettleReadInIdleTick_KeepsReplayClockAligned proves replay stays
+// on the recorded readings when an older journal carries a settle's clock read in the idle
+// tick Record after it. Replay consumes that read at the settle, so skipping the idle tick
+// must not consume it again, or the last tick reads the live clock and fires a timer no
+// Record holds.
+func TestRecover_OlderJournal_SettleReadInIdleTick_KeepsReplayClockAligned(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	store := durable.NewMemStore()
+	h := startFetchChain(t, m, store, id, opts)
+	clk.Advance(6 * time.Second)
+	if _, err := h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	settle, settleRead := olderSettle(tail[1])
+	firstIdle := durable.Record{Step: 2, Tick: true, Entries: []state.JournalEntry{settleRead, clockReadAt(time.Second)}}
+	secondIdle := durable.Record{Step: 3, Tick: true, Entries: []state.JournalEntry{clockReadAt(2 * time.Second)}}
+	tick := tail[2]
+	tick.Step = 4
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, tail[0], settle, firstIdle, secondIdle, tick)
+
+	clk.Advance(94 * time.Second) // the wall clock is far past every timer at recovery
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "next" {
+		t.Fatalf("recovered state %q, want next", got)
+	}
+}
+
+// TestRecover_OlderJournal_TickPassesAnEarlierSettleRead proves a tail tick fires its
+// timer when an older journal left a read at the front of its Record that no replayed
+// settle consumed, because a checkpoint compacted the settle away.
+func TestRecover_OlderJournal_TickPassesAnEarlierSettleRead(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	// One run takes the checkpoint at the settle; a second, with none, gives the tick Record.
+	checkpointed := durable.NewMemStore()
+	startFetchChain(t, m, checkpointed, id, append(opts[:2:2], durable.WithCheckpointEvery[string, string, svcCtx](2)))
+	snapshot, compacted, err := checkpointed.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(compacted) != 0 {
+		t.Fatalf("tail holds %d records, want the settle checkpointed", len(compacted))
+	}
+	store := durable.NewMemStore()
+	h := startFetchChain(t, m, store, id, opts)
+	clk.Advance(6 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	tick := tail[2]
+	tick.Entries = append([]state.JournalEntry{clockReadAt(0)}, tick.Entries...)
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, durable.Record{Step: 0}, durable.Record{Step: 1})
+	if err = older.Checkpoint(ctx, id, snapshot, 1); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	appendAll(t, older, id, tick)
+
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "next" {
+		t.Fatalf("recovered state %q, want next", got)
+	}
+	view, err := durable.StateAt(ctx, m, older, id, tick.Step, opts...)
+	if err != nil {
+		t.Fatalf("StateAt: %v", err)
+	}
+	if got := view.Instance().Current(); got != "next" {
+		t.Fatalf("StateAt state %q, want next", got)
+	}
+}
+
+// TestRecover_OlderJournal_SettleSkipsAnUnusedRead proves a replayed settle arms from its
+// own reading, not a stale one an older journal left in an earlier Record that no Absorb
+// consumed.
+func TestRecover_OlderJournal_SettleSkipsAnUnusedRead(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	store := durable.NewMemStore()
+	startFetchChain(t, m, store, id, opts)
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	fire := tail[0]
+	fire.Entries = append([]state.JournalEntry{clockReadAt(0)}, fire.Entries...) // unused
+	settle, _ := olderSettle(tail[1])
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, fire, settle,
+		durable.Record{Step: 2, Tick: true, Entries: []state.JournalEntry{clockReadAt(time.Second)}})
+
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	clk.Advance(5*time.Second + 500*time.Millisecond) // the timer is due at 6s, from the settle's read
+	for range 2 {                                     // a misaligned replay leaves a reading for the first
+		fired, err := recovered.Tick(ctx)
+		if err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+		if len(fired) != 0 {
+			t.Fatalf("Tick fired %d timers before the deadline, want 0", len(fired))
+		}
+	}
+}
+
+// TestRecover_OlderJournal_SettleReadLostToARestart_LeavesTheNextStepsReads proves a
+// read-less settle doesn't consume the next Record's reading when a restart lost its own.
+// That reading stands in for the lost one, and the tick after it still fires what it
+// recorded.
+func TestRecover_OlderJournal_SettleReadLostToARestart_LeavesTheNextStepsReads(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	store := durable.NewMemStore()
+	h := startFetchChain(t, m, store, id, opts)
+	clk.Advance(6 * time.Second)
+	if _, err := h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	settle, _ := olderSettle(tail[1]) // the restart lost its read
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	tick := tail[2]
+	tick.Step = 3
+	appendAll(t, older, id, tail[0], settle,
+		durable.Record{Step: 2, Tick: true, Entries: []state.JournalEntry{clockReadAt(time.Second)}}, tick)
+
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "next" {
+		t.Fatalf("recovered state %q, want next", got)
+	}
+	view, err := durable.StateAt(ctx, m, older, id, tick.Step, opts...)
+	if err != nil {
+		t.Fatalf("StateAt: %v", err)
+	}
+	if got := view.Instance().Current(); got != "next" {
+		t.Fatalf("StateAt state %q, want next", got)
+	}
+}
+
+// TestRecover_OlderJournal_TailEndingOnASettle_CarriesItsRead proves recovery keeps the
+// read it took for a settle that ended an older journal: the next step's Record carries
+// it, so a later recovery arms that timer at the same instant.
+func TestRecover_OlderJournal_TailEndingOnASettle_CarriesItsRead(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	store := durable.NewMemStore()
+	startFetchChain(t, m, store, id, opts)
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	settle, _ := olderSettle(tail[1])
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, tail[0], settle)
+
+	clk.Advance(3 * time.Second)
+	first, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("first Recover: %v", err)
+	}
+	clk.Advance(6 * time.Second) // due at 8s, from the recovery's read
+	if _, err = first.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := first.Instance().Current(); got != "next" {
+		t.Fatalf("live state %q, want next", got)
+	}
+	second, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("second Recover: %v", err)
+	}
+	if got := second.Instance().Current(); got != "next" {
+		t.Fatalf("recovered state %q, want next", got)
+	}
+}
+
+// TestRecover_OlderJournal_LeftoverReadStaysOutOfTheLiveClock proves a reading no step
+// consumed at the end of a tail doesn't reach the live clock, so a timer armed after
+// recovery measures from the real time.
+func TestRecover_OlderJournal_LeftoverReadStaysOutOfTheLiveClock(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+	}
+	store := durable.NewMemStore()
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fire := tail[0]
+	fire.Entries = append([]state.JournalEntry{clockReadAt(0)}, fire.Entries...) // no Absorb used it
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, fire)
+
+	clk.Advance(94 * time.Second)
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	mustRunService(t, recovered, state.InvokeID("fetchChain", "loading", 0)) // arms 5s, due at 99s
+	clk.Advance(time.Second)
+	fired, err := recovered.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(fired) != 0 {
+		t.Fatalf("Tick fired %d timers before the deadline, want 0", len(fired))
+	}
+}
+
+// TestRecover_OlderJournal_SettleTimerReachesTheNextCheckpoint proves a timer armed by an
+// older settle Record, which holds no clock read, still reaches the Handle's table, so the
+// next checkpoint persists it and a second recovery fires it.
+func TestRecover_OlderJournal_SettleTimerReachesTheNextCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchChainMachine(fn)
+	clk := state.NewFakeClock(epoch)
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{
+		durable.WithRunnerClock[string, string, svcCtx](clk),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)),
+		durable.WithCheckpointEvery[string, string, svcCtx](6),
+	}
+	store := durable.NewMemStore()
+	startFetchChain(t, m, store, id, opts)
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	settle, settleRead := olderSettle(tail[1])
+	older := durable.NewMemStore()
+	if _, err = durable.NewRunner(m, older, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	appendAll(t, older, id, tail[0], settle,
+		durable.Record{Step: 2, Tick: true, Entries: []state.JournalEntry{settleRead, clockReadAt(time.Second)}})
+
+	first, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("first Recover: %v", err)
+	}
+	for range 3 { // cross a checkpoint boundary after the settle has replayed
+		if _, err = first.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke): %v", err)
+		}
+	}
+	second, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("second Recover: %v", err)
+	}
+	clk.Advance(6 * time.Second)
+	if _, err = second.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := second.Instance().Current(); got != "next" {
+		t.Fatalf("state %q after the second recovery, want next", got)
+	}
 }
 
 // TestService_ResultFromCanceledTurn_NotCommittedOnRecover proves a service result

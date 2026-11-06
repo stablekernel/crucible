@@ -80,7 +80,7 @@ type Record struct {
 	Tick bool
 
 	// TickSteps is the number of timer transitions the tick at this barrier fired
-	// (zero for a tick that found nothing due). It lets replay advance its step
+	// (zero only in a journal from before idle ticks stopped recording). It lets replay advance its step
 	// accounting across a re-derived tick without a recorded Event per timer.
 	TickSteps int
 }
