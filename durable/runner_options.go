@@ -16,9 +16,10 @@ type Option[S comparable, E comparable, C any] func(*runnerConfig[S, E, C])
 
 // runnerConfig holds resolved Option state for a Runner.
 type runnerConfig[S comparable, E comparable, C any] struct {
-	// checkpointEvery is the checkpoint policy: persist a full Snapshot and
-	// compact the journal tail every N fired steps. Zero (the default) takes no
-	// periodic checkpoint, so recovery replays from the start baseline.
+	// checkpointEvery is the checkpoint policy: persist a full Snapshot and compact the
+	// journal tail after each step that brings the next ordinal to or past a multiple of
+	// N. Zero (the default) takes no periodic checkpoint, so recovery replays from the
+	// start baseline.
 	checkpointEvery int
 	// eventCodec reconstructs a recorded event for replay; it defaults to JSON.
 	eventCodec EventCodec[E]
@@ -51,10 +52,12 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 }
 
 // WithCheckpointEvery sets the checkpoint policy: the Runner persists a full
-// Snapshot and compacts the journal tail every n fired steps, bounding both the
-// stored tail and the replay length on recovery. A non-positive n disables
-// periodic checkpointing (the default), so recovery replays the whole run from
-// the start baseline.
+// Snapshot and compacts the journal tail after each step that brings the next step
+// ordinal to or past a multiple of n, so n=8 lands on Step 7 for plain steps. This bounds
+// both the stored tail and the replay length on recovery. Each recorded step takes one
+// ordinal, except a Tick that fires timers, which takes one plus one per timer fired. A
+// non-positive n disables periodic checkpointing (the default), so recovery replays the
+// whole run from the start baseline.
 func WithCheckpointEvery[S comparable, E comparable, C any](n int) Option[S, E, C] {
 	return func(c *runnerConfig[S, E, C]) {
 		if n > 0 {

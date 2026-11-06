@@ -575,9 +575,12 @@ func (h *Handle[S, E, C]) commitStep(ctx context.Context, rec *Record, effects [
 	return h.checkpointStep(ctx, rec.Step, rec)
 }
 
-// checkpointDue reports whether the checkpoint policy lands a checkpoint at step.
-func (h *Handle[S, E, C]) checkpointDue(step int) bool {
-	return h.runner.cfg.checkpointEvery > 0 && (step+1)%h.runner.cfg.checkpointEvery == 0
+// checkpointDue reports whether rec crosses a checkpoint boundary. It compares the
+// ordinals rec spans rather than testing rec's own Step, because a tick barrier consumes
+// several ordinals and can step over the one a fixed multiple would land on.
+func (h *Handle[S, E, C]) checkpointDue(rec *Record) bool {
+	every := h.runner.cfg.checkpointEvery
+	return every > 0 && rec.followingStep()/every > rec.Step/every
 }
 
 // appendStep marshals the due checkpoint snapshot into rec (so the Record carries it)
@@ -587,7 +590,7 @@ func (h *Handle[S, E, C]) checkpointDue(step int) bool {
 // — so a crash between append and dispatch leaves the effect recoverable from the
 // still-present tail rather than orphaned behind the compaction.
 func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record) error {
-	if h.checkpointDue(step) {
+	if h.checkpointDue(rec) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint at step %d for %q: %w", step, h.id, err)
@@ -612,7 +615,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 // step's domain effects have been dispatched, so the compaction never discards a
 // not-yet-dispatched effect.
 func (h *Handle[S, E, C]) checkpointStep(ctx context.Context, step int, rec *Record) error {
-	if !h.checkpointDue(step) {
+	if !h.checkpointDue(rec) {
 		return nil
 	}
 	if err := h.runner.store.Checkpoint(ctx, h.id, rec.Snapshot, step, WithCheckpointFence(h.runner.cfg.fence)); err != nil {
