@@ -43,7 +43,7 @@ import (
 // ErrStepOutOfRange is reported by StateAt when the requested step is below the
 // start baseline or beyond the instance's last recorded step. Callers match it with
 // errors.Is.
-var ErrStepOutOfRange = errors.New("crucible/durable: time-travel step out of range")
+var ErrStepOutOfRange = errors.New(errorPrefix + errorStepOutOfRange)
 
 // BaselineStep is the step that addresses an instance's start baseline — its state
 // immediately after Start, before any event fired. StateAt(ctx, m, st, id,

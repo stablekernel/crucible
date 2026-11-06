@@ -18,11 +18,11 @@ import (
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
-		return fmt.Errorf("crucible/durable: opening dir %q to sync: %w", dir, err)
+		return fmt.Errorf("durable: opening dir %q to sync: %w", dir, err)
 	}
 	defer func() { _ = d.Close() }()
 	if err := d.Sync(); err != nil {
-		return fmt.Errorf("crucible/durable: syncing dir %q: %w", dir, err)
+		return fmt.Errorf("durable: syncing dir %q: %w", dir, err)
 	}
 	return nil
 }

@@ -55,7 +55,8 @@
 //
 // FileStore is the on-disk reference implementation: a directory of per-instance
 // subdirectories, each holding an append-only journal, an atomic checkpoint, an
-// idempotency ledger, and a dispatched-effect log. Each Append flushes to stable
+// idempotency ledger, a dispatched-effect log and, once fenced, a fence file. Each
+// Append flushes to stable
 // storage; each Checkpoint uses write-temp+rename for crash-safe atomicity. Use
 // FileStore when you need durability across restarts without a database.
 //

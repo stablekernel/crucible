@@ -43,6 +43,9 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// whose transitions emit side-effecting domain effects supplies it with
 	// WithEffectHandler.
 	effectHandler EffectHandler
+	// fence is the owner's fence token, carried on every Append and Checkpoint. Zero
+	// (the default) carries none.
+	fence int64
 }
 
 // WithCheckpointEvery sets the checkpoint policy: the Runner persists a full
@@ -138,6 +141,24 @@ func WithEffectHandler[S comparable, E comparable, C any](h EffectHandler) Optio
 	return func(c *runnerConfig[S, E, C]) {
 		if h != nil {
 			c.effectHandler = h
+		}
+	}
+}
+
+// WithOwnerFence sets the fence token a Runner carries on every Append and
+// Checkpoint, so a Handle that has lost the instance to a newer owner gets ErrFenced
+// instead of committing. Pass the token the host's lease issued; a retry by the same
+// owner keeps the same token. A non-positive token is the same as no token, which a
+// fenced instance refuses. MarkDispatched is not fenced.
+//
+// The token applies to every instance the Runner drives, so a host with a token per
+// instance passes it to Recover, or builds a Runner per instance. No fence token is written
+// at recovery: a Store first sees the token on the owner's first write, and a stale
+// write that lands before that one surfaces to the owner as ErrStepConflict.
+func WithOwnerFence[S comparable, E comparable, C any](token int64) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if token > 0 {
+			c.fence = token
 		}
 	}
 }

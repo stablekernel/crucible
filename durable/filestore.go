@@ -27,8 +27,9 @@ import (
 //	<root>/<encoded-id>/journal.log     append-only, one JSON Record per line
 //	<root>/<encoded-id>/checkpoint.snap latest checkpoint Snapshot bytes
 //	<root>/<encoded-id>/checkpoint.meta latest checkpoint throughStep
-//	<root>/<encoded-id>/applied.log     append-only idempotency ledger (key\tseq)
+//	<root>/<encoded-id>/applied.log     append-only idempotency ledger, one JSON line per key (key, seq, digest)
 //	<root>/<encoded-id>/dispatched.log  append-only dispatched effect ids
+//	<root>/<encoded-id>/fence           highest fence token seen, once there is one
 //
 // The journal is the source of truth for the post-checkpoint Record tail; the
 // checkpoint files hold the compacted prefix's Snapshot; the applied ledger
@@ -49,6 +50,12 @@ import (
 //
 // All methods are safe for concurrent use; a per-instance mutex serializes
 // writes to one instance's files while distinct instances proceed independently.
+//
+// A directory belongs to one open FileStore at a time. Each keeps an in-memory index
+// it never re-reads, so two over one directory, in one process or two, can overwrite
+// each other: conflicting steps can reach the journal and the fence can go down.
+// FileStore's fencing holds only between writers sharing one FileStore. A
+// multi-process host needs a networked backend.
 type FileStore struct {
 	cfg  fileStoreConfig
 	root string
@@ -83,9 +90,11 @@ type fileInstance struct {
 	maxStep int
 	// seq is the monotonic per-instance append sequence.
 	seq int64
-	// applied maps an idempotency key to the seq assigned on first append. It is
+	// applied maps an idempotency key to what the first append recorded. It is
 	// seeded from applied.log so a compacted step's key still dedups.
-	applied map[string]int64
+	applied map[string]appliedRecord
+	// fence is the highest fence token seen for the instance. Zero means none.
+	fence int64
 	// dispatched is the set of effect ids already applied for the instance.
 	dispatched map[string]struct{}
 }
@@ -97,10 +106,10 @@ type fileInstance struct {
 // options; with none supplied it returns a ready store.
 func NewFileStore(dir string, opts ...FileStoreOption) (*FileStore, error) {
 	if dir == "" {
-		return nil, errors.New("crucible/durable: FileStore dir must not be empty")
+		return nil, errors.New("durable: FileStore dir must not be empty")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("crucible/durable: creating FileStore root %q: %w", dir, err)
+		return nil, fmt.Errorf("durable: creating FileStore root %q: %w", dir, err)
 	}
 	return &FileStore{
 		cfg:       resolveFileStore(opts...),
@@ -127,6 +136,7 @@ const (
 	metaFile       = "checkpoint.meta"
 	appliedFile    = "applied.log"
 	dispatchedFile = "dispatched.log"
+	fenceFile      = "fence"
 )
 
 // instance returns the in-memory index for id, loading it from disk on first
@@ -147,7 +157,7 @@ func (s *FileStore) instance(id InstanceID) (*fileInstance, bool, error) {
 			dir:         instanceDir(s.root, id),
 			throughStep: noCheckpoint,
 			maxStep:     noRecord,
-			applied:     make(map[string]int64),
+			applied:     make(map[string]appliedRecord),
 			dispatched:  make(map[string]struct{}),
 		}
 		s.instances[id] = inst
@@ -167,21 +177,24 @@ func (s *FileStore) instance(id InstanceID) (*fileInstance, bool, error) {
 	return inst, inst.existed, nil
 }
 
-// load reconstructs the instance index from its on-disk files. It returns
-// whether the instance directory existed (an instance ever written). A torn
-// trailing journal line is skipped without error.
+// load reconstructs the instance index from its on-disk files. It returns whether
+// the directory exists, unless it holds only a fence. A torn trailing journal line is
+// skipped without error.
 func (fi *fileInstance) load() (bool, error) {
 	info, err := os.Stat(fi.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
-		return false, fmt.Errorf("crucible/durable: stat instance dir %q: %w", fi.dir, err)
+		return false, fmt.Errorf("durable: stat instance dir %q: %w", fi.dir, err)
 	}
 	if !info.IsDir() {
-		return false, fmt.Errorf("crucible/durable: instance path %q is not a directory", fi.dir)
+		return false, fmt.Errorf("durable: instance path %q is not a directory", fi.dir)
 	}
 
+	if err := fi.loadFence(); err != nil {
+		return false, err
+	}
 	if err := fi.loadCheckpoint(); err != nil {
 		return false, err
 	}
@@ -194,7 +207,52 @@ func (fi *fileInstance) load() (bool, error) {
 	if err := fi.loadDispatched(); err != nil {
 		return false, err
 	}
-	return true, nil
+	// A directory holding only a fence is a first write that never landed, such as a
+	// crashed Start, so the instance was never written and Start may run again. A
+	// directory with no fence keeps its old meaning, so it still counts as existing.
+	return fi.fence == 0 || fi.checkpoint != nil || len(fi.tail) > 0 || len(fi.applied) > 0 || len(fi.dispatched) > 0, nil
+}
+
+// loadFence reads the highest fence token seen, if any. The file is written
+// atomically, so an unreadable one is corruption and fails loudly: reading it as
+// zero would readmit a fenced writer.
+func (fi *fileInstance) loadFence() error {
+	b, err := os.ReadFile(filepath.Join(fi.dir, fenceFile))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("durable: reading fence for %q: %w", fi.dir, err)
+	}
+	if err := json.Unmarshal(b, &fi.fence); err != nil {
+		return fmt.Errorf("durable: decoding fence for %q: %w", fi.dir, err)
+	}
+	return nil
+}
+
+// admitFence refuses a token below the highest seen and durably raises the highest
+// to a greater one. The raise lands before the write it guards: a crash between the
+// two leaves the newer owner fenced in with its write unmade, never a stale writer
+// readmitted. The caller must hold fi.mu.
+func (fi *fileInstance) admitFence(id InstanceID, token int64) error {
+	if token < fi.fence {
+		return fencedError(id, token, fi.fence)
+	}
+	if token == fi.fence {
+		return nil
+	}
+	if err := fi.ensureDir(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(token)
+	if err != nil {
+		return fmt.Errorf("durable: marshaling fence for %q: %w", id, err)
+	}
+	if err := writeAtomic(filepath.Join(fi.dir, fenceFile), b); err != nil {
+		return fmt.Errorf("durable: writing fence for %q: %w", id, err)
+	}
+	fi.fence = token
+	return nil
 }
 
 // loadCheckpoint reads the latest checkpoint Snapshot bytes and its throughStep,
@@ -205,7 +263,7 @@ func (fi *fileInstance) loadCheckpoint() error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("crucible/durable: reading checkpoint for %q: %w", fi.dir, err)
+		return fmt.Errorf("durable: reading checkpoint for %q: %w", fi.dir, err)
 	}
 	metaBytes, err := os.ReadFile(filepath.Join(fi.dir, metaFile))
 	if err != nil {
@@ -213,11 +271,11 @@ func (fi *fileInstance) loadCheckpoint() error {
 			// A snapshot without intact meta is treated as no checkpoint.
 			return nil
 		}
-		return fmt.Errorf("crucible/durable: reading checkpoint meta for %q: %w", fi.dir, err)
+		return fmt.Errorf("durable: reading checkpoint meta for %q: %w", fi.dir, err)
 	}
 	var through int
 	if err := json.Unmarshal(metaBytes, &through); err != nil {
-		return fmt.Errorf("crucible/durable: decoding checkpoint meta for %q: %w", fi.dir, err)
+		return fmt.Errorf("durable: decoding checkpoint meta for %q: %w", fi.dir, err)
 	}
 	fi.checkpoint = snap
 	fi.throughStep = through
@@ -236,7 +294,7 @@ func (fi *fileInstance) loadApplied() error {
 		if jerr := json.Unmarshal(line, &entry); jerr != nil {
 			return
 		}
-		fi.applied[entry.Key] = entry.Seq
+		fi.applied[entry.Key] = appliedRecord{seq: entry.Seq, digest: entry.Digest}
 		if entry.Seq > fi.seq {
 			fi.seq = entry.Seq
 		}
@@ -284,7 +342,7 @@ func scanLines(path, label string, fn func(line []byte)) (err error) {
 		if errors.Is(oerr, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("crucible/durable: opening %s %q: %w", label, path, oerr)
+		return fmt.Errorf("durable: opening %s %q: %w", label, path, oerr)
 	}
 	defer func() {
 		if cerr := f.Close(); cerr != nil && err == nil {
@@ -298,7 +356,7 @@ func scanLines(path, label string, fn func(line []byte)) (err error) {
 		fn(sc.Bytes())
 	}
 	if serr := sc.Err(); serr != nil {
-		return fmt.Errorf("crucible/durable: scanning %s %q: %w", label, path, serr)
+		return fmt.Errorf("durable: scanning %s %q: %w", label, path, serr)
 	}
 	return nil
 }
@@ -310,18 +368,15 @@ const maxLineBytes = 16 * 1024 * 1024
 
 // appliedEntry is one line of the idempotency ledger.
 type appliedEntry struct {
-	Key string `json:"key"`
-	Seq int64  `json:"seq"`
+	Key    string `json:"key"`
+	Seq    int64  `json:"seq"`
+	Digest string `json:"digest,omitempty"`
 }
 
 // Append implements Store. It is atomic and idempotent per (id, key), durably
 // writing a complete journal line before returning.
 func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ...AppendOption) (int64, error) {
 	cfg := resolveAppend(opts...)
-	key := cfg.idempotencyKey
-	if key == "" {
-		key = fmt.Sprintf("step:%d", rec.Step)
-	}
 
 	inst, _, err := s.instance(id)
 	if err != nil {
@@ -330,8 +385,15 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
+	if err = inst.admitFence(id, cfg.fence); err != nil {
+		return 0, err
+	}
+	key, digest, err := appendKey(cfg, rec)
+	if err != nil {
+		return 0, err
+	}
 	if existing, ok := inst.applied[key]; ok {
-		return existing, nil
+		return existing.check(id, rec.Step, digest)
 	}
 	if rec.Step <= inst.maxStep {
 		return 0, fmt.Errorf("%w: step %d is not greater than recorded step %d for instance %q",
@@ -344,25 +406,25 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 	inst.existed = true
 	line, err := json.Marshal(cloneRecord(rec))
 	if err != nil {
-		return 0, fmt.Errorf("crucible/durable: marshaling record step %d for %q: %w", rec.Step, id, err)
+		return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
 	}
 	if err = appendLine(filepath.Join(inst.dir, journalFile), line); err != nil {
-		return 0, fmt.Errorf("crucible/durable: appending journal for %q: %w", id, err)
+		return 0, fmt.Errorf("durable: appending journal for %q: %w", id, err)
 	}
 
 	seq := inst.seq + 1
-	appliedLine, err := json.Marshal(appliedEntry{Key: key, Seq: seq})
+	appliedLine, err := json.Marshal(appliedEntry{Key: key, Seq: seq, Digest: digest})
 	if err != nil {
-		return 0, fmt.Errorf("crucible/durable: marshaling applied ledger for %q: %w", id, err)
+		return 0, fmt.Errorf("durable: marshaling applied ledger for %q: %w", id, err)
 	}
 	if err = appendLine(filepath.Join(inst.dir, appliedFile), appliedLine); err != nil {
-		return 0, fmt.Errorf("crucible/durable: appending applied ledger for %q: %w", id, err)
+		return 0, fmt.Errorf("durable: appending applied ledger for %q: %w", id, err)
 	}
 
 	inst.tail = append(inst.tail, cloneRecord(rec))
 	inst.maxStep = rec.Step
 	inst.seq = seq
-	inst.applied[key] = seq
+	inst.applied[key] = appliedRecord{seq: seq, digest: digest}
 	return seq, nil
 }
 
@@ -394,7 +456,7 @@ func (s *FileStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, er
 // (temp+rename) and compacts the on-disk journal to only the post-checkpoint
 // tail. throughStep must advance beyond the current checkpoint.
 func (s *FileStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error {
-	_ = resolveCheckpoint(opts...) // no per-checkpoint option defined; on-disk tail is always compacted
+	cfg := resolveCheckpoint(opts...)
 
 	inst, _, err := s.instance(id)
 	if err != nil {
@@ -403,6 +465,9 @@ func (s *FileStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
+	if err = inst.admitFence(id, cfg.fence); err != nil {
+		return err
+	}
 	if throughStep <= inst.throughStep {
 		return fmt.Errorf("%w: throughStep %d does not advance past checkpoint step %d for instance %q",
 			ErrCheckpointNotAdvancing, throughStep, inst.throughStep, id)
@@ -415,13 +480,13 @@ func (s *FileStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte
 	// Persist the snapshot and its throughStep atomically (temp+rename each).
 	meta, err := json.Marshal(throughStep)
 	if err != nil {
-		return fmt.Errorf("crucible/durable: marshaling checkpoint meta for %q: %w", id, err)
+		return fmt.Errorf("durable: marshaling checkpoint meta for %q: %w", id, err)
 	}
 	if err = writeAtomic(filepath.Join(inst.dir, checkpointFile), snapshot); err != nil {
-		return fmt.Errorf("crucible/durable: writing checkpoint for %q: %w", id, err)
+		return fmt.Errorf("durable: writing checkpoint for %q: %w", id, err)
 	}
 	if err = writeAtomic(filepath.Join(inst.dir, metaFile), meta); err != nil {
-		return fmt.Errorf("crucible/durable: writing checkpoint meta for %q: %w", id, err)
+		return fmt.Errorf("durable: writing checkpoint meta for %q: %w", id, err)
 	}
 
 	// Compact the on-disk journal: keep only Records strictly after throughStep.
@@ -433,7 +498,7 @@ func (s *FileStore) Checkpoint(_ context.Context, id InstanceID, snapshot []byte
 		kept = append(kept, rec)
 	}
 	if err = inst.rewriteJournal(kept); err != nil {
-		return fmt.Errorf("crucible/durable: compacting journal for %q: %w", id, err)
+		return fmt.Errorf("durable: compacting journal for %q: %w", id, err)
 	}
 
 	inst.checkpoint = append([]byte(nil), snapshot...)
@@ -468,7 +533,7 @@ func (s *FileStore) MarkDispatched(_ context.Context, id InstanceID, effectIDs .
 			continue
 		}
 		if err = appendLine(filepath.Join(inst.dir, dispatchedFile), []byte(eid)); err != nil {
-			return fmt.Errorf("crucible/durable: appending dispatched id for %q: %w", id, err)
+			return fmt.Errorf("durable: appending dispatched id for %q: %w", id, err)
 		}
 		inst.dispatched[eid] = struct{}{}
 	}
@@ -496,7 +561,7 @@ func (s *FileStore) Dispatched(_ context.Context, id InstanceID) (map[string]boo
 // ensureDir creates the instance directory on first write.
 func (fi *fileInstance) ensureDir() error {
 	if err := os.MkdirAll(fi.dir, 0o700); err != nil {
-		return fmt.Errorf("crucible/durable: creating instance dir %q: %w", fi.dir, err)
+		return fmt.Errorf("durable: creating instance dir %q: %w", fi.dir, err)
 	}
 	return nil
 }
@@ -534,10 +599,7 @@ func appendLine(path string, line []byte) (err error) {
 		}
 	}()
 
-	buf := make([]byte, 0, len(line)+1)
-	buf = append(buf, line...)
-	buf = append(buf, '\n')
-	if _, err = f.Write(buf); err != nil {
+	if _, err = f.Write(append(line[:len(line):len(line)], '\n')); err != nil {
 		return err
 	}
 	return f.Sync()

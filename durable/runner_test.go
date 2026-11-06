@@ -464,3 +464,44 @@ func TestRunner_Start_RejectsDuplicate(t *testing.T) {
 		t.Fatalf("want ErrInstanceExists, got %v", err)
 	}
 }
+
+// TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory proves
+// two Handles on one instance (a stalled worker, and the worker that recovered the
+// instance after it) cannot both have their Fires acknowledged while the journal
+// records something else: recovery yields a history holding every Fire
+// acknowledged. Takeover on Recover and optimistic concurrency on the step
+// both satisfy it.
+func TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory(t *testing.T) {
+	ctx := context.Background()
+	m := branchingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("split-1")
+	if _, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("start")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	stale, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover(stale): %v", err)
+	}
+	owner, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover(owner): %v", err)
+	}
+	_, ownerErr := owner.Fire(ctx, "goLeft")
+	_, staleErr := stale.Fire(ctx, "goRight")
+	if staleErr == nil {
+		_, staleErr = stale.Fire(ctx, "finish")
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	got := recovered.Instance().Current()
+	if ownerErr == nil && owner.Instance().Current() != got {
+		t.Fatalf("owner's Fire was acknowledged at %q, but recovery yields %q", owner.Instance().Current(), got)
+	}
+	if staleErr == nil && stale.Instance().Current() != got {
+		t.Fatalf("stale Handle's Fires were acknowledged at %q, but recovery yields %q", stale.Instance().Current(), got)
+	}
+}
