@@ -286,7 +286,7 @@ func WithEventData(data any) FireOption {
 // whether one is set, without firing anything. A host that records a Fire, such as
 // the durable Runner, uses it to persist the payload so a replay can supply it again.
 // When more than one option sets a payload the last wins, matching Fire.
-func FireEventData(opts ...FireOption) (data any, ok bool) {
+func FireEventData(opts ...FireOption) (any, bool) {
 	cfg := fireConfig{}
 	for _, o := range opts {
 		o(&cfg)
