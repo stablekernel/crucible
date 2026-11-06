@@ -202,7 +202,7 @@ func restoreBaseline[S comparable, E comparable, C any](
 	baseline []byte,
 	repClock state.Clock,
 ) (*state.Instance[S, E, C], error) {
-	kernelSnap, _, err := unmarshalCheckpoint(baseline)
+	kernelSnap, _, _, err := unmarshalCheckpoint(baseline)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling baseline envelope: %w", err)
 	}
