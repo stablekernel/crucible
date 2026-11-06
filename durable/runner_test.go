@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -476,6 +477,23 @@ func TestRunner_Start_RejectsDuplicate(t *testing.T) {
 	}
 }
 
+// pollingMachine re-arms a one-second timer every time it fires, so a host timer
+// loop keeps producing steps, while `poke` bumps Count on the same state.
+func pollingMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("polling").
+		Action("bump", func(c state.ActionCtx[*runCtx]) (state.Effect, error) {
+			c.Entity.Count++
+			return nil, nil
+		}).
+		State("idle").
+		State("polling").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("polling").
+		Transition("polling").On("poke").GoTo("polling").Do("bump").
+		Transition("polling").After(time.Second).On("tick").GoTo("polling").Reenter().
+		Quench()
+}
+
 // quantityMachine folds a quantity carried as event data into Count. The quantity
 // is a float64 because event data crosses the journal as JSON (doc.go, Caveats).
 func quantityMachine() *state.Machine[string, string, *runCtx] {
@@ -555,5 +573,155 @@ func TestRecover_FireWithEventData_MatchesLive(t *testing.T) {
 	}
 	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
 		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// TestRecover_StepAfterTickCheckpoint_IsPersisted proves the next step ordinal
+// survives a checkpoint that compacts tick barriers: a Fire after recovery must
+// not reuse a recorded step, which the Store would drop or refuse.
+func TestRecover_StepAfterTickCheckpoint_IsPersisted(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	// Four timer-firing ticks put barriers on steps 1, 3, 5 and 7; the checkpoint
+	// at step 7 compacts the whole tail.
+	for range 4 {
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(tail) != 0 {
+		t.Fatalf("tail holds %d records, want the checkpoint to have compacted them", len(tail))
+	}
+
+	resumed, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = resumed.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover(again): %v", err)
+	}
+	if live, got := handleSnapshot(t, resumed), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("the acknowledged poke was not persisted:\n live: %s\n got:  %s", live, got)
+	}
+}
+
+// lastStep returns the Step of the newest Record in a history-keeping store.
+func lastStep(t *testing.T, store *durable.MemStore, id durable.InstanceID) int {
+	t.Helper()
+	_, records, err := store.History(context.Background(), id)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(records) == 0 {
+		t.Fatal("no records")
+	}
+	return records[len(records)-1].Step
+}
+
+// TestRecover_NextStep_IsTheLiveOrdinal proves the ordinal after a compacted tail is
+// exactly the one a live run would take, not merely one past the journal.
+func TestRecover_NextStep_IsTheLiveOrdinal(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore(durable.WithHistory())
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	for range 4 { // barriers on steps 1, 3, 5 and 7, each spanning two ordinals
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	resumed, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = resumed.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	if got := lastStep(t, store, id); got != 9 {
+		t.Fatalf("poke recorded at step %d, want 9", got)
+	}
+}
+
+// oldEnvelopeStore serves checkpoints as a version before nextStep wrote them.
+type oldEnvelopeStore struct{ *durable.MemStore }
+
+func (s oldEnvelopeStore) Load(ctx context.Context, id durable.InstanceID) ([]byte, []durable.Record, error) {
+	snap, tail, err := s.MemStore.Load(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	var env map[string]json.RawMessage
+	if err = json.Unmarshal(snap, &env); err != nil {
+		return nil, nil, err
+	}
+	delete(env, "nextStep")
+	snap, err = json.Marshal(env)
+	return snap, tail, err
+}
+
+// TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount proves a checkpoint from before
+// the field still recovers, from the restored Trace count.
+func TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	mem := durable.NewMemStore(durable.WithHistory())
+	store := oldEnvelopeStore{mem}
+	id := durable.InstanceID("poll-1")
+	opts := []durable.Option[string, string, *runCtx]{durable.WithCheckpointEvery[string, string, *runCtx](3)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, ev := range []string{"start", "poke", "poke"} { // the checkpoint compacts all three
+		if _, err = h.Fire(ctx, ev); err != nil {
+			t.Fatalf("Fire(%s): %v", ev, err)
+		}
+	}
+	resumed, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = resumed.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	if got := lastStep(t, mem, id); got != 3 {
+		t.Fatalf("poke recorded at step %d, want 3", got)
 	}
 }

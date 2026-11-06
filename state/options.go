@@ -378,8 +378,8 @@ func WithRestoreFullTrace[S comparable]() RestoreOption[S] {
 
 // WithRestoreUnboundedHistory restores an instance in full trace mode with
 // unbounded history retention, mirroring WithUnboundedHistory at Cast. The durable
-// runner uses it on recover: it reconstructs the step ordinal and checkpoint
-// snapshots from the retained Trace history, so post-recovery Fires must keep
+// runner uses it on recover: it reconstructs checkpoint snapshots from the retained
+// Trace history, so post-recovery Fires must keep
 // retaining every trace exactly as a freshly started durable instance does.
 func WithRestoreUnboundedHistory[S comparable]() RestoreOption[S] {
 	return func(cfg *restoreConfig[S]) {

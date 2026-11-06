@@ -24,8 +24,9 @@ type InstanceID string
 // after an upgrade reads as a conflict. It must also be copied in cloneRecord, or the
 // digest ignores it. The same applies to state.JournalEntry and state.EffectEnvelope.
 type Record struct {
-	// Step is the Fire ordinal this Record was produced at, indexing the
-	// instance's recorded Traces. It is the per-instance idempotency key: a
+	// Step is the ordinal this Record was produced at. Ordinals rise with each Record,
+	// and a tick barrier consumes one per timer it fired plus its own, so they don't
+	// index the instance's Traces. It is the per-instance idempotency key: a
 	// Store treats a second Append of the same Record at the same Step as
 	// already-applied.
 	Step int
@@ -82,6 +83,15 @@ type Record struct {
 	// (zero for a tick that found nothing due). It lets replay advance its step
 	// accounting across a re-derived tick without a recorded Event per timer.
 	TickSteps int
+}
+
+// followingStep returns the step ordinal after r. A tick barrier consumes one
+// ordinal per timer it fired plus its own; every other Record consumes one.
+func (r *Record) followingStep() int {
+	if r.Tick {
+		return r.Step + r.TickSteps + 1
+	}
+	return r.Step + 1
 }
 
 // Store is the durable-execution persistence seam. It records an instance's
