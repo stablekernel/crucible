@@ -410,7 +410,7 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 		// drops it too, because compaction rewrites the journal from there.
 		kept.Snapshot = nil
 		if line, err = json.Marshal(kept); err != nil {
-			return 0, fmt.Errorf("crucible/durable: marshaling record step %d for %q: %w", rec.Step, id, err)
+			return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
 		}
 	}
 	if len(line) >= maxLineBytes {
