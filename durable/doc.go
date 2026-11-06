@@ -31,10 +31,11 @@
 //
 // # Caveats
 //
-// Payloads are serialized at the journal boundary. Event, service done-data,
-// actor done-data, and actor messages are recorded as their JSON form; a parent
-// reducer that type-asserts a non-JSON Go type from AssignCtx.Event observes the
-// JSON-decoded shape on the replayed onDone. A typed-codec option to carry the
+// Payloads are serialized at the journal boundary. Event, service done-data, actor
+// done-data, and actor messages are recorded as their JSON form; a parent reducer that
+// type-asserts a non-JSON Go type from AssignCtx.Event observes the JSON-decoded shape
+// on a replayed onDone. A WithEventData payload is JSON-decoded live as well as on
+// replay, so a reducer gets the same value both ways. A typed-codec option to carry the
 // concrete Go value across the boundary is reserved for a later, additive change.
 //
 // The kernel stays pure and dependency-free. The durable module is host-side:
