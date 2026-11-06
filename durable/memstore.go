@@ -334,7 +334,7 @@ func appendKey(cfg appendConfig, rec Record) (key, digest string, err error) {
 func recordDigest(rec Record) (string, error) {
 	b, err := json.Marshal(cloneRecord(rec))
 	if err != nil {
-		return "", fmt.Errorf("crucible/durable: digesting record step %d: %w", rec.Step, err)
+		return "", fmt.Errorf("durable: digesting record step %d: %w", rec.Step, err)
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
