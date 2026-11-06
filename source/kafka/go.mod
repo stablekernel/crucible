@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/stablekernel/crucible/telemetry v0.0.0 // indirect
 )
