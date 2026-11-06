@@ -25,9 +25,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   a refused payload, and `ErrRecordTooLarge` a Record too large for a `FileStore` line.
   `Record.EventData` and `Record.EventDataError` hold the payload.
 
+- **`ErrHandleFailed`** reports a Handle out of step with its journal.
+
 ### Changed
 
 - Requires Go 1.27.3.
+- **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
+  `DeliverToActor` hold a lock for the whole step, so a host's timer loop no longer loses
+  acknowledged steps. A host callback must not call back into its Handle, or it
+  deadlocks. `Instance()` isn't covered: read it only while no step is running. A `Tick`,
+  `RunService` or `DeliverToActor` whose context ended while it waited returns that error
+  and changes nothing.
+- **A step that may not have been recorded fails the Handle.** That call and every later
+  one return `ErrHandleFailed`, wrapping the cause. `Recover` a new Handle with the same
+  options to continue. A service whose result wasn't recorded is in flight again, so
+  `RunService` runs it a second time. An `InvokeActor` actor restarts from its initial
+  state, and a `Spawn` actor doesn't return. If the cause is `ErrFenced`, a newer owner
+  holds the instance: stop.
 - **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.** A
   struct arrives as a map and an integer as a `float64`, which loses precision above
   2^53, so an assertion to the original
@@ -59,6 +73,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
+  and `DeliverToActor` now advance the next step as soon as the append lands.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a
