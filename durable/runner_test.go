@@ -142,6 +142,17 @@ func recoveredSnapshotBytes[C any](t *testing.T, m *state.Machine[string, string
 	return b
 }
 
+// handleSnapshot returns the marshaled snapshot of a durable Handle's instance, so
+// a live Handle and a recovered one can be compared byte-for-byte.
+func handleSnapshot[C any](t *testing.T, h *durable.Handle[string, string, C]) string {
+	t.Helper()
+	b, err := state.MarshalSnapshot(h.Instance().Snapshot())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
+}
+
 // TestRecover_ByteIdenticalAcrossFixtures is the acceptance gate: a recovered
 // instance's marshaled snapshot is byte-identical to a never-durable live run
 // across linear, branching, context-mutating, and parallel machines.
@@ -465,6 +476,23 @@ func TestRunner_Start_RejectsDuplicate(t *testing.T) {
 	}
 }
 
+// quantityMachine folds a quantity carried as event data into Count. The quantity
+// is a float64 because event data crosses the journal as JSON (doc.go, Caveats).
+func quantityMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("quantity").
+		Reducer("addQuantity", func(in state.AssignCtx[*runCtx]) *runCtx {
+			c := *in.Entity
+			if q, ok := in.Event.(float64); ok {
+				c.Count += int(q)
+			}
+			return &c
+		}).
+		State("open").
+		Initial("open").
+		Transition("open").On("add").GoTo("open").Assign("addQuantity").
+		Quench()
+}
+
 // TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory proves
 // two Handles on one instance (a stalled worker, and the worker that recovered the
 // instance after it) cannot both have their Fires acknowledged while the journal
@@ -503,5 +531,29 @@ func TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory(t *
 	}
 	if staleErr == nil && stale.Instance().Current() != got {
 		t.Fatalf("stale Handle's Fires were acknowledged at %q, but recovery yields %q", stale.Instance().Current(), got)
+	}
+}
+
+// TestRecover_FireWithEventData_MatchesLive proves an instance driven with
+// state.WithEventData recovers to the live state, because the Handle journals the data.
+func TestRecover_FireWithEventData_MatchesLive(t *testing.T) {
+	ctx := context.Background()
+	m := quantityMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("qty-1")
+	h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("open"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "add", state.WithEventData(3.0)); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
 	}
 }

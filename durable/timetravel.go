@@ -264,7 +264,11 @@ func replayThrough[S comparable, E comparable, C any](
 			if err != nil {
 				return fmt.Errorf("decoding recorded event at step %d: %w", rec.Step, err)
 			}
-			res := inst.Fire(ctx, event)
+			fireOpts, err := replayFireOptions(rec)
+			if err != nil {
+				return fmt.Errorf("decoding recorded event data at step %d: %w", rec.Step, err)
+			}
+			res := inst.Fire(ctx, event, fireOpts...)
 			if res.Err != nil {
 				return fmt.Errorf("replaying step %d: %w", rec.Step, res.Err)
 			}

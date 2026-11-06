@@ -21,12 +21,30 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   fence the old owner: a stale write before then is accepted, and the new owner's
   write at that step gets `ErrStepConflict`.
 
+- **`WithMaxEventDataBytes`** caps a `WithEventData` payload. `ErrEventDataEncoding` reports
+  a refused payload, and `ErrRecordTooLarge` a Record too large for a `FileStore` line.
+  `Record.EventData` and `Record.EventDataError` hold the payload.
+
 ### Changed
 
 - Requires Go 1.27.3.
-- **A `Store` implementation has new work to do.** It must enforce fence tokens and
-  return `ErrStepConflict`, or `WithOwnerFence` protects nothing. Existing
-  implementations still compile, so nothing flags this.
+- **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.** A
+  struct arrives as a map and an integer as a `float64`, which loses precision above
+  2^53, so an assertion to the original
+  type now fails at `Fire`, not at `Recover`. An error arrives as an error with the same
+  message, any invalid UTF-8 replaced, and `errors.Is` no longer matches it.
+- **`Handle.Fire` can refuse a payload.** One with no JSON form that decodes again, or
+  over `WithMaxEventDataBytes` (8 MiB by default), returns the new `ErrEventDataEncoding`
+  before the kernel runs. Fires of that size used to pass, because the payload wasn't
+  journaled.
+- **`FileStore.Append` refuses a Record over its 16 MiB line limit** with the new
+  `ErrRecordTooLarge`. It used to write a line `Load` couldn't read back unless a
+  checkpoint compacted it away. An oversized line now drops its `Snapshot` first, which
+  recovery never reads, so large checkpoints keep working.
+- **A `Store` implementation has new work to do.** It must enforce fence tokens, return
+  `ErrStepConflict` and keep `Record.EventData` and `Record.EventDataError`, or
+  `WithOwnerFence` protects nothing and payloads are lost. Existing implementations
+  still compile, so nothing flags this.
 - **`MemStore.Append` without `WithIdempotencyKey` refuses a Record JSON can't encode,**
   as `FileStore` already did.
 
@@ -41,6 +59,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **`WithEventData` survives recovery.** `Handle.Fire` records the payload in the new
+  `Record.EventData` and `Record.EventDataError`, and `Recover` and `StateAt` supply it
+  on replay. This needs `state.FireEventData`, so `durable` requires `state` v1.1.0 or
+  later, and its `require` must move there before a `durable` tag.
 - **Recording-clock buffer race.** Closing a step's `Record` (draining the
   recording clock) and the clock-read index reads used to mirror timer deadlines
   now take the recording clock's mutex, so they are safe against a `Now()` the

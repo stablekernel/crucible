@@ -363,6 +363,13 @@ func cloneRecord(rec Record) Record {
 	if rec.Event != nil {
 		out.Event = append([]byte(nil), rec.Event...)
 	}
+	if rec.EventData != nil {
+		out.EventData = append([]byte(nil), rec.EventData...)
+	}
+	if rec.EventDataError != nil {
+		msg := *rec.EventDataError
+		out.EventDataError = &msg
+	}
 	if len(rec.Entries) > 0 {
 		out.Entries = append(out.Entries, rec.Entries...)
 	}

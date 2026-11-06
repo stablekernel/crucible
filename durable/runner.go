@@ -24,9 +24,10 @@ import (
 //
 // For an event-driven machine every transition is a pure function of
 // (configuration, context, event payload, machine definition). The only input a
-// Runner must record to reproduce a run is therefore the driving event: each
-// Fire appends a Record{Step, Event} where Step is the produced Trace ordinal and
-// Event is the kernel's structured Trace.EventPayload. Periodically — governed by
+// Runner must record to reproduce a run is therefore the driving event and any
+// payload it carried: each Fire appends a Record{Step, Event} where Step is the
+// produced Trace ordinal and Event is the kernel's structured Trace.EventPayload,
+// plus the payload's JSON form for a state.WithEventData Fire. Periodically — governed by
 // the checkpoint policy (WithCheckpointEvery) — the Runner also persists a full
 // marshaled Snapshot and compacts the journal tail through that step, so recovery
 // replays only the tail after the latest checkpoint rather than the whole run.
@@ -338,7 +339,8 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) *state.A
 }
 
 // Fire drives one event through a durable instance identified by id, loading and
-// replaying it from the Store first, then recording the step. It is the
+// replaying it from the Store first, then recording the step. Handle.Fire describes
+// how a state.WithEventData payload is handled, and when it's refused. It is the
 // stateless entry point (no Handle required); for a hot path that fires many
 // events in sequence, hold a Handle from Start or Recover and use Handle.Fire to
 // avoid reloading between steps.
@@ -356,7 +358,24 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
 // kernel transition error is recorded as a no-op (no step was produced) and
 // returned to the caller.
+//
+// A state.WithEventData payload reaches the transition's Assign in its JSON-decoded
+// form, live and on replay alike, so both see the same value: a struct arrives as a
+// map and an integer as a float64, which loses precision above 2^53. An error arrives
+// as an error with the same message, with any invalid UTF-8 replaced, though errors.Is
+// no longer matches it. Keep its message, not the error, in context: a checkpoint turns
+// an error into a map, and Recover fails on an error-typed field. A payload that can't take this form, an error whose Error panics (such as
+// a typed nil), or
+// exceeds WithMaxEventDataBytes, refuses the Fire with ErrEventDataEncoding before the
+// kernel runs. The payload is read on the calling goroutine with no lock of its own, so
+// don't mutate it concurrently with Fire.
 func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireOption) (state.FireResult[S], error) {
+	// Encode the WithEventData payload before the kernel runs, so a payload that
+	// can't be recorded refuses the Fire rather than applying a step it can't record.
+	payload, opts, err := encodeEventData(opts, h.runner.cfg.maxEventData)
+	if err != nil {
+		return state.FireResult[S]{}, fmt.Errorf("durable: recording event data for %q: %w", h.id, err)
+	}
 	res := h.inst.Fire(ctx, event, opts...)
 	if res.Err != nil {
 		return res, res.Err
@@ -378,7 +397,7 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	if err != nil {
 		return res, err
 	}
-	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), Entries: h.drainClock(), Effects: effEnvs}
+	rec := Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: h.drainClock(), Effects: effEnvs}
 	// Write-ahead append the step Record (with its effect ids) BEFORE dispatching, but
 	// hold off compacting it: dispatch happens between the append and the checkpoint so
 	// a crash mid-dispatch leaves the effect recorded in the still-present tail for
@@ -617,7 +636,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			if err != nil {
 				return nil, fmt.Errorf("durable: decoding recorded event at step %d for %q: %w", rec.Step, id, err)
 			}
-			res := inst.Fire(ctx, event)
+			fireOpts, err := replayFireOptions(rec)
+			if err != nil {
+				return nil, fmt.Errorf("durable: decoding recorded event data at step %d for %q: %w", rec.Step, id, err)
+			}
+			res := inst.Fire(ctx, event, fireOpts...)
 			if res.Err != nil {
 				return nil, fmt.Errorf("durable: replaying step %d for %q: %w", rec.Step, id, res.Err)
 			}
@@ -716,6 +739,110 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		actors:   actors,
 		actorBuf: &actorBuf,
 	}, nil
+}
+
+// eventPayload is the recorded form of a WithEventData payload.
+type eventPayload struct {
+	data   []byte  // the JSON form, nil for none or for an error payload
+	errMsg *string // an error payload's message
+}
+
+// encodeEventData returns the recorded form of the WithEventData payload in opts and
+// the options to Fire with, which carry the payload as replay will see it, so the live
+// run and a replay can't differ. With no payload it returns opts unchanged, because
+// adding one would replace the event in AssignCtx.Event. It copies opts rather than
+// appending, which could write into the caller's slice.
+func encodeEventData(opts []state.FireOption, maxBytes int) (eventPayload, []state.FireOption, error) {
+	data, ok := state.FireEventData(opts...)
+	if !ok {
+		return eventPayload{}, opts, nil
+	}
+	var payload eventPayload
+	encoded := data
+	e, isErr := data.(error)
+	if isErr {
+		msg, err := errorMessage(e)
+		if err != nil {
+			return payload, nil, fmt.Errorf("%w: %w", ErrEventDataEncoding, err)
+		}
+		encoded = msg
+	}
+	b, err := marshalPayload(encoded)
+	if err != nil {
+		return payload, nil, fmt.Errorf("%w: %w", ErrEventDataEncoding, err)
+	}
+	if len(b) > maxBytes {
+		return payload, nil, eventDataTooLarge(len(b), maxBytes)
+	}
+	if isErr {
+		// Take the message back from its JSON form, which is what a Store keeps: JSON
+		// replaces invalid UTF-8, so the raw message could differ from a replay's.
+		var msg string
+		if err = json.Unmarshal(b, &msg); err != nil {
+			return payload, nil, fmt.Errorf("%w: %w", ErrEventDataEncoding, err)
+		}
+		payload.errMsg = &msg
+	} else {
+		payload.data = b
+	}
+	decoded, err := payload.fireOption()
+	if err != nil {
+		return payload, nil, fmt.Errorf("%w: %w", ErrEventDataEncoding, err)
+	}
+	live := make([]state.FireOption, 0, len(opts)+1)
+	return payload, append(append(live, opts...), decoded), nil
+}
+
+// errorMessage returns e.Error(), or an error if it panics, as a typed nil can.
+func errorMessage(e error) (msg string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("error payload panicked: %v", p)
+		}
+	}()
+	return e.Error(), nil
+}
+
+// marshalPayload returns v's JSON form, or an error if a custom marshaler panics, so
+// a caller's payload can't panic out of Fire.
+func marshalPayload(v any) (b []byte, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("payload panicked while encoding: %v", p)
+		}
+	}()
+	return json.Marshal(v)
+}
+
+// eventDataTooLarge reports a payload over the Runner's cap.
+func eventDataTooLarge(size, maxBytes int) error {
+	return fmt.Errorf("%w: payload is %d bytes, over the %d byte limit", ErrEventDataEncoding, size, maxBytes)
+}
+
+// fireOption returns the option carrying the payload as a Fire sees it: live, and when
+// a replay re-Fires the step.
+func (p eventPayload) fireOption() (state.FireOption, error) {
+	if p.errMsg != nil {
+		return state.WithEventData(errors.New(*p.errMsg)), nil
+	}
+	var data any
+	if err := json.Unmarshal(p.data, &data); err != nil {
+		return nil, err
+	}
+	return state.WithEventData(data), nil
+}
+
+// replayFireOptions returns the options that re-Fire rec's event with the payload
+// the live Fire carried, or none when it carried none.
+func replayFireOptions(rec *Record) ([]state.FireOption, error) {
+	if len(rec.EventData) == 0 && rec.EventDataError == nil {
+		return nil, nil
+	}
+	opt, err := eventPayload{data: rec.EventData, errMsg: rec.EventDataError}.fireOption()
+	if err != nil {
+		return nil, err
+	}
+	return []state.FireOption{opt}, nil
 }
 
 // baselineStep is the Step of the start baseline checkpoint, recorded before any
