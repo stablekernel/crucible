@@ -13,6 +13,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- **`ServiceRunner.WithResultTransform`** rewrites a service's outcome before `Tick`
+  settles it, so a host that records outcomes can give the live run what a replay will see.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 

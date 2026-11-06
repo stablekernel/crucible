@@ -59,7 +59,7 @@ type Record struct {
 
 	// Effects are the effects the step emitted, each with its deterministically
 	// stamped EffectID, persisted before dispatch so a crash between persist and
-	// dispatch is recoverable: Resume re-dispatches, deduped by EffectID.
+	// dispatch is recoverable: Recover re-dispatches, deduped by EffectID.
 	Effects []state.EffectEnvelope
 
 	// Snapshot, when non-empty, is a full marshaled state.Snapshot captured at

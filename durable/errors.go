@@ -52,8 +52,8 @@ var (
 
 	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService and
 	// DeliverToActor once a step applied to the live instance but may not have been
-	// recorded, or a Tick, RunService or DeliverToActor's context ended partway, on that
-	// call and every later one. It wraps the cause. Recover a new
+	// recorded, a Tick, RunService or DeliverToActor's context ended partway, or an
+	// effect's dispatch failed, on that call and every later one. It wraps the cause. Recover a new
 	// Handle with the same options to continue, unless the cause is ErrFenced: then a
 	// newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New("crucible/durable: handle is out of step with the journal")
@@ -67,9 +67,10 @@ var (
 	ErrInstanceExists = errors.New(errorPrefix + errorInstanceExists)
 
 	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
-	// handler (WithEffectHandler) while applying an emitted effect. The effect was
+	// handler (WithEffectHandler) while applying an emitted effect. A step's effect was
 	// persisted (write-ahead) but not marked dispatched, so a later recovery
-	// retries it; callers match this with errors.Is to distinguish a dispatch
+	// retries it, and the Handle fails with ErrHandleFailed; a failure in Runner.Start
+	// leaves no instance. Recover fails with this error while the handler still does; callers match this with errors.Is to distinguish a dispatch
 	// failure from a kernel transition or persistence error.
 	ErrEffectDispatch = errors.New(errorPrefix + errorEffectDispatch)
 )
