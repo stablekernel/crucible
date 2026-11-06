@@ -2,6 +2,7 @@ package durable_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -702,5 +703,46 @@ func TestActor_Determinism(t *testing.T) {
 	s2, _, _ := liveSupervisorRun(t, &r2)
 	if string(s1) != string(s2) {
 		t.Fatalf("two live runs diverged:\n run1=%s\n run2=%s", s1, s2)
+	}
+}
+
+// TestDeliverToActor_ContextEndedPartway_RecordsNothing proves a delivery whose context
+// ended records nothing, so every later Recover still works.
+func TestDeliverToActor_ContextEndedPartway_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := supervisorMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("sup-cancel")
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	behavior := func(map[string]any) (state.ActorInstance, error) {
+		child := state.ForgeFor[actorCtx]("child").
+			State("working").
+			State("done").Final().
+			Initial("working").
+			Transition("working").On("finish").GoTo("done").
+			Quench()
+		inst := child.Cast(actorCtx{}, state.WithInitialState[string]("working"))
+		return state.NewActor(inst, func(*state.Instance[string, string, actorCtx]) any {
+			cancel() // the turn ends after the child finishes, before the parent settles
+			return "late"
+		}), nil
+	}
+	opts := []durable.Option[string, string, actorCtx]{
+		durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{"spawnChild": behavior}),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for spawned child")
+	}
+	if _, err = h.DeliverToActor(turn, ref, "finish"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("DeliverToActor = %v, want ErrHandleFailed", err)
+	}
+	if _, err = durable.Recover(ctx, m, store, id, opts...); err != nil {
+		t.Fatalf("Recover: %v", err)
 	}
 }
