@@ -91,7 +91,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 //
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal. That call and every later one return ErrHandleFailed,
-// wrapping the cause. Recover a new Handle with the same options to continue. A service
+// wrapping the cause, which can be a context that ended during the Store write. Recover
+// a new Handle with the same options to continue. A service
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
 // A running InvokeActor actor restarts from its initial state on any Recover, losing every
 // delivery so far, and a Spawn actor doesn't return. If the cause is ErrFenced, a
@@ -396,7 +397,7 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // it Fires the kernel, appends a Record carrying the driving event at the
 // step's ordinal (write-ahead, before returning), and — when the
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
-// kernel transition error is recorded as a no-op (no step was produced) and
+// kernel transition error journals nothing (no step was produced) and is
 // returned to the caller.
 //
 // A state.WithEventData payload reaches the transition's Assign in its JSON-decoded
@@ -517,7 +518,10 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 
 // persistStep write-ahead appends rec, advances the next step, then checkpoints if
 // the policy is due. A failed append fails the Handle, because the kernel already
-// applied the step; a failed checkpoint doesn't, because the Record is durable.
+// applied the step; a failed checkpoint doesn't, because the Record is durable. This
+// relies on the Append running inline, under the Handle's lock, before the step
+// returns: an Append deferred off this goroutine would acknowledge a step whose
+// outcome isn't known, and the Handle couldn't fail.
 func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record) error {
 	if err := h.appendStep(ctx, step, rec); err != nil {
 		return h.fail(err)

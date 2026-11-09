@@ -98,12 +98,14 @@ type actorMessagePayload struct {
 // JournalActorMessage correlated by the actor id so recovery replays it without
 // re-instantiating the actor.
 //
-// It returns whether the actor was found running (false for a ref that names no
-// live actor — already settled, stopped, or never spawned — or with an error when the
-// Handle has failed or ctx has ended), and a persistence failure as the error. The
-// kernel transitions the delivery drove do not themselves fail. After a failed Append
-// the result wasn't recorded: on a recovered Handle an InvokeActor actor restarts from its
-// initial state, and a Spawn actor doesn't return. Resending a recorded delivery repeats
+// It returns false for a ref that names no live actor (already settled, stopped, or
+// never spawned), and false with the error when the Handle had already failed or ctx
+// has ended. If the actor received the event but the delivery couldn't be recorded or
+// appended, it returns true and ErrHandleFailed: the Handle has failed. A failed
+// checkpoint returns true and that error, and the Handle carries on. The kernel
+// transitions the delivery drove do not themselves fail. When a delivery wasn't
+// recorded, on a recovered Handle an InvokeActor actor restarts from its initial state,
+// and a Spawn actor doesn't return. Resending a recorded delivery repeats
 // any message it sends the parent.
 func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
 	h.mu.Lock()

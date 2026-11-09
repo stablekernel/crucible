@@ -948,7 +948,7 @@ func TestHandle_FencedOwner_Stops(t *testing.T) {
 func TestHandle_ContextEndedBeforeTheStep_ChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	m := pollingMachine()
-	store := durable.NewMemStore()
+	store := &armedAppendStore{Store: durable.NewMemStore()}
 	clk := state.NewFakeClock(epoch)
 	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
@@ -959,10 +959,14 @@ func TestHandle_ContextEndedBeforeTheStep_ChangesNothing(t *testing.T) {
 		t.Fatalf("Fire(start): %v", err)
 	}
 	clk.Advance(time.Second)
+	before := store.appends
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err = h.Tick(ended); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Tick = %v, want context.Canceled", err)
+	}
+	if store.appends != before {
+		t.Fatalf("Tick on an ended context appended %d Records, want 0", store.appends-before)
 	}
 	results, err := h.Tick(ctx)
 	if err != nil || len(results) != 1 {

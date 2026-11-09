@@ -19,7 +19,7 @@ const (
 	errorHandleFailed           = "handle is out of step with the journal"
 )
 
-// Sentinel errors a Store reports. Callers match them with errors.Is.
+// Sentinel errors a Store or a Handle reports. Callers match them with errors.Is.
 var (
 	// ErrInstanceNotFound is reported by Store.Load for an instance that has
 	// never been written.
