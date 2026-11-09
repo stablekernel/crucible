@@ -143,11 +143,19 @@ func TestFakeClock_AdvanceFiresInDeadlineOrder(t *testing.T) {
 				synctest.Wait()
 				clk.Advance(10 * time.Second)
 				if got := <-gotOlder; got != tc.wantOlder {
-					t.Fatalf("receiver woke on the wrong waiter: woke on the first armed = %v, want %v", got, tc.wantOlder)
+					t.Fatalf("receiver woke on the %s waiter, want the %s", armed(got), armed(tc.wantOlder))
 				}
 			})
 		})
 	}
+}
+
+// armed names a waiter by when it was armed, for failure messages.
+func armed(older bool) string {
+	if older {
+		return "first-armed"
+	}
+	return "second-armed"
 }
 
 // TestFakeClock_ConcurrentAfterAndAdvance arms waiters from many goroutines
