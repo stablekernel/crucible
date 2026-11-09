@@ -85,11 +85,11 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 //
 // It returns the routed FireResult and true, or the zero result and false when id
 // names no in-flight service (already settled, stopped, or never started), or false
-// and the error when the Handle has failed or ctx has ended. A persistence failure is
-// returned as the error; the kernel transition itself does not fail (a settled service
-// always routes onDone or onError). After a failed Append the result wasn't recorded, so
-// a recovered Handle has the service in flight again, and RunService runs it a second
-// time.
+// and the error when the Handle had already failed or ctx has ended. If the service
+// settled but its outcome couldn't be recorded or appended, it returns the result,
+// true and ErrHandleFailed: the Handle has failed. A failed checkpoint returns the
+// result, true and that error, and the Handle carries on. A recovered Handle has an
+// unrecorded service in flight again, and RunService runs it a second time.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
