@@ -154,7 +154,7 @@ func TestStore_Append_EmptyAndNilFieldsAreTheSameRecord(t *testing.T) {
 		if _, err := st.Append(ctx, id, durable.Record{Step: 0}); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
-		same := durable.Record{Step: 0, Event: []byte{}, Snapshot: []byte{}, Entries: []state.JournalEntry{}}
+		same := durable.Record{Step: 0, Event: []byte{}, EventData: []byte{}, Snapshot: []byte{}, Entries: []state.JournalEntry{}}
 		if _, err := st.Append(ctx, id, same); err != nil {
 			t.Fatalf("retry: %v", err)
 		}

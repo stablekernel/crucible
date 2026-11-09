@@ -11,6 +11,11 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ## [Unreleased]
 
+### Added
+
+- **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
+  that records a Fire can persist it. It's additive, so the next release is v1.1.0.
+
 ### Changed
 
 - Requires Go 1.27.3.

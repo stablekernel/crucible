@@ -361,9 +361,8 @@ func scanLines(path, label string, fn func(line []byte)) (err error) {
 	return nil
 }
 
-// maxLineBytes bounds a single journal/ledger line so a corrupt length can't
-// exhaust memory; a marshaled Record (including a checkpoint envelope) stays well
-// under it in practice.
+// maxLineBytes bounds a single journal/ledger line so a corrupt length can't exhaust
+// memory. Append keeps every line under it, dropping a Record's Snapshot or refusing it.
 const maxLineBytes = 16 * 1024 * 1024
 
 // appliedEntry is one line of the idempotency ledger.
@@ -400,14 +399,27 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 			ErrStepOutOfOrder, rec.Step, inst.maxStep, id)
 	}
 
-	if err = inst.ensureDir(); err != nil {
-		return 0, err
-	}
-	inst.existed = true
 	line, err := json.Marshal(cloneRecord(rec))
 	if err != nil {
 		return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
 	}
+	kept := cloneRecord(rec)
+	if len(line) >= maxLineBytes && len(rec.Snapshot) > 0 {
+		// Recovery reads the checkpoint, never a tail Record's Snapshot, so an oversized
+		// Record drops it rather than leaving a line Load can't read. The in-memory tail
+		// drops it too, because compaction rewrites the journal from there.
+		kept.Snapshot = nil
+		if line, err = json.Marshal(kept); err != nil {
+			return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
+		}
+	}
+	if len(line) >= maxLineBytes {
+		return 0, fmt.Errorf("%w: step %d for %q is %d bytes", ErrRecordTooLarge, rec.Step, id, len(line))
+	}
+	if err = inst.ensureDir(); err != nil {
+		return 0, err
+	}
+	inst.existed = true
 	if err = appendLine(filepath.Join(inst.dir, journalFile), line); err != nil {
 		return 0, fmt.Errorf("durable: appending journal for %q: %w", id, err)
 	}
@@ -421,7 +433,7 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 		return 0, fmt.Errorf("durable: appending applied ledger for %q: %w", id, err)
 	}
 
-	inst.tail = append(inst.tail, cloneRecord(rec))
+	inst.tail = append(inst.tail, kept)
 	inst.maxStep = rec.Step
 	inst.seq = seq
 	inst.applied[key] = appliedRecord{seq: seq, digest: digest}

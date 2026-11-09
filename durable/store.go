@@ -40,6 +40,16 @@ type Record struct {
 	// additive EventPayload contract).
 	Event []byte
 
+	// EventData is the JSON form of the payload the Fire at this Step carried
+	// through state.WithEventData, or empty when it carried none. The live Fire and
+	// a replay both supply the decoded form, so the transition's Assign sees the same
+	// value: a struct as a map and an integer as a float64.
+	EventData []byte `json:",omitempty"`
+
+	// EventDataError is the message of an error payload, which has no useful JSON
+	// form. The live Fire and a replay both supply an error with this message.
+	EventDataError *string `json:",omitempty"`
+
 	// Entries are the nondeterministic results recorded during this step — the
 	// invoked-service done/error payloads, actor messages, clock reads, and
 	// randomness draws the kernel consumed — in the order they resolved. Replay
@@ -97,7 +107,8 @@ type Record struct {
 // Step survives a Checkpoint that compacts that Step away, so a delayed retry of an
 // already-checkpointed Step is still recognized rather than rejected as out of
 // order, and a different Record there is still a conflict. Two Records are the
-// same when every field matches, with a nil and an empty field counting as equal.
+// same when every field matches, with a nil and an empty field counting as equal,
+// except EventDataError, where nil means no error and an empty message is an error.
 // An Append carrying WithIdempotencyKey (a backend reads it with
 // AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
 // Record: no comparison is made. Keys starting "step:" are reserved for the Store's
@@ -129,6 +140,10 @@ type Record struct {
 // is the full Record history. For an unknown instance, Load reports
 // ErrInstanceNotFound.
 //
+// Fields: a Store keeps every Record field, including EventData and EventDataError. A
+// Store that drops one of those loses that payload on recovery. Snapshot is the
+// exception: recovery reads the checkpoint, so a Store may drop a tail Record's copy.
+//
 // All methods are safe for concurrent use by multiple goroutines.
 type Store interface {
 	// Append persists rec for the instance and returns its monotonic per-instance
@@ -137,7 +152,8 @@ type Store interface {
 	// different Record there is rejected with ErrStepConflict. Records must be
 	// appended in increasing Step order; an out-of-order Step is rejected with
 	// ErrStepOutOfOrder. A fence token below the highest seen is rejected with
-	// ErrFenced.
+	// ErrFenced. A Store with a size limit reports a Record over it, as FileStore does
+	// with ErrRecordTooLarge.
 	Append(ctx context.Context, id InstanceID, rec Record, opts ...AppendOption) (seq int64, err error)
 
 	// Load returns the instance's latest checkpoint Snapshot bytes (nil if the

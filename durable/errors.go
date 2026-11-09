@@ -14,6 +14,8 @@ const (
 	errorInstanceExists         = "instance already exists"
 	errorEffectDispatch         = "effect dispatch failed"
 	errorStepOutOfRange         = "time-travel step out of range"
+	errorEventDataEncoding      = "event data can't be recorded"
+	errorRecordTooLarge         = "record too large for the journal"
 )
 
 // Sentinel errors a Store reports. Callers match them with errors.Is.
@@ -37,6 +39,18 @@ var (
 	// fence token is lower than the highest the Store has seen for the instance:
 	// a newer owner has taken the instance over. Nothing is written.
 	ErrFenced = errors.New(errorPrefix + errorFenced)
+
+	// ErrEventDataEncoding wraps a Handle.Fire refused before the kernel ran, because
+	// its state.WithEventData payload has no JSON form that decodes again, panics while
+	// encoding (such as an error that's a typed nil), or exceeds WithMaxEventDataBytes.
+	// Nothing applied, so the Handle stays usable.
+	ErrEventDataEncoding = errors.New(errorPrefix + errorEventDataEncoding)
+
+	// ErrRecordTooLarge is reported by FileStore.Append for a Record whose journal line
+	// exceeds the store's line limit, which a later Load could not read back, even
+	// without its Snapshot. No journal line is written, but a Handle's kernel has already
+	// applied the step.
+	ErrRecordTooLarge = errors.New(errorPrefix + errorRecordTooLarge)
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.
