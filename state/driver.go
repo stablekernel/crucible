@@ -160,7 +160,8 @@ func (s *Scheduler[S, E, C]) dueLocked(now time.Time) (string, pending[E], bool)
 // After behaves like time.After on the fake timeline: its channel stays empty
 // until Advance moves the clock to or past the deadline. A host that selects on
 // After (a silence timeout, a reconnect grace) sees it fire only when the test
-// advances far enough.
+// advances far enough. A waiter the clock never reaches never fires, and the
+// clock holds it until an Advance does; there is no Stop.
 type FakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
@@ -190,9 +191,10 @@ func (c *FakeClock) Now() time.Time {
 	return c.now
 }
 
-// After returns a channel that receives once the fake clock reaches d past the
-// current instant. The value sent is that deadline. A d of zero or less fires
-// at once with the current instant, as time.After does. The Scheduler doesn't
+// After returns a channel that receives once the fake clock reaches the
+// instant of the call plus d. The value sent is that deadline. A d of zero or
+// less fires at once with the current instant, as time.After does. With no
+// Advance far enough, a receive on the channel blocks forever. The Scheduler doesn't
 // use After: it drives elapses through Now and Tick.
 func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
@@ -209,7 +211,10 @@ func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 
 // Advance moves the fake clock forward by d, then fires every After channel
 // whose deadline the clock has now reached, earliest deadline first, and in
-// the order they were armed when deadlines tie. After advancing, call
+// the order they were armed when deadlines tie. A goroutine already blocked
+// selecting on several of them receives from the earliest; a receiver that
+// arrives after Advance returns finds them all ready, and select picks at
+// random. After advancing, call
 // Scheduler.Tick to fire any now-due timers.
 func (c *FakeClock) Advance(d time.Duration) {
 	c.mu.Lock()

@@ -23,9 +23,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
 ### Fixed
 
 - **`FakeClock.After`** now fires only once `Advance` moves the clock to or past
-  its deadline, and sends that deadline. It used to fire at once, so a test that
-  selected on it saw every timeout elapse with no advance. `After(d)` with `d` of
-  zero or less still fires at once, as `time.After` does.
+  its deadline, sending the deadline as before. It used to fire at once, so a
+  test that selected on it saw every timeout elapse with no advance. A test that
+  received from it without calling `Advance` now blocks: advance the clock past
+  the deadline first. `After(d)` with `d` of zero or less still fires at once,
+  but now sends the current instant, as `time.After` does, not an instant in the
+  past.
 
 ## [1.0.0] — 2026-06-13
 

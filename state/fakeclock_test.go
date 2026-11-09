@@ -3,6 +3,7 @@ package state_test
 import (
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stablekernel/crucible/state"
@@ -75,11 +76,9 @@ func TestFakeClock_AfterNonPositiveFiresAtOnce(t *testing.T) {
 	}
 }
 
-// TestFakeClock_AfterFiresInDeadlineOrder checks that one large Advance fires
-// every waiter it reaches and none past it. Each channel receives its own
-// deadline, not the clock's new time, so a host that orders what fired by value
-// sees the deadlines in order, ties included.
-func TestFakeClock_AfterFiresInDeadlineOrder(t *testing.T) {
+// TestFakeClock_AdvanceFiresEveryReachedWaiter checks that one large Advance
+// fires every waiter it reaches, each with its own deadline, and none past it.
+func TestFakeClock_AdvanceFiresEveryReachedWaiter(t *testing.T) {
 	clk := state.NewFakeClock(fakeEpoch)
 	waiters := []struct {
 		d  time.Duration
@@ -109,6 +108,45 @@ func TestFakeClock_AfterFiresInDeadlineOrder(t *testing.T) {
 	clk.Advance(50 * time.Second)
 	if _, ok := fired(never); !ok {
 		t.Fatal("After(1m) did not fire once the clock reached 1m")
+	}
+}
+
+// TestFakeClock_AdvanceFiresInDeadlineOrder checks the order one Advance fires
+// waiters in, as a goroutine already blocked on them sees it: the earliest
+// deadline first, and the first armed when deadlines tie. synctest.Wait makes
+// sure the receiver is blocked in its select before the clock moves.
+func TestFakeClock_AdvanceFiresInDeadlineOrder(t *testing.T) {
+	cases := []struct {
+		name         string
+		older, newer time.Duration // older is armed first
+		wantOlder    bool
+	}{
+		{"earlier deadline armed second wins", 5 * time.Second, 2 * time.Second, false},
+		{"earlier deadline armed first wins", 2 * time.Second, 5 * time.Second, true},
+		{"tie goes to the first armed", 5 * time.Second, 5 * time.Second, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clk := state.NewFakeClock(fakeEpoch)
+				older := clk.After(tc.older)
+				newer := clk.After(tc.newer)
+				gotOlder := make(chan bool, 1)
+				go func() {
+					select {
+					case <-older:
+						gotOlder <- true
+					case <-newer:
+						gotOlder <- false
+					}
+				}()
+				synctest.Wait()
+				clk.Advance(10 * time.Second)
+				if got := <-gotOlder; got != tc.wantOlder {
+					t.Fatalf("receiver woke on the wrong waiter: woke on the first armed = %v, want %v", got, tc.wantOlder)
+				}
+			})
+		})
 	}
 }
 
