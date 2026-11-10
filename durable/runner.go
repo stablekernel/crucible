@@ -103,7 +103,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // of step with the journal. That call and every later one return ErrHandleFailed,
 // wrapping the cause, which can be a context that ended during the Store write. Before
 // recovering, call Drain: a step on another goroutine may still be sending an effect,
-// and a recovered Handle would send it again. Recover a new Handle with the same
+// and a recovered Handle would send it again. Recovering a healthy Handle's instance
+// instead needs this Handle's calls to have returned first. Recover a new Handle with the same
 // options to continue. A service
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
 // A running InvokeActor actor restarts from its initial state on any Recover, losing every
@@ -228,7 +229,10 @@ func (h *Handle[S, E, C]) inDispatch(ctx context.Context) bool {
 // Drain waits until no domain effect of h is still being dispatched, or ctx ends.
 // Call it after ErrHandleFailed and before Recover: a step on another goroutine may
 // still be sending an effect it recorded, and a recovered Handle would send it again
-// because it isn't marked yet. Drain works on a healthy Handle too. It returns ctx's
+// because it isn't marked yet. Once the Handle has failed, no step can start sending,
+// so Drain covers every effect. On a healthy Handle it covers only dispatches already
+// under way: a step still recording can start sending after Drain returns, so before
+// handing the instance to a new Handle, stop driving this one and let its calls return. It returns ctx's
 // error if ctx ends first, and ErrReentrantStep, without waiting, when called from
 // inside a step or an effect handler of h, whose own work it would wait on forever.
 // A call from a goroutine an effect handler started, without the handler's context,
@@ -1178,8 +1182,9 @@ func decodePayload[E comparable](p eventPayload, event E, decode EventDataDecode
 // with, so one decoder serves a machine whose events carry different payload types.
 // Return the payload as the same type the caller passed: a Fire whose payload decodes
 // as another type is refused with ErrEventDataEncoding. Only the top-level type is
-// checked, so a []any of structs still arrives as a []any of maps. A nil payload
-// arrives as nil without reaching the decoder. The default decodes with
+// checked, so a []any of structs still arrives as a []any of maps. An untyped nil
+// payload arrives as nil without reaching the decoder; a typed nil, such as a nil
+// pointer or map, encodes as null and is refused as a type mismatch. The default decodes with
 // DecodeAs[any]. Supply one with WithEventDataDecoder.
 type EventDataDecoder[E comparable] func(event E, data []byte) (any, error)
 

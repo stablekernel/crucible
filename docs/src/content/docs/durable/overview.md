@@ -139,8 +139,10 @@ takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
 effect handler that returns an error or panics. Before `Recover`, call `Handle.Drain`,
-which waits until no effect of the Handle is still being sent, so the recovered Handle
-can't send one twice. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
+which waits until no effect of the failed Handle is still being sent, so the recovered
+Handle can't send one twice. To move a healthy Handle's instance to a new Handle, stop
+calling the old one and let its calls return first: `Drain` alone doesn't cover a step
+that is still recording. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
 instance, so stop.
 
 ## A note on serialized payloads

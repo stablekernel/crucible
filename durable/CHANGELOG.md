@@ -27,10 +27,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **`ErrHandleFailed`** reports a Handle out of step with its journal.
 
-- **`Handle.View`** reads the instance under the Handle's step lock. **`Handle.Drain`**
-  waits until no effect of the Handle is still being sent; call it before `Recover` after
-  `ErrHandleFailed`. **`ErrReentrantStep`** reports a call back into a Handle that carries
-  the context one of its steps passed to a callback, such as a service's. A guard,
+- **`Handle.View`** reads the instance under the Handle's step lock.
+
+- **`Handle.Drain`** waits until no effect of the Handle is still being sent. Call it
+  before `Recover` after `ErrHandleFailed`. On a healthy Handle it covers only dispatches
+  already under way.
+
+- **`ErrReentrantStep`** reports a call back into a Handle that carries the context one
+  of its steps passed to a callback, such as a service's. A guard,
   action, reducer or actor behavior gets no context here, so its call back deadlocks
   instead; #245 passes them the step's context.
 
