@@ -193,7 +193,7 @@ func (i *Instance[S, E, C]) fireRegion(
 			pass := true
 			for _, g := range t.Guards {
 				tr.recordGuard(g.Name)
-				okg, gErr := m.evalGuard(g, entity)
+				okg, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
 					return true, nil, gErr
 				}
@@ -609,7 +609,7 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 			pass := true
 			for _, g := range t.Guards {
 				tr.recordGuard(g.Name)
-				okg, gErr := m.evalGuard(g, entity)
+				okg, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
 					tr.Outcome = OutcomeGuardPanic
 					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}

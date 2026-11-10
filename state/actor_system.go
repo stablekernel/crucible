@@ -47,6 +47,12 @@ import (
 // WithInitialState derived from input.
 type ActorBehavior func(input map[string]any) (ActorInstance, error)
 
+// ContextActorBehavior is an ActorBehavior that also gets the context of the step
+// spawning the actor: the parent's Fire, or the host call that absorbed the spawn. A
+// behavior that Casts its child passes it on with WithContext, so the reducers that
+// settle the child's initial state see it too. Register one with RegisterContext.
+type ContextActorBehavior func(ctx context.Context, input map[string]any) (ActorInstance, error)
+
 // ActorInstance is a running child actor as the ActorSystem sees it, with the
 // child's own (S, E, C) generic parameters erased. A host obtains one by wrapping
 // a Cast child *Instance with NewActor; the deterministic test driver and the
@@ -130,7 +136,7 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	parent *Instance[S, E, C]
 
 	mu       sync.Mutex
-	palette  map[string]ActorBehavior
+	palette  map[string]ContextActorBehavior
 	actors   map[string]*runningActor[E]
 	bySystem map[string]string // systemId -> id
 
@@ -232,7 +238,7 @@ func (s *ActorSystem[S, E, C]) inspectorRef() Inspector {
 func NewActorSystem[S comparable, E comparable, C any](parent *Instance[S, E, C]) *ActorSystem[S, E, C] {
 	return &ActorSystem[S, E, C]{
 		parent:   parent,
-		palette:  map[string]ActorBehavior{},
+		palette:  map[string]ContextActorBehavior{},
 		actors:   map[string]*runningActor[E]{},
 		bySystem: map[string]string{},
 	}
@@ -243,6 +249,14 @@ func NewActorSystem[S comparable, E comparable, C any](parent *Instance[S, E, C]
 // analog of Registry.Service: a host registers each child machine it can spawn.
 // Registering returns the system for chaining.
 func (s *ActorSystem[S, E, C]) Register(src string, behavior ActorBehavior) *ActorSystem[S, E, C] {
+	return s.RegisterContext(src, func(_ context.Context, input map[string]any) (ActorInstance, error) {
+		return behavior(input)
+	})
+}
+
+// RegisterContext is Register for a behavior that gets the spawning step's context.
+// Registering a src again, with either method, replaces its behavior.
+func (s *ActorSystem[S, E, C]) RegisterContext(src string, behavior ContextActorBehavior) *ActorSystem[S, E, C] {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.palette[src] = behavior
@@ -323,7 +337,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 		s.routeError(ctx, e, &UnboundActorError{Name: e.Src.Name})
 		return
 	}
-	inst, err := behavior(e.Input)
+	inst, err := behavior(ctx, e.Input)
 	if err != nil {
 		s.routeError(ctx, e, err)
 		return

@@ -177,7 +177,7 @@ func TestRegistry_AssignBindingRecorded(t *testing.T) {
 // leaves the context unchanged, rather than silently dropping the fold.
 func TestEvalAssign_UnboundRefFailsClosed(t *testing.T) {
 	m := ForgeFor[bindOrder]("x").State("a").Initial("a").Quench()
-	next, err := m.evalAssign(Ref{Name: "ghost"}, bindOrder{Amount: 3}, nil)
+	next, err := m.evalAssign(context.Background(), Ref{Name: "ghost"}, bindOrder{Amount: 3}, nil)
 	if err == nil {
 		t.Fatal("unbound assign ref should fail")
 	}

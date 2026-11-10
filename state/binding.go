@@ -96,9 +96,9 @@ func inProcessGuard[C any](fn GuardFn[C]) GuardBinding[C] {
 
 // EvalGuard reads the live entity from the request's context view and invokes the
 // wrapped GuardFn. The view is read-only; the func receives the entity by value.
-func (b guardFnBinding[C]) EvalGuard(_ context.Context, req GuardRequest[C]) (GuardResult, error) {
+func (b guardFnBinding[C]) EvalGuard(ctx context.Context, req GuardRequest[C]) (GuardResult, error) {
 	entity, _ := req.Context.Raw().(C)
-	return GuardResult{OK: b.fn(GuardCtx[C]{Entity: entity, Params: req.Params})}, nil
+	return GuardResult{OK: b.fn(GuardCtx[C]{Entity: entity, Params: req.Params, Ctx: nonNil(ctx)})}, nil
 }
 
 // actionFnBinding is the default in-process ActionBinding: it adapts an ActionFn.
@@ -114,9 +114,9 @@ func inProcessAction[C any](fn ActionFn[C]) ActionBinding[C] {
 // EvalAction invokes the wrapped ActionFn and lifts its single effect into the
 // ActionResult envelope. Actions emit effects only; context is written through an
 // assign, not here.
-func (b actionFnBinding[C]) EvalAction(_ context.Context, req ActionRequest[C]) (ActionResult, error) {
+func (b actionFnBinding[C]) EvalAction(ctx context.Context, req ActionRequest[C]) (ActionResult, error) {
 	entity, _ := req.Context.Raw().(C)
-	eff, err := b.fn(ActionCtx[C]{Entity: entity, Params: req.Params})
+	eff, err := b.fn(ActionCtx[C]{Entity: entity, Params: req.Params, Ctx: nonNil(ctx)})
 	if err != nil {
 		return ActionResult{}, err
 	}

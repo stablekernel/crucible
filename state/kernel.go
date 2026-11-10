@@ -558,6 +558,12 @@ type BatchResult[S comparable] struct {
 type GuardCtx[C any] struct {
 	Entity C
 	Params map[string]any
+	// Ctx is the context of the Fire running this callback, or of the Cast that
+	// settles the initial state (see WithContext); context.Background() outside one,
+	// such as during PlanPath. It is never nil. Pass it to any call the callback makes
+	// back into the host that drives this instance, so the host can tell the call
+	// comes from inside a step.
+	Ctx context.Context
 }
 
 // GuardFn is a pure predicate on the entity.
@@ -567,6 +573,12 @@ type GuardFn[C any] func(ctx GuardCtx[C]) bool
 type ActionCtx[C any] struct {
 	Entity C
 	Params map[string]any
+	// Ctx is the context of the Fire running this callback, or of the Cast that
+	// settles the initial state (see WithContext); context.Background() outside one,
+	// such as during PlanPath. It is never nil. Pass it to any call the callback makes
+	// back into the host that drives this instance, so the host can tell the call
+	// comes from inside a step.
+	Ctx context.Context
 }
 
 // ActionFn produces an effect (or error) for a transition.
@@ -1688,7 +1700,9 @@ func (m *Machine[S, E, C]) Cast(entity C, opts ...CastOption[S]) *Instance[S, E,
 	// done — so the starting state behaves like every state Fire enters. The
 	// resulting effects are buffered on the instance (InitialEffects/StartEffects);
 	// SCXML requires this entry to run before the first external event.
+	inst.callCtx = cfg.ctx
 	inst.settleInitial(current)
+	inst.callCtx = nil
 	return inst
 }
 
@@ -1746,6 +1760,9 @@ type Instance[S comparable, E comparable, C any] struct {
 	// payload from the absent default (the boxed triggering event).
 	fireData    any
 	hasFireData bool
+	// callCtx is the context of the Fire (or the settling Cast) in progress, handed to
+	// every guard, action and reducer as its Ctx. It is nil between calls.
+	callCtx context.Context
 	// clock is the time seam a delayed-transition driver reads to schedule
 	// `after` timers. It is never consulted by the pure Fire step — only by a
 	// Scheduler/host driver wired to this instance — so Fire stays clock-free.

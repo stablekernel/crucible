@@ -374,7 +374,7 @@ func (i *Instance[S, E, C]) evalGuardExpr(g *GuardNode[S], entity C, tr *Trace) 
 		if tr != nil {
 			tr.recordGuard(name)
 		}
-		ok, err := i.machine.evalGuard(*g.Ref, entity)
+		ok, err := i.machine.evalGuard(i.callbackContext(), *g.Ref, entity)
 		if err != nil {
 			return guardEval{err: err}
 		}

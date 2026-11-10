@@ -32,6 +32,12 @@ type AssignCtx[C any] struct {
 	Entity C
 	Event  any
 	Params map[string]any
+	// Ctx is the context of the Fire running this callback, or of the Cast that
+	// settles the initial state (see WithContext); context.Background() outside one,
+	// such as during PlanPath. It is never nil. Pass it to any call the callback makes
+	// back into the host that drives this instance, so the host can tell the call
+	// comes from inside a step.
+	Ctx context.Context
 }
 
 // AssignFn is the sole context writer: a total pure reducer producing the next
@@ -80,8 +86,8 @@ func inProcessAssign[C any](fn AssignFn[C]) AssignBinding[C] {
 // EvalAssign reads the prior context from the request's context view and invokes
 // the wrapped AssignFn, returning the new context. The view is read-only; the
 // reducer receives the context by value and its return is the only output.
-func (b assignFnBinding[C]) EvalAssign(_ context.Context, req AssignRequest[C]) (AssignResult[C], error) {
+func (b assignFnBinding[C]) EvalAssign(ctx context.Context, req AssignRequest[C]) (AssignResult[C], error) {
 	entity, _ := req.Context.Raw().(C)
-	next := b.fn(AssignCtx[C]{Entity: entity, Event: req.Event, Params: req.Params})
+	next := b.fn(AssignCtx[C]{Entity: entity, Event: req.Event, Params: req.Params, Ctx: nonNil(ctx)})
 	return AssignResult[C]{Context: next}, nil
 }

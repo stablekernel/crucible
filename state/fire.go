@@ -31,6 +31,11 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	// when the macrostep settles, so it never leaks into a later Fire.
 	i.fireData = cfg.eventData
 	i.hasFireData = cfg.hasData
+	// Guards, actions and reducers see this Fire's context as their Ctx. A Fire nested
+	// inside another on the same instance restores the outer one when it returns.
+	outerCtx := i.callCtx
+	i.callCtx = ctx
+	defer func() { i.callCtx = outerCtx }()
 	defer func() {
 		i.fireData = nil
 		i.hasFireData = false
@@ -519,7 +524,7 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 // expr subpackage documents the same asymmetry from its side.
 func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
 	for _, g := range t.Guards {
-		ok, err := i.machine.evalGuard(g, i.entity)
+		ok, err := i.machine.evalGuard(i.callbackContext(), g, i.entity)
 		if err != nil || !ok {
 			return false
 		}
@@ -659,7 +664,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 			passed := true
 			for _, g := range t.Guards {
 				tr.recordGuard(g.Name)
-				ok, gErr := m.evalGuard(g, entity)
+				ok, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
 					tr.Outcome = OutcomeGuardPanic
 					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
@@ -1077,7 +1082,7 @@ func transName[S comparable](from, to S) string {
 // failing action's name, and the cause.
 func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects []Effect, name string, err error) {
 	for _, a := range refs {
-		e, aerr := i.machine.evalAction(a, entity)
+		e, aerr := i.machine.evalAction(i.callbackContext(), a, entity)
 		if aerr != nil {
 			tr.recordEffect(a.Name)
 			return effects, a.Name, aerr
@@ -1097,8 +1102,23 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	return effects, "", nil
 }
 
+// callbackContext returns the context a guard, action or reducer gets as its Ctx: the
+// running Fire's or settling Cast's, or context.Background() outside one.
+func (i *Instance[S, E, C]) callbackContext() context.Context {
+	return nonNil(i.callCtx)
+}
+
+// nonNil returns ctx, or context.Background() for a nil one, so a callback's Ctx is
+// always usable.
+func nonNil(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // evalGuard resolves and runs a guard ref, recovering panics into GuardPanicError.
-func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
+func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok bool, err error) {
 	fn, found := m.guards[g.Name]
 	if !found {
 		// Unbound refs are caught at Quench; defensively treat as a guard panic.
@@ -1110,14 +1130,14 @@ func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 			err = &GuardPanicError{GuardName: g.Name, Recovered: r}
 		}
 	}()
-	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
+	return fn(GuardCtx[C]{Entity: entity, Params: g.Params, Ctx: ctx}), nil
 }
 
 // evalAction resolves and runs an action ref, recovering a panicking host action
 // into a typed ActionPanicError so a faulty action fails the fire deterministically
 // rather than crashing Fire. Kernel built-in actions (e.g. the Cancel built-in) are
 // handled directly without consulting the host registry.
-func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
+func (m *Machine[S, E, C]) evalAction(ctx context.Context, a Ref, entity C) (eff Effect, err error) {
 	if isBuiltinAction(a.Name) {
 		return evalBuiltinAction(a)
 	}
@@ -1131,7 +1151,7 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 			err = &ActionPanicError{ActionName: a.Name, Recovered: r}
 		}
 	}()
-	return fn(ActionCtx[C]{Entity: entity, Params: a.Params})
+	return fn(ActionCtx[C]{Entity: entity, Params: a.Params, Ctx: ctx})
 }
 
 // applyAssigns folds a list of assign refs onto cur in declaration order, each
@@ -1141,7 +1161,7 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 // error that stops the commit, mirroring a guard panic.
 func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *Trace) (C, string, error) {
 	for _, a := range refs {
-		next, err := i.machine.evalAssign(a, cur, eventData)
+		next, err := i.machine.evalAssign(i.callbackContext(), a, cur, eventData)
 		if err != nil {
 			tr.recordAssign(a.Name)
 			return cur, a.Name, err
@@ -1155,7 +1175,7 @@ func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *T
 // evalAssign resolves and runs an assign ref, folding the prior context into the
 // next. A reducer panic is recovered into a typed AssignPanicError so a faulty
 // reducer fails the commit deterministically rather than corrupting context.
-func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err error) {
+func (m *Machine[S, E, C]) evalAssign(ctx context.Context, a Ref, cur C, eventData any) (next C, err error) {
 	fn, found := m.assigns[a.Name]
 	if !found {
 		return cur, &AssignPanicError{AssignName: a.Name, Recovered: "unbound assign at fire time"}
@@ -1166,7 +1186,7 @@ func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err 
 			err = &AssignPanicError{AssignName: a.Name, Recovered: r}
 		}
 	}()
-	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params}), nil
+	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params, Ctx: ctx}), nil
 }
 
 // projectTransition erases the generic parameters of a Transition into the
