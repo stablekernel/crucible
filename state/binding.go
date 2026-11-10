@@ -203,7 +203,7 @@ func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...Describe
 			// context before the Fire's next cancellation check rolled it back. Surface the
 			// context's error instead, so the Fire stops here.
 			if cerr := ctx.Err(); cerr != nil {
-				panic(guardCanceled{err: fmt.Errorf("%w (guard %q: %v)", cerr, name, err)})
+				panic(guardCanceled{err: fmt.Errorf("%w (guard %q: %w)", cerr, name, err)})
 			}
 			return false
 		}

@@ -212,7 +212,7 @@ func TestCanceledGuard_IsNotReportedAsAGuardFailure(t *testing.T) {
 }
 
 // TestCanceledGuard_KeepsTheBindingsError proves the Fire's error names the guard and
-// keeps the binding's own error, while still matching the context's, on an
+// wraps both the binding's own error and the context's, so errors.Is matches either, on an
 // event-driven transition and on an eventless one.
 func TestCanceledGuard_KeepsTheBindingsError(t *testing.T) {
 	tests := []struct {
@@ -232,9 +232,10 @@ func TestCanceledGuard_KeepsTheBindingsError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, res := fireCanceled(t, errors.New("lookup failed"), tt.build, "from")
-			if !errors.Is(res.Err, context.Canceled) {
-				t.Fatalf("Fire err = %v, want context.Canceled", res.Err)
+			lookupErr := errors.New("lookup failed")
+			_, res := fireCanceled(t, lookupErr, tt.build, "from")
+			if !errors.Is(res.Err, context.Canceled) || !errors.Is(res.Err, lookupErr) {
+				t.Fatalf("Fire err = %v, want it to match context.Canceled and the binding's error", res.Err)
 			}
 			if msg := res.Err.Error(); !strings.Contains(msg, "lookup failed") || !strings.Contains(msg, `"bound"`) {
 				t.Fatalf("Fire err %q doesn't name the guard and keep its error", msg)
