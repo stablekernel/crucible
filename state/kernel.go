@@ -560,7 +560,7 @@ type GuardCtx[C any] struct {
 	Params map[string]any
 	// Ctx is the context of the Fire running this callback, or of the Cast that
 	// settles the initial state (see WithContext); context.Background() outside one,
-	// such as during PlanPath. It is never nil. Pass it to any call the callback makes
+	// such as a guard PlanPath evaluates. It is never nil. Pass it to any call the callback makes
 	// back into the host that drives this instance, so the host can tell the call
 	// comes from inside a step.
 	Ctx context.Context
@@ -575,7 +575,7 @@ type ActionCtx[C any] struct {
 	Params map[string]any
 	// Ctx is the context of the Fire running this callback, or of the Cast that
 	// settles the initial state (see WithContext); context.Background() outside one,
-	// such as during PlanPath. It is never nil. Pass it to any call the callback makes
+	// such as a guard PlanPath evaluates. It is never nil. Pass it to any call the callback makes
 	// back into the host that drives this instance, so the host can tell the call
 	// comes from inside a step.
 	Ctx context.Context

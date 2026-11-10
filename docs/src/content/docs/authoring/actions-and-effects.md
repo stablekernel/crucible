@@ -27,7 +27,7 @@ func notifyCustomer(ctx state.ActionCtx[Order]) (state.Effect, error) {
 }
 ```
 
-The crucial discipline: **the kernel performs no IO**. An action returns an `Effect` (plain data) and the kernel collects every effect into the `FireResult`. Your host loop reads that slice and dispatches the real work. This keeps `Fire` deterministic and pure: the same context and event always yield the same effects, which is what makes the engine testable, replayable, and safe to run anywhere.
+The crucial discipline: **the kernel performs no IO**. An action returns an `Effect` (plain data) and the kernel collects every effect into the `FireResult`. Your host loop reads that slice and dispatches the real work. `ctx.Ctx` is the context of the `Fire` running the action. Pass it on if an action, guard or reducer ever has to call back into the host that drives the instance, so the host can tell the call comes from inside a step. This keeps `Fire` deterministic and pure: the same context and event always yield the same effects, which is what makes the engine testable, replayable, and safe to run anywhere.
 
 ```mermaid
 stateDiagram-v2

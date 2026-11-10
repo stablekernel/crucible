@@ -180,8 +180,9 @@ type castConfig[S comparable] struct {
 	ctx           context.Context
 }
 
-// WithContext sets the context Cast hands to the reducers that settle the initial
-// state, as their AssignCtx.Ctx. A host that casts an instance inside its own step,
+// WithContext sets the context Cast hands to the guards, actions and reducers that
+// settle the initial state, as their Ctx. Cast settles the state to completion
+// even if the context has ended. A host that casts an instance inside its own step,
 // such as an actor factory, passes that step's context. When omitted, it is
 // context.Background().
 func WithContext[S comparable](ctx context.Context) CastOption[S] {

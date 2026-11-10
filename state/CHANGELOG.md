@@ -18,10 +18,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
   `Ctx` field: the context the `Fire` was given, so a callback can pass it to any call it
   makes back into the host driving the instance. Outside a `Fire`, such as during
-  `PlanPath`, it's `context.Background()`, never nil. The in-process bindings pass their
-  `EvalGuard`, `EvalAction` and `EvalAssign` context through.
-- **`WithContext`** sets the context `Cast` gives the reducers that settle the initial
-  state.
+  `PlanPath`, it's `context.Background()`, never nil. Callbacks see the context as
+  the middleware chain passes it down. The in-process bindings pass their `EvalGuard`,
+  `EvalAction` and `EvalAssign` context through, and a binding registered with
+  `BindGuard` gets the Fire's context instead of a background one.
+- **`WithContext`** sets the context `Cast` gives the guards, actions and reducers that
+  settle the initial state.
 - **`ActorSystem.RegisterContext`** registers a `ContextActorBehavior`, an actor factory
   that gets the context of the step spawning or restoring the actor, so it can `Cast`
   its child `WithContext`. A child's own callbacks already get the context its

@@ -31,8 +31,10 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	// when the macrostep settles, so it never leaks into a later Fire.
 	i.fireData = cfg.eventData
 	i.hasFireData = cfg.hasData
-	// Guards, actions and reducers see this Fire's context as their Ctx. A Fire nested
-	// inside another on the same instance restores the outer one when it returns.
+	// Guards, actions and reducers see this Fire's context as their Ctx (as the
+	// middleware chain passes it down). A Fire nested inside another on the same
+	// instance restores the outer Fire's context when it returns; it doesn't restore
+	// the outer Fire's other per-Fire state, such as its WithEventData payload.
 	outerCtx := i.callCtx
 	i.callCtx = ctx
 	defer func() { i.callCtx = outerCtx }()
@@ -63,6 +65,9 @@ func (i *Instance[S, E, C]) eventData(event E) any {
 // outside-in, so the first-installed middleware is the outermost wrapper.
 func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) FireResult[S] {
 	next := func(ctx context.Context, event E) FireResult[S] {
+		// Callbacks see the context the middleware chain passes down, which may carry
+		// values or a deadline a middleware added.
+		i.callCtx = ctx
 		return i.fireCore(ctx, event)
 	}
 	mws := i.machine.middleware
@@ -379,6 +384,8 @@ func (i *Instance[S, E, C]) settleInitial(current S) {
 	// first external event.
 	i.entity = cur
 	res := FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+	// The settle runs to completion whatever WithContext's context says: a Cast has
+	// no result to abandon it with. Its callbacks still see that context as their Ctx.
 	res = i.runToCompletion(context.Background(), res)
 	i.initialEffects = res.Effects
 	i.initialErr = res.Err

@@ -176,13 +176,14 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 // (which reads r.guards) finds it; the binding is also recorded on the parallel
 // binding seam so a future out-of-process transport can swap it under the same name.
 //
-// EvalGuard is called with a background context and the in-process context view;
+// EvalGuard is called with the context of the Fire evaluating the guard (the
+// GuardCtx.Ctx the kernel hands the adapter) and the in-process context view;
 // an error it returns is treated as a false verdict, matching how a Go guard that
 // cannot decide yields false rather than transitioning. An optional Describe option
 // adds palette metadata exactly as Guard does.
 func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = func(gctx GuardCtx[C]) bool {
-		res, err := b.EvalGuard(context.Background(), GuardRequest[C]{
+		res, err := b.EvalGuard(nonNil(gctx.Ctx), GuardRequest[C]{
 			Name:    name,
 			Params:  gctx.Params,
 			Context: newInProcessView(gctx.Entity),

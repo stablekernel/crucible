@@ -49,7 +49,7 @@ type ActorBehavior func(input map[string]any) (ActorInstance, error)
 
 // ContextActorBehavior is an ActorBehavior that also gets the context of the step
 // spawning the actor: the parent's Fire, or the host call that absorbed the spawn. A
-// behavior that Casts its child passes it on with WithContext, so the reducers that
+// behavior that Casts its child passes it on with WithContext, so the callbacks that
 // settle the child's initial state see it too. Register one with RegisterContext.
 type ContextActorBehavior func(ctx context.Context, input map[string]any) (ActorInstance, error)
 
@@ -122,8 +122,9 @@ const parentActorID = "\x00parent"
 // ActorSystem is the reusable host-driver that turns the kernel's SpawnActor /
 // StopActor effects into running child-machine actors, owns each actor's mailbox,
 // routes delivered events into mailboxes, steps actors via Fire, and re-fires the
-// parent's onDone / onError when a child completes or fails. It is
-// concurrency-safe. Construct one per parent instance with NewActorSystem, then
+// parent's onDone / onError when a child completes or fails. Its own state is
+// concurrency-safe, but settling a child Fires the parent Instance, which is not:
+// drive the system and the parent from one goroutine at a time. Construct one per parent instance with NewActorSystem, then
 // Register the child-machine behaviors that resolve SpawnActor Src refs; drive it
 // by passing each Fire's effects (and the parent's StartEffects) to Absorb, and
 // step actors with Deliver / Step.

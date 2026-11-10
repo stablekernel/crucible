@@ -85,9 +85,9 @@ func TestCallbacks_CastWithContext(t *testing.T) {
 	if seen.Entry != "cast" {
 		t.Fatalf("the entry reducer saw %q at Cast, want cast", seen.Entry)
 	}
-	plain := &ctxSeen{}
+	plain := &ctxSeen{Entry: "unset"}
 	ctxMachine().Cast(plain, state.WithInitialState("idle"))
-	if plain.Entry != "" { // context.Background(): non-nil, no tag
+	if plain.Entry != "" { // ran, with context.Background(): non-nil, no tag
 		t.Fatalf("the entry reducer saw %q at a plain Cast, want a background context", plain.Entry)
 	}
 }
@@ -161,5 +161,33 @@ func TestActorSystem_RegisterContext_GetsTheSpawnContext(t *testing.T) {
 	}
 	if child.Guard != "deliver" || child.Action != "deliver" || child.Assign != "deliver" {
 		t.Fatalf("the child's callbacks saw %+v, want deliver", *child)
+	}
+}
+
+// TestCallbacks_SeeTheContextMiddlewarePasses proves callbacks see the context the
+// middleware chain hands down, not only the one Fire was called with.
+func TestCallbacks_SeeTheContextMiddlewarePasses(t *testing.T) {
+	retag := func(next state.FireFunc[string, string, *ctxSeen]) state.FireFunc[string, string, *ctxSeen] {
+		return func(ctx context.Context, ev string) state.FireResult[string] {
+			return next(context.WithValue(ctx, ctxKey{}, "middleware"), ev)
+		}
+	}
+	seen := &ctxSeen{}
+	m := state.ForgeFor[*ctxSeen]("mw").
+		Guard("g", func(c state.GuardCtx[*ctxSeen]) bool {
+			c.Entity.Guard = tagOf(c.Ctx)
+			return true
+		}).
+		State("idle").
+		State("busy").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("busy").When("g").
+		Use(retag).
+		Quench()
+	if res := m.Cast(seen, state.WithInitialState("idle")).Fire(tagged("fire"), "go"); res.Err != nil {
+		t.Fatalf("Fire: %v", res.Err)
+	}
+	if seen.Guard != "middleware" {
+		t.Fatalf("the guard saw %q, want the middleware's context", seen.Guard)
 	}
 }
