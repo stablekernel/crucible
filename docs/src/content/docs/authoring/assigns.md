@@ -34,7 +34,7 @@ Transition(Authorizing).On(Authorized).
     Assign("recordHold")
 ```
 
-The `AssignCtx` carries the prior `Entity`, the triggering `Event`, and the ref's static `Params`, so a reducer can fold event payloads into context (for example, folding a saga's refunded amount in via the `onDone` event). It also carries `Ctx`, the context of the `Fire` running the reducer, as guards and actions do in `GuardCtx` and `ActionCtx`.
+The `AssignCtx` carries the prior `Entity`, the triggering `Event`, and the ref's static `Params`, so a reducer can fold event payloads into context (for example, folding a saga's refunded amount in via the `onDone` event). It also carries `Ctx`, the context of the `Fire` running the reducer, as guards and actions do in `GuardCtx` and `ActionCtx`. Don't branch on it: a replay runs the same callbacks under a different context.
 
 ```mermaid
 stateDiagram-v2

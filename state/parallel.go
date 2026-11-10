@@ -155,8 +155,12 @@ func (i *Instance[S, E, C]) fireParallel(ctx context.Context, parallel S, event 
 // regionErrOutcome maps a region-level error to the appropriate outcome,
 // mirroring the main commit path: a bound action that errored surfaces as
 // OutcomeEffectError, an assign reducer panic as OutcomeAssignFailed, and a
-// failing guard predicate as OutcomeGuardFailed.
+// failing guard predicate as OutcomeGuardFailed. A guard stopped by an ended context
+// reports OutcomeInvalidTransition, as a Fire on an ended context does.
 func regionErrOutcome(err error) Outcome {
+	if isCanceled(err) {
+		return OutcomeInvalidTransition
+	}
 	var afe *ActionFailedError
 	if errors.As(err, &afe) {
 		return OutcomeEffectError
@@ -611,7 +615,9 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 				tr.recordGuard(g.Name)
 				okg, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(gErr) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
 				}
 				if !okg {
@@ -622,7 +628,9 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 			if pass && t.GuardExpr != nil {
 				res := i.evalGuardExpr(t.GuardExpr, entity, &tr)
 				if res.err != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(res.err) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: res.err}
 				}
 				if !res.ok {

@@ -701,7 +701,9 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 			if passed && t.GuardExpr != nil {
 				res := i.evalGuardExpr(t.GuardExpr, entity, &tr)
 				if res.err != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(res.err) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: res.err}
 				}
 				if !res.ok {
@@ -1120,10 +1122,13 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	return effects, "", nil
 }
 
-// settleWith settles the initial state with ctx as its callbacks' context, clearing it
-// however the settle ends.
+// settleWith settles the initial state with ctx's values, but not its cancellation or
+// deadline, as its callbacks' context, clearing it however the settle ends. Cast always
+// settles to completion, so a callback mustn't see the context end partway: a guard
+// that failed on an ended context would quietly send the settle down another
+// transition, with no error to report it.
 func (i *Instance[S, E, C]) settleWith(ctx context.Context, current S) {
-	i.callCtx = ctx
+	i.callCtx = context.WithoutCancel(nonNil(ctx))
 	defer func() { i.callCtx = nil }()
 	i.settleInitial(current)
 }
@@ -1168,7 +1173,9 @@ func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok b
 // stops with it instead of reading the guard as false.
 type guardCanceled struct{ err error }
 
-// isCanceled reports whether err is a context's cancellation or deadline error.
+// isCanceled reports whether err is a context's cancellation or deadline error. A guard
+// stopped that way leaves the Trace's outcome as a Fire on an ended context does,
+// rather than reporting a guard panic.
 func isCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

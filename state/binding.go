@@ -1,6 +1,9 @@
 package state
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // This file makes behavior invocation a binding rather than a bare Go func
 // pointer. A binding turns a serializable request envelope into a serializable
@@ -197,7 +200,7 @@ func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...Describe
 			// context before the Fire's next cancellation check rolled it back. Surface the
 			// context's error instead, so the Fire stops here.
 			if cerr := ctx.Err(); cerr != nil {
-				panic(guardCanceled{err: cerr})
+				panic(guardCanceled{err: fmt.Errorf("%w (guard %q: %v)", cerr, name, err)})
 			}
 			return false
 		}

@@ -23,7 +23,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `EvalAction` and `EvalAssign` context through. Don't branch on the context: a
   replay runs the same callbacks under a different one.
 - **`WithContext`** sets the context `Cast` gives the guards, actions and reducers that
-  settle the initial state.
+  settle the initial state: its values, without its cancellation or deadline, since
+  `Cast` settles to completion.
 - **`ActorSystem.RegisterContext`** registers a `ContextActorBehavior`, an actor factory
   that gets the context of the step spawning or restoring the actor, so it can `Cast`
   its child `WithContext`. A child's own callbacks already get the context its
@@ -36,8 +37,10 @@ counts as an additive (minor) versus breaking (major) change. Use the
   used to get a background one. An error it returns after that context ended no longer
   counts as a false verdict: the Fire fails with the context's error at once. Before,
   another transition could be chosen and its actions and reducers run under the ended
-  context, until the next cancellation check rolled the Fire back. An eventless
-  transition chosen while the context ended isn't committed either.
+  context, until the next cancellation check rolled the Fire back. The Fire's error
+  wraps the binding's own error. A Fire whose context ended while its eventless
+  transitions' guards ran now fails, whether or not one was chosen, where it could
+  succeed before.
 
 ## [1.0.0] — 2026-06-13
 

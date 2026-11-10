@@ -48,7 +48,8 @@ import (
 type ActorBehavior func(input map[string]any) (ActorInstance, error)
 
 // ContextActorBehavior is an ActorBehavior that also gets the context of the step
-// spawning the actor: the parent's Fire, or the host call that absorbed the spawn. A
+// spawning the actor (the parent's Fire, or the host call that absorbed the spawn), or
+// of the RestoreActors call restoring it. A
 // behavior that Casts its child passes it on with WithContext, so the callbacks that
 // settle the child's initial state see it too. Register one with RegisterContext.
 type ContextActorBehavior func(ctx context.Context, input map[string]any) (ActorInstance, error)

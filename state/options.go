@@ -181,8 +181,9 @@ type castConfig[S comparable] struct {
 }
 
 // WithContext sets the context Cast hands to the guards, actions and reducers that
-// settle the initial state, as their Ctx. Cast settles the state to completion
-// even if the context has ended. A host that casts an instance inside its own step,
+// settle the initial state, as their Ctx. They get its values but not its cancellation
+// or deadline: Cast settles the state to completion, so a callback mustn't see the
+// context end partway. A host that casts an instance inside its own step,
 // such as an actor factory, passes that step's context. When omitted, it is
 // context.Background().
 func WithContext[S comparable](ctx context.Context) CastOption[S] {
