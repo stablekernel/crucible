@@ -91,14 +91,17 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // result, true and that error, and the Handle carries on. A recovered Handle has an
 // unrecorded service in flight again, and RunService runs it a second time.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
+	res, ok, err := h.runService(ctx, id)
+	return res, ok, h.afterFailure(ctx, err)
+}
+
+// runService is RunService without the wait after a failure.
+func (h *Handle[S, E, C]) runService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
 	}
 	defer h.release()
-	if err := h.refuse(); err != nil {
-		return state.FireResult[S]{}, false, err
-	}
-	if err := ctx.Err(); err != nil {
+	if err := h.refuse(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
 	}
 	if h.svc == nil {

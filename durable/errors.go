@@ -43,7 +43,8 @@ var (
 	ErrFenced = errors.New(errorPrefix + errorFenced)
 
 	// ErrEventDataEncoding wraps a Handle.Fire refused before the kernel ran, because
-	// its state.WithEventData payload has no JSON form that decodes again, panics while
+	// its state.WithEventData payload has no JSON form that decodes again, decodes as a
+	// different type than the caller passed (see WithEventDataDecoder), panics while
 	// encoding (such as an error that's a typed nil), or exceeds WithMaxEventDataBytes.
 	// Nothing applied, so the Handle stays usable.
 	ErrEventDataEncoding = errors.New(errorPrefix + errorEventDataEncoding)
@@ -56,9 +57,10 @@ var (
 
 	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService,
 	// DeliverToActor and View once a step applied to the live instance but may not have been
-	// recorded, on that call and every later one. It wraps the cause. Recover a new
-	// Handle with the same options to continue, unless the cause is ErrFenced: then a
-	// newer owner holds the instance, so stop.
+	// recorded, or an effect handler failed, on that call and every later one. It wraps the cause. The call returns
+	// once no effect of the Handle is still being sent, so recovering right away can't
+	// send one twice. Recover a new Handle with the same options to continue, unless the
+	// cause is ErrFenced: then a newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
 
 	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor
@@ -76,7 +78,7 @@ var (
 	ErrInstanceExists = errors.New(errorPrefix + errorInstanceExists)
 
 	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
-	// handler (WithEffectHandler) while applying an emitted effect. The effect was
+	// handler (WithEffectHandler) while applying an emitted effect, or a panic in it. The effect was
 	// persisted (write-ahead) but not marked dispatched, so the Handle fails with
 	// ErrHandleFailed wrapping it, and Recover dispatches it again. Callers match
 	// this with errors.Is to tell a dispatch failure from a kernel transition or

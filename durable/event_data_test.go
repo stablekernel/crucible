@@ -162,6 +162,7 @@ func TestFire_EventData_LiveEqualsReplay(t *testing.T) {
 		{"a large int keeps its precision", int64(1<<53 + 1), decodeAll[int64], "int64:9007199254740993"},
 		{"a struct", order{Qty: 2}, decodeAll[order], "durable_test.order:{2}"},
 		{"a map by default", map[string]any{"qty": 2.0}, nil, "map[string]interface {}:map[qty:2]"},
+		{"a nil payload stays nil under a typed decoder", nil, decodeAll[int], "<nil>:<nil>"},
 		{"an error", errors.New("card declined"), nil, "*errors.errorString:card declined"},
 	}
 	for _, tt := range tests {

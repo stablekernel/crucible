@@ -57,7 +57,7 @@ type memInstance struct {
 	// out of the live tail. It is nil when history is disabled.
 	history []Record
 	// maxStep is the highest Step ever appended (across checkpoint and tail), for
-	// the strict-ordering check. -1 means nothing appended yet.
+	// the strict-ordering check. noRecord means nothing appended yet.
 	maxStep int
 	// seq is the monotonic per-instance append sequence; it advances on every
 	// non-idempotent Append.

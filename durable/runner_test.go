@@ -985,6 +985,51 @@ func TestHandle_FencedOwner_Stops(t *testing.T) {
 	}
 }
 
+// endsOnSecondCheck is a context that reports itself live the first time its Err is
+// read and canceled after, standing in for one that ends just as the step takes the
+// lock.
+type endsOnSecondCheck struct {
+	context.Context
+	checks atomic.Int32
+}
+
+func (c *endsOnSecondCheck) Err() error {
+	if c.checks.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+
+// TestHandle_ContextEndingAsTheLockIsTaken_ChangesNothing proves the check after the
+// lock is taken stops a Tick whose context ended while it took the lock, before the
+// scheduler consumes a due timer.
+func TestHandle_ContextEndingAsTheLockIsTaken_ChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &armedAppendStore{Store: durable.NewMemStore()}
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	clk.Advance(time.Second)
+	before := store.appends
+	if _, err = h.Tick(&endsOnSecondCheck{Context: ctx}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want context.Canceled", err)
+	}
+	if store.appends != before {
+		t.Fatalf("Tick appended %d Records, want 0", store.appends-before)
+	}
+	results, err := h.Tick(ctx)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("Tick after = (%d results, %v), want the timer still due", len(results), err)
+	}
+}
+
 // TestHandle_ContextEndedBeforeTheStep_ChangesNothing proves an ended context stops a
 // Tick before the scheduler consumes a due timer.
 func TestHandle_ContextEndedBeforeTheStep_ChangesNothing(t *testing.T) {

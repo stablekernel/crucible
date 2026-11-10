@@ -275,3 +275,206 @@ func TestHandle_View_DoesNotRaceSteps(t *testing.T) {
 		t.Fatalf("View after the Fires: count %d, err %v; want 100", last, err)
 	}
 }
+
+// panicAppendStore panics on the next Append once armed.
+type panicAppendStore struct {
+	durable.Store
+	armed atomic.Bool
+}
+
+func (s *panicAppendStore) Append(ctx context.Context, id durable.InstanceID, rec durable.Record, opts ...durable.AppendOption) (int64, error) {
+	if s.armed.CompareAndSwap(true, false) {
+		panic("store exploded")
+	}
+	return s.Store.Append(ctx, id, rec, opts...)
+}
+
+// TestHandle_PanicUnderTheLock_ReleasesIt proves a panic while Fire holds the step
+// lock doesn't leave the lock held: the next step still gets it.
+func TestHandle_PanicUnderTheLock_ReleasesIt(t *testing.T) {
+	ctx := context.Background()
+	store := &panicAppendStore{Store: durable.NewMemStore()}
+	h, err := durable.NewRunner(pollingMachine(), store).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	store.armed.Store(true)
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = h.Fire(ctx, "start")
+	}()
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := h.View(waitCtx, func(*state.Instance[string, string, *runCtx]) {}); errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("View after the panic waited out its deadline: the step lock was left held")
+	}
+}
+
+// TestHandle_PanickingEffectHandler_FailsTheHandle proves a handler that panics fails
+// the Handle like one that returns an error, instead of leaving its step dispatching
+// forever, which would silently stop every later checkpoint.
+func TestHandle_PanickingEffectHandler_FailsTheHandle(t *testing.T) {
+	ctx := context.Background()
+	m := effectMachine()
+	store := durable.NewMemStore()
+	var panicked atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if panicked.CompareAndSwap(false, true) {
+			panic("handler exploded")
+		}
+		return nil
+	}
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = h.Fire(ctx, "go")
+	if !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, durable.ErrEffectDispatch) {
+		t.Fatalf("Fire(go) = %v, want ErrHandleFailed wrapping ErrEffectDispatch", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, "e-1", opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = recovered.Fire(ctx, "bill"); err != nil { // step 1: a checkpoint falls due
+		t.Fatalf("Fire(bill) on the recovered Handle: %v", err)
+	}
+	if _, tail, err := store.Load(ctx, "e-1"); err != nil || len(tail) != 0 {
+		t.Fatalf("tail of %d, err %v; want the checkpoint written", len(tail), err)
+	}
+}
+
+// failingMemStore is a MemStore, dispatch tracking included, that fails the next
+// Append once armed.
+type failingMemStore struct {
+	*durable.MemStore
+	armed atomic.Bool
+}
+
+func (s *failingMemStore) Append(ctx context.Context, id durable.InstanceID, rec durable.Record, opts ...durable.AppendOption) (int64, error) {
+	if s.armed.CompareAndSwap(true, false) {
+		return 0, errors.New("store unavailable")
+	}
+	return s.MemStore.Append(ctx, id, rec, opts...)
+}
+
+// TestHandle_FailedStep_WaitsForOtherDispatches proves a call that fails the Handle
+// returns only once another goroutine's effect has finished sending, so a host that
+// recovers right away can't send that effect a second time.
+func TestHandle_FailedStep_WaitsForOtherDispatches(t *testing.T) {
+	ctx := context.Background()
+	store := &failingMemStore{MemStore: durable.NewMemStore()}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var waited atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if waited.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		_, _ = h.Fire(ctx, "go") // its notify is still sending
+	}()
+	<-entered
+	store.armed.Store(true)
+	failed := make(chan error, 1)
+	go func() {
+		_, err := h.Fire(ctx, "bill") // its Append fails
+		failed <- err
+	}()
+	select {
+	case err := <-failed:
+		t.Fatalf("Fire(bill) returned %v while step 0's effect was still sending", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-failed:
+		if !errors.Is(err, durable.ErrHandleFailed) {
+			t.Fatalf("Fire(bill) = %v, want ErrHandleFailed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fire(bill) never returned after the dispatch finished")
+	}
+	waitFor(t, first, "Fire(go)")
+}
+
+// blockingMemStore is a MemStore whose next Append, once armed, signals entered and
+// waits for release.
+type blockingMemStore struct {
+	*durable.MemStore
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingMemStore) Append(ctx context.Context, id durable.InstanceID, rec durable.Record, opts ...durable.AppendOption) (int64, error) {
+	if s.armed.CompareAndSwap(true, false) {
+		close(s.entered)
+		<-s.release
+	}
+	return s.MemStore.Append(ctx, id, rec, opts...)
+}
+
+// TestHandle_StepAfterAFailure_LeavesItsEffectsForRecover proves a step that already
+// held the lock when another goroutine's dispatch failed the Handle doesn't send its
+// own effects: the failing caller may already be recovering, and Recover sends them.
+func TestHandle_StepAfterAFailure_LeavesItsEffectsForRecover(t *testing.T) {
+	ctx := context.Background()
+	m := effectMachine()
+	store := &blockingMemStore{MemStore: durable.NewMemStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	handlerIn, failNow := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits, then fails
+			close(handlerIn)
+			<-failNow
+			return errors.New("mail server down")
+		}
+		calls.Add(1)
+		return nil
+	}
+	opt := durable.WithEffectHandler[string, string, *runCtx](handler)
+	h, err := durable.NewRunner(m, store, opt).Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstDone := make(chan error, 1)
+	go func() { _, err := h.Fire(ctx, "go"); firstDone <- err }()
+	<-handlerIn
+	store.armed.Store(true)
+	secondDone := make(chan error, 1)
+	go func() { _, err := h.Fire(ctx, "bill"); secondDone <- err }()
+	<-store.entered // step 1 holds the lock, in its Append
+	close(failNow)
+	if err := <-firstDone; !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(go) = %v, want ErrHandleFailed", err)
+	}
+	close(store.release)
+	if err := <-secondDone; !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(bill) = %v, want ErrHandleFailed", err)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("step 1 sent %d effects after the Handle failed, want 0", n)
+	}
+	if _, err = durable.Recover(ctx, m, store.MemStore, "e-1", opt); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if n := calls.Load(); n != 3 { // step 0's notify, then step 1's charge and notify
+		t.Fatalf("Recover sent %d effects, want 3", n)
+	}
+}

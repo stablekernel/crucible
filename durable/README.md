@@ -146,9 +146,12 @@ and must not: a service that passes its own context gets `ErrReentrantStep`. A s
 waiting for the lock stops when its context ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
-A step that may not have been recorded fails the Handle with `ErrHandleFailed`. `Recover`
-a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a
-newer owner holds the instance, so stop.
+A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
+effect handler that returns an error or panics. A call that returns `ErrHandleFailed`
+first waits until no effect of the Handle is still being sent, or its context ends, so
+`Recover` right after it can't send an effect twice. `Recover` a new Handle with the same
+options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
+instance, so stop.
 
 ## Caveat: serialized payloads
 

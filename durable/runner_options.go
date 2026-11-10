@@ -133,8 +133,8 @@ func WithActorPalette[S comparable, E comparable, C any](palette map[string]stat
 // number of recoveries), deduped by a deterministic EffectID: the Runner stamps
 // each emitted effect, write-ahead persists the step Record carrying those ids,
 // then invokes the handler for every id not already marked dispatched, marking
-// each as it succeeds. A handler error is surfaced (wrapped in ErrEffectDispatch)
-// and the failing effect is left un-marked, so a later recovery retries it
+// each as it succeeds. A handler error or panic fails the Handle with ErrHandleFailed,
+// wrapping ErrEffectDispatch, and leaves the effect un-marked, so Recover retries it
 // (at-least-once until it succeeds; exactly-once once it does).
 //
 // The handler receives the stamped EffectID and the live effect value. It is nil

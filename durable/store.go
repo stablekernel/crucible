@@ -188,6 +188,8 @@ type Store interface {
 // Store without it falls back to the restored Trace count, which can number a step
 // the Store already holds, so every Append then fails with ErrStepOutOfOrder.
 type StepReporter interface {
-	// LastStep returns the highest Step recorded for id, and false when it holds none.
+	// LastStep returns the highest Step recorded for id, across its checkpoint and its
+	// tail, and false when it holds none. Recover calls it only for an instance Load just
+	// found, and fails on any error it returns.
 	LastStep(ctx context.Context, id InstanceID) (step int, ok bool, err error)
 }
