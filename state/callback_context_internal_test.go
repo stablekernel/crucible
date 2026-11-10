@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -293,5 +294,29 @@ func TestCast_WithAnEndedContext_KeepsItsValues(t *testing.T) {
 	m.Cast(bindOrder{}, WithInitialState("deciding"), WithContext[string](ended))
 	if tag != "kept" || ctxErr != nil {
 		t.Fatalf("the guard saw tag %q and context error %v, want kept and none", tag, ctxErr)
+	}
+}
+
+// contextPanicGuard is a guard that panics with an error wrapping context.Canceled,
+// though its context is live.
+func contextPanicGuard(GuardCtx[bindOrder]) bool {
+	panic(fmt.Errorf("lock lost: %w", context.Canceled))
+}
+
+// TestGuardPanickingWithAContextError_IsStillAGuardPanic proves a guard that panics with
+// a value wrapping a context error is reported as a guard panic, not a cancellation:
+// only the kernel's own signal, from a bound guard whose context ended, counts as one.
+func TestGuardPanickingWithAContextError_IsStillAGuardPanic(t *testing.T) {
+	m := ForgeFor[bindOrder]("panicky").
+		Guard("g", contextPanicGuard).
+		State("from").
+		Transition("from").On("go").GoTo("to").When("g").
+		State("to").
+		Initial("from").
+		Quench()
+	res := m.Cast(bindOrder{}, WithInitialState("from")).Fire(context.Background(), "go")
+	var gp *GuardPanicError
+	if !errors.As(res.Err, &gp) || res.Trace.Outcome != OutcomeGuardPanic {
+		t.Fatalf("Fire = %v with outcome %v, want a GuardPanicError and OutcomeGuardPanic", res.Err, res.Trace.Outcome)
 	}
 }

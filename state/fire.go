@@ -1179,7 +1179,7 @@ func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok b
 		if r := recover(); r != nil {
 			ok = false
 			if gc, canceled := r.(guardCanceled); canceled {
-				err = gc.err
+				err = &canceledGuardError{err: gc.err}
 				return
 			}
 			err = &GuardPanicError{GuardName: g.Name, Recovered: r}
@@ -1193,11 +1193,21 @@ func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok b
 // stops with it instead of reading the guard as false.
 type guardCanceled struct{ err error }
 
-// isCanceled reports whether err is a context's cancellation or deadline error. A guard
-// stopped that way leaves the Trace's outcome as a Fire on an ended context does,
-// rather than reporting a guard panic.
+// canceledGuardError is the error evalGuard returns for a guard that couldn't decide
+// because its context ended. It wraps the context's error, so errors.Is matches it, and
+// marks the cause as the kernel's own signal, not a guard that panicked with a value
+// that happens to wrap a context error.
+type canceledGuardError struct{ err error }
+
+func (e *canceledGuardError) Error() string { return e.err.Error() }
+func (e *canceledGuardError) Unwrap() error { return e.err }
+
+// isCanceled reports whether err is a guard stopped by its ended context. Such a guard
+// leaves the Trace's outcome as a Fire on an ended context does, rather than reporting
+// a guard panic; a guard that panicked is reported as one whatever its value wraps.
 func isCanceled(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	var ce *canceledGuardError
+	return errors.As(err, &ce)
 }
 
 // evalAction resolves and runs an action ref, recovering a panicking host action

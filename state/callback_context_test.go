@@ -16,7 +16,8 @@ func tagged(tag string) context.Context {
 	return context.WithValue(context.Background(), ctxKey{}, tag)
 }
 
-// tagOf reads the tag a callback's Ctx carries, or "" for none.
+// tagOf reads the tag a callback's Ctx carries, "" for none, or "nil" for a nil
+// context, which every test would reject.
 func tagOf(ctx context.Context) string {
 	if ctx == nil {
 		return "nil"
@@ -87,7 +88,7 @@ func TestCallbacks_CastWithContext(t *testing.T) {
 	}
 	plain := &ctxSeen{Entry: "unset"}
 	ctxMachine().Cast(plain, state.WithInitialState("idle"))
-	if plain.Entry != "" { // ran, with context.Background(): non-nil, no tag
+	if plain.Entry != "" { // ran with a non-nil context carrying no tag: tagOf reports "nil" for nil
 		t.Fatalf("the entry reducer saw %q at a plain Cast, want a background context", plain.Entry)
 	}
 }
@@ -266,5 +267,38 @@ func TestCallbacks_ParallelRegionGetsTheFiresContext(t *testing.T) {
 	}
 	if seen.Guard != "fire" || seen.Assign != "fire" {
 		t.Fatalf("the region's guard saw %q and reducer %q, want fire", seen.Guard, seen.Assign)
+	}
+}
+
+// TestCallbacks_RegionEventlessSettleAtCastGetsTheCastContext proves a guard and reducer
+// on an eventless transition inside a parallel region, settling during Cast, see
+// WithContext's context.
+func TestCallbacks_RegionEventlessSettleAtCastGetsTheCastContext(t *testing.T) {
+	m := state.ForgeFor[*ctxSeen]("region-cast").
+		Guard("g", func(c state.GuardCtx[*ctxSeen]) bool {
+			c.Entity.Guard = tagOf(c.Ctx)
+			return true
+		}).
+		Reducer("r", func(c state.AssignCtx[*ctxSeen]) *ctxSeen {
+			c.Entity.Assign = tagOf(c.Ctx)
+			return c.Entity
+		}).
+		SuperState("live").
+		Region("r1").
+		Initial("r1a").
+		SubState("r1a").Always().GoTo("r1b").When("g").Assign("r").
+		SubState("r1b").
+		EndRegion().
+		Region("r2").
+		Initial("r2a").
+		SubState("r2a").
+		EndRegion().
+		EndSuperState().
+		Initial("live").
+		Quench()
+	seen := &ctxSeen{}
+	m.Cast(seen, state.WithInitialState("live"), state.WithContext[string](tagged("cast")))
+	if seen.Guard != "cast" || seen.Assign != "cast" {
+		t.Fatalf("the region's eventless guard saw %q and reducer %q, want cast", seen.Guard, seen.Assign)
 	}
 }
