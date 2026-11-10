@@ -152,6 +152,22 @@ func TestActorSystem_RegisterContext_GetsTheSpawnContext(t *testing.T) {
 	if spawnTag != "spawn" || child.Entry != "spawn" {
 		t.Fatalf("behavior saw %q and the child's entry reducer %q, want spawn for both", spawnTag, child.Entry)
 	}
+	snaps, err := sys.SnapshotActors()
+	if err != nil {
+		t.Fatalf("SnapshotActors: %v", err)
+	}
+	var restoreTag string
+	restored := state.NewActorSystem(ctxMachine().Cast(&ctxSeen{}, state.WithInitialState("idle"))).
+		RegisterContext("kid", func(ctx context.Context, _ map[string]any) (state.ActorInstance, error) {
+			restoreTag = tagOf(ctx)
+			return state.NewActor(ctxMachine().Cast(&ctxSeen{}, state.WithInitialState("idle")), nil), nil
+		})
+	if err = restored.RestoreActors(tagged("restore"), snaps); err != nil {
+		t.Fatalf("RestoreActors: %v", err)
+	}
+	if restoreTag != "restore" {
+		t.Fatalf("the behavior saw %q on restore, want restore", restoreTag)
+	}
 	ref, ok := sys.Ref("kid-1")
 	if !ok {
 		t.Fatal("the actor didn't spawn")

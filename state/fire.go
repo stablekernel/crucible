@@ -66,7 +66,8 @@ func (i *Instance[S, E, C]) eventData(event E) any {
 func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) FireResult[S] {
 	next := func(ctx context.Context, event E) FireResult[S] {
 		// Callbacks see the context the middleware chain passes down, which may carry
-		// values or a deadline a middleware added.
+		// values or a deadline a middleware added. Fire's deferred restore puts the
+		// outer context back when it returns.
 		i.callCtx = ctx
 		return i.fireCore(ctx, event)
 	}
@@ -282,6 +283,14 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 
 		// No pending internal events: fire one enabled eventless transition.
 		t, anc, leaf, ok := i.selectEventless()
+		// Selection reads a guard that couldn't decide as not passing. If the context
+		// ended while the guards ran, that choice may not be the one a live context would
+		// make, so stop here, before its callbacks run, as the boundary check above would
+		// one microstep later.
+		if err := ctx.Err(); err != nil {
+			res.Err = err
+			return res
+		}
 		if !ok {
 			return res
 		}
@@ -673,7 +682,9 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 				tr.recordGuard(g.Name)
 				ok, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(gErr) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
 				}
 				if !ok {
@@ -1142,10 +1153,24 @@ func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok b
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
+			if gc, canceled := r.(guardCanceled); canceled {
+				err = gc.err
+				return
+			}
 			err = &GuardPanicError{GuardName: g.Name, Recovered: r}
 		}
 	}()
 	return fn(GuardCtx[C]{Entity: entity, Params: g.Params, Ctx: ctx}), nil
+}
+
+// guardCanceled is how a guard adapter reports that it couldn't decide because the
+// Fire's context ended: evalGuard returns err, the context's own error, so the Fire
+// stops with it instead of reading the guard as false.
+type guardCanceled struct{ err error }
+
+// isCanceled reports whether err is a context's cancellation or deadline error.
+func isCanceled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // evalAction resolves and runs an action ref, recovering a panicking host action

@@ -179,16 +179,26 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 // EvalGuard is called with the context of the Fire evaluating the guard (the
 // GuardCtx.Ctx the kernel hands the adapter) and the in-process context view;
 // an error it returns is treated as a false verdict, matching how a Go guard that
-// cannot decide yields false rather than transitioning. An optional Describe option
+// cannot decide yields false rather than transitioning. The exception is an error
+// returned once that context has ended: the Fire then fails with the context's error,
+// as it would at its next cancellation check, rather than take another transition. An optional Describe option
 // adds palette metadata exactly as Guard does.
 func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = func(gctx GuardCtx[C]) bool {
-		res, err := b.EvalGuard(nonNil(gctx.Ctx), GuardRequest[C]{
+		ctx := nonNil(gctx.Ctx)
+		res, err := b.EvalGuard(ctx, GuardRequest[C]{
 			Name:    name,
 			Params:  gctx.Params,
 			Context: newInProcessView(gctx.Entity),
 		})
 		if err != nil {
+			// A binding that failed once the Fire's context ended has no verdict. Reading it
+			// as false would choose another transition and run its callbacks under the ended
+			// context before the Fire's next cancellation check rolled it back. Surface the
+			// context's error instead, so the Fire stops here.
+			if cerr := ctx.Err(); cerr != nil {
+				panic(guardCanceled{err: cerr})
+			}
 			return false
 		}
 		return res.OK

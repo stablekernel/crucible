@@ -36,7 +36,9 @@ type AssignCtx[C any] struct {
 	// settles the initial state (see WithContext); context.Background() when there's
 	// none, such as a Cast without WithContext. It is never nil. Pass it to any call the callback makes
 	// back into the host that drives this instance, so the host can tell the call
-	// comes from inside a step.
+	// comes from inside a step. Don't branch on it, its values, deadline or
+	// cancellation: a replay runs the same callbacks under a different context, and must
+	// reach the same result.
 	Ctx context.Context
 }
 

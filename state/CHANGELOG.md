@@ -20,9 +20,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   makes back into the host driving the instance. Outside a `Fire`, such as during
   `PlanPath`, it's `context.Background()`, never nil. Callbacks see the context as
   the middleware chain passes it down. The in-process bindings pass their `EvalGuard`,
-  `EvalAction` and `EvalAssign` context through, and a binding registered with
-  `BindGuard` gets the context of the Fire evaluating it, where it used to get a
-  background one.
+  `EvalAction` and `EvalAssign` context through. Don't branch on the context: a
+  replay runs the same callbacks under a different one.
 - **`WithContext`** sets the context `Cast` gives the guards, actions and reducers that
   settle the initial state.
 - **`ActorSystem.RegisterContext`** registers a `ContextActorBehavior`, an actor factory
@@ -33,6 +32,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
 ### Changed
 
 - Requires Go 1.27.3.
+- **A guard registered with `BindGuard` gets the Fire's context** in `EvalGuard`, where it
+  used to get a background one. An error it returns after that context ended no longer
+  counts as a false verdict: the Fire fails with the context's error at once. Before,
+  another transition could be chosen and its actions and reducers run under the ended
+  context, until the next cancellation check rolled the Fire back. An eventless
+  transition chosen while the context ended isn't committed either.
 
 ## [1.0.0] — 2026-06-13
 
@@ -724,10 +729,10 @@ locks today's surface precisely so these can be added without a major bump.
   future `.ToAll(...)` builder, backed by an optional `Targets` IR field, expresses
   a fan-out; `To` keeps its current single-target meaning.
 - `context.Context` on `Verify` / `PlanPath` / `Cast` / `Restore` and the snapshot
-  codecs: these take no `context.Context` at v1. A future `WithContext` option on
-  each existing option tail threads cancellation and deadlines without changing a
-  signature. (`RestoreActors` already takes a `context.Context`. Unreleased: `Cast`'s
-  `WithContext` now gives the callbacks that settle its initial state a context.)
+  codecs: these take no `context.Context` at v1 for cancellation or deadlines. A
+  future option threads them without changing a signature. (`RestoreActors` already
+  takes a `context.Context`. Unreleased: `Cast`'s `WithContext` gives the callbacks that
+  settle its initial state a context to pass on, but doesn't make `Cast` cancellable.)
 - Relaxing `SnapshotActors`' non-quiesced refusal: it refuses to snapshot a
   non-quiesced actor system by design. A future `SnapshotActorsOption` lets a host
   opt into a defined non-quiesced capture; the strict refusal stays the default.
