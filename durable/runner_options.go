@@ -24,6 +24,9 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	eventCodec EventCodec[E]
 	// maxEventData caps a WithEventData payload's JSON form, in bytes.
 	maxEventData int
+	// eventDataDecoder rebuilds a recorded WithEventData payload; it defaults to
+	// DecodeAs[any].
+	eventDataDecoder EventDataDecoder[E]
 	// clock is the real time seam wrapped by the recording clock on the live path
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
@@ -166,6 +169,20 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 	}
 }
 
+// WithEventDataDecoder sets how a recorded state.WithEventData payload is decoded for
+// the live Fire and every replay of it. Without one, a payload decodes with
+// DecodeAs[any], so only a payload JSON already gives back as itself (a string, bool,
+// float64, map[string]any or []any) is accepted; a struct, an int or a typed slice is
+// refused with ErrEventDataEncoding until the decoder covers its event. A nil decoder is
+// ignored.
+func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if d != nil {
+			c.eventDataDecoder = d
+		}
+	}
+}
+
 // WithOwnerFence sets the fence token a Runner carries on every Append and
 // Checkpoint, so a Handle that has lost the instance to a newer owner gets ErrFenced
 // instead of committing. Pass the token the host's lease issued; a retry by the same
@@ -197,6 +214,9 @@ func resolveRunner[S comparable, E comparable, C any](opts ...Option[S, E, C]) r
 	}
 	if c.eventCodec == nil {
 		c.eventCodec = jsonEventCodec[E]{}
+	}
+	if c.eventDataDecoder == nil {
+		c.eventDataDecoder = decodeAny[E]
 	}
 	if c.clock == nil {
 		c.clock = state.SystemClock()

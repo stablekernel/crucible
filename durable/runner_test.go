@@ -811,12 +811,13 @@ func (s oldEnvelopeStore) Load(ctx context.Context, id durable.InstanceID) ([]by
 }
 
 // TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount proves a checkpoint from before
-// the field still recovers, from the restored Trace count.
+// the field still recovers from the restored Trace count on a Store that can't report
+// its last step.
 func TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount(t *testing.T) {
 	ctx := context.Background()
 	m := pollingMachine()
 	mem := durable.NewMemStore(durable.WithHistory())
-	store := oldEnvelopeStore{mem}
+	store := struct{ durable.Store }{oldEnvelopeStore{mem}} // hides LastStep
 	id := durable.InstanceID("poll-1")
 	opts := []durable.Option[string, string, *runCtx]{durable.WithCheckpointEvery[string, string, *runCtx](3)}
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
@@ -837,6 +838,47 @@ func TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount(t *testing.T) {
 	}
 	if got := lastStep(t, mem, id); got != 3 {
 		t.Fatalf("poke recorded at step %d, want 3", got)
+	}
+}
+
+// TestRecover_CheckpointWithoutNextStep_AfterTicks_NumbersPastTheJournal proves a
+// checkpoint from before the field recovers past every recorded step when tick barriers
+// left fewer Traces than step numbers, so the next Append doesn't conflict.
+func TestRecover_CheckpointWithoutNextStep_AfterTicks_NumbersPastTheJournal(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	mem := durable.NewMemStore(durable.WithHistory())
+	store := oldEnvelopeStore{mem}
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	for range 4 { // five Traces, but the checkpoint compacts through step 7
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	for i := range 2 { // a second Recover must number past the first one's step too
+		resumed, err := durable.Recover(ctx, m, store, id, opts...)
+		if err != nil {
+			t.Fatalf("Recover %d: %v", i, err)
+		}
+		if _, err = resumed.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke) after Recover %d: %v", i, err)
+		}
+		if got, want := lastStep(t, mem, id), 8+i; got != want {
+			t.Fatalf("poke recorded at step %d, want %d", got, want)
+		}
 	}
 }
 

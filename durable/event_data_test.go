@@ -147,19 +147,22 @@ func payloadMachine(seen *[]any) *state.Machine[string, string, *runCtx] {
 		Quench()
 }
 
-// TestFire_EventData_LiveEqualsReplay proves Assign sees one value for each kind of
-// payload, whether the step ran live or was replayed.
+// TestFire_EventData_LiveEqualsReplay proves a payload reaches Assign as the same
+// value and type live and after Recover: decoded by the Runner's EventDataDecoder, or
+// in JSON's own form by default.
 func TestFire_EventData_LiveEqualsReplay(t *testing.T) {
 	type order struct{ Qty int }
 	tests := []struct {
 		name    string
 		payload any
+		decode  durable.EventDataDecoder[string]
 		want    string
 	}{
-		{"an int", 3, "float64:3"},
-		{"a large int", int64(1<<53 + 1), "float64:9.007199254740992e+15"},
-		{"a struct", order{Qty: 2}, "map[string]interface {}:map[Qty:2]"},
-		{"an error", errors.New("card declined"), "*errors.errorString:card declined"},
+		{"an int", 3, decodeAll[int], "int:3"},
+		{"a large int keeps its precision", int64(1<<53 + 1), decodeAll[int64], "int64:9007199254740993"},
+		{"a struct", order{Qty: 2}, decodeAll[order], "durable_test.order:{2}"},
+		{"a map by default", map[string]any{"qty": 2.0}, nil, "map[string]interface {}:map[qty:2]"},
+		{"an error", errors.New("card declined"), nil, "*errors.errorString:card declined"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,14 +171,15 @@ func TestFire_EventData_LiveEqualsReplay(t *testing.T) {
 			m := payloadMachine(&seen)
 			store := durable.NewMemStore()
 			const id = durable.InstanceID("p-1")
-			h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("open"))
+			opt := durable.WithEventDataDecoder[string, string, *runCtx](tt.decode)
+			h, err := durable.NewRunner(m, store, opt).Start(ctx, id, &runCtx{}, state.WithInitialState("open"))
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			if _, err = h.Fire(ctx, "add", state.WithEventData(tt.payload)); err != nil {
 				t.Fatalf("Fire: %v", err)
 			}
-			if _, err = durable.Recover(ctx, m, store, id); err != nil {
+			if _, err = durable.Recover(ctx, m, store, id, opt); err != nil {
 				t.Fatalf("Recover: %v", err)
 			}
 			if len(seen) != 2 {
@@ -187,6 +191,75 @@ func TestFire_EventData_LiveEqualsReplay(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// decodeAll decodes every event's payload as a T.
+func decodeAll[T any](_ string, data []byte) (any, error) { return durable.DecodeAs[T](data) }
+
+// TestFire_EventData_DecodedAsAnotherType_IsRefused proves a payload the decoder
+// returns as a different type than the caller passed refuses the Fire before the
+// kernel runs, so Assign never sees a map where the caller passed a struct.
+func TestFire_EventData_DecodedAsAnotherType_IsRefused(t *testing.T) {
+	type order struct{ Qty int }
+	tests := []struct {
+		name    string
+		payload any
+		decode  durable.EventDataDecoder[string]
+	}{
+		{"a struct by default", order{Qty: 2}, nil},
+		{"an int by default", 3, nil},
+		{"a struct the decoder reads as a pointer", order{Qty: 2}, decodeAll[*order]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			var seen []any
+			store := durable.NewMemStore()
+			h, err := durable.NewRunner(payloadMachine(&seen), store, durable.WithEventDataDecoder[string, string, *runCtx](tt.decode)).
+				Start(ctx, "p-1", &runCtx{}, state.WithInitialState("open"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			_, err = h.Fire(ctx, "add", state.WithEventData(tt.payload))
+			if !errors.Is(err, durable.ErrEventDataEncoding) {
+				t.Fatalf("Fire err = %v, want ErrEventDataEncoding", err)
+			}
+			if len(seen) != 0 {
+				t.Fatalf("assign ran %d times, want 0", len(seen))
+			}
+			if _, tail, err := store.Load(ctx, "p-1"); err != nil || len(tail) != 0 {
+				t.Fatalf("Load: tail %d, err %v; want nothing recorded", len(tail), err)
+			}
+		})
+	}
+}
+
+// TestFire_EventData_DecoderGetsTheEvent proves the decoder is called with the event
+// the payload rode with, live and on replay.
+func TestFire_EventData_DecoderGetsTheEvent(t *testing.T) {
+	ctx := context.Background()
+	var seen []any
+	var events []string
+	decode := func(ev string, data []byte) (any, error) {
+		events = append(events, ev)
+		return durable.DecodeAs[int](data)
+	}
+	m := payloadMachine(&seen)
+	store := durable.NewMemStore()
+	opt := durable.WithEventDataDecoder[string, string, *runCtx](decode)
+	h, err := durable.NewRunner(m, store, opt).Start(ctx, "p-1", &runCtx{}, state.WithInitialState("open"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "add", state.WithEventData(7)); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	if _, err = durable.Recover(ctx, m, store, "p-1", opt); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if fmt.Sprint(events) != "[add add]" {
+		t.Fatalf("decoder saw events %v, want [add add]", events)
 	}
 }
 
@@ -305,7 +378,7 @@ func TestFire_EventData_LeavesTheCallersOptionsAlone(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	opts := make([]state.FireOption, 1, 2)
-	opts[0] = state.WithEventData(1)
+	opts[0] = state.WithEventData("one")
 	if _, err = h.Fire(ctx, "add", opts...); err != nil {
 		t.Fatalf("Fire: %v", err)
 	}

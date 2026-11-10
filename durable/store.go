@@ -43,8 +43,8 @@ type Record struct {
 
 	// EventData is the JSON form of the payload the Fire at this Step carried
 	// through state.WithEventData, or empty when it carried none. The live Fire and
-	// a replay both supply the decoded form, so the transition's Assign sees the same
-	// value: a struct as a map and an integer as a float64.
+	// a replay both decode it through the Runner's EventDataDecoder, so the transition's
+	// Assign sees the same value.
 	EventData []byte `json:",omitempty"`
 
 	// EventDataError is the message of an error payload, which has no useful JSON
@@ -179,4 +179,15 @@ type Store interface {
 	// is rejected with ErrCheckpointNotAdvancing. A fence token below the highest
 	// seen is rejected with ErrFenced.
 	Checkpoint(ctx context.Context, id InstanceID, snapshot []byte, throughStep int, opts ...CheckpointOption) error
+}
+
+// StepReporter is an optional Store capability: the highest Step recorded for an
+// instance, across its checkpoint and its tail. Recover asks for it when a checkpoint
+// from before checkpoints carried the next step leaves no Record to number from, so
+// the next step lands past every recorded one. MemStore and FileStore implement it. A
+// Store without it falls back to the restored Trace count, which can number a step
+// the Store already holds, so every Append then fails with ErrStepOutOfOrder.
+type StepReporter interface {
+	// LastStep returns the highest Step recorded for id, and false when it holds none.
+	LastStep(ctx context.Context, id InstanceID) (step int, ok bool, err error)
 }

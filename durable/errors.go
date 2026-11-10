@@ -17,6 +17,7 @@ const (
 	errorEventDataEncoding      = "event data can't be recorded"
 	errorRecordTooLarge         = "record too large for the journal"
 	errorHandleFailed           = "handle is out of step with the journal"
+	errorReentrantStep          = "step called from inside a step on the same handle"
 )
 
 // Sentinel errors a Store or a Handle reports. Callers match them with errors.Is.
@@ -53,12 +54,18 @@ var (
 	// applied the step, so the Handle fails with ErrHandleFailed.
 	ErrRecordTooLarge = errors.New(errorPrefix + errorRecordTooLarge)
 
-	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService and
-	// DeliverToActor once a step applied to the live instance but may not have been
+	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService,
+	// DeliverToActor and View once a step applied to the live instance but may not have been
 	// recorded, on that call and every later one. It wraps the cause. Recover a new
 	// Handle with the same options to continue, unless the cause is ErrFenced: then a
 	// newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
+
+	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor
+	// and View when called with the context a step passed to host code, such as a
+	// service: the step holds the Handle's lock, so waiting would deadlock. Nothing
+	// applied. Effect handlers run after the lock is released and may call back in.
+	ErrReentrantStep = errors.New(errorPrefix + errorReentrantStep)
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.
@@ -70,8 +77,9 @@ var (
 
 	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
 	// handler (WithEffectHandler) while applying an emitted effect. The effect was
-	// persisted (write-ahead) but not marked dispatched, so a later recovery
-	// retries it; callers match this with errors.Is to distinguish a dispatch
-	// failure from a kernel transition or persistence error.
+	// persisted (write-ahead) but not marked dispatched, so the Handle fails with
+	// ErrHandleFailed wrapping it, and Recover dispatches it again. Callers match
+	// this with errors.Is to tell a dispatch failure from a kernel transition or
+	// persistence error.
 	ErrEffectDispatch = errors.New(errorPrefix + errorEffectDispatch)
 )

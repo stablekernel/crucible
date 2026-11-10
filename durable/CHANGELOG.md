@@ -27,26 +27,44 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **`ErrHandleFailed`** reports a Handle out of step with its journal.
 
+- **`Handle.View`** reads the instance under the Handle's step lock. **`ErrReentrantStep`**
+  reports a call back into a Handle from inside one of its steps.
+
+- **`StepReporter`**, implemented by `MemStore` and `FileStore`, lets `Recover` number the
+  next step past every recorded one after a checkpoint from before checkpoints carried
+  it. Without it, such a checkpoint followed by tick barriers made every `Append`
+  conflict.
+
+- **`WithEventDataDecoder`** decodes a `WithEventData` payload as the caller's type,
+  given the event it rode with. `DecodeAs[T]` is the usual body of each case.
+
 ### Changed
 
 - Requires Go 1.27.3.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
-  `DeliverToActor` hold a lock for the whole step, so a host's timer loop no longer loses
-  acknowledged steps. A host callback must not call back into its Handle, or it
-  deadlocks. `Instance()` isn't covered: read it only while no step is running. A `Tick`,
-  `RunService` or `DeliverToActor` whose context ended while it waited returns that error
-  and changes nothing.
+  `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
+  host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock
+  is released, so an effect handler can still call back into its Handle; a checkpoint
+  waits for every earlier step's effects to dispatch. A service, guard, action, reducer
+  or actor behavior runs under the lock and must not call back in: a service that passes
+  its context gets the new `ErrReentrantStep`. A step waiting for the lock returns its
+  context's error once the context ends, and changes nothing. The new `Handle.View` reads
+  the instance under the lock; `Instance()` is outside it.
+- **A failed effect dispatch fails the Handle.** The effect stays unmarked in the
+  journal, so no later checkpoint compacts it away, and `Recover` dispatches it again.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. `Recover` a new Handle with the same
   options to continue. A service whose result wasn't recorded is in flight again, so
   `RunService` runs it a second time. An `InvokeActor` actor restarts from its initial
   state, and a `Spawn` actor doesn't return. If the cause is `ErrFenced`, a newer owner
   holds the instance: stop.
-- **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.** A
-  struct arrives as a map and an integer as a `float64`, which loses precision above
-  2^53, so an assertion to the original
-  type now fails at `Fire`, not at `Recover`. An error arrives as an error with the same
-  message, any invalid UTF-8 replaced, and `errors.Is` no longer matches it.
+- **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.**
+  `WithEventDataDecoder` decodes it as the caller's type, chosen per event, with
+  `DecodeAs[T]`. A payload that decodes as a different type than the caller passed
+  refuses the `Fire` with `ErrEventDataEncoding`, so without a decoder a struct or an
+  integer is refused rather than reaching `Assign` as a map or a `float64`. An error
+  arrives as an error with the same message, any invalid UTF-8 replaced, and `errors.Is`
+  no longer matches it.
 - **`Handle.Fire` can refuse a payload.** One with no JSON form that decodes again, or
   over `WithMaxEventDataBytes` (8 MiB by default), returns the new `ErrEventDataEncoding`
   before the kernel runs. Fires of that size used to pass, because the payload wasn't

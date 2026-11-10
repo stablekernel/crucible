@@ -177,6 +177,19 @@ func (s *MemStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, err
 	return snapshot, tail, nil
 }
 
+// LastStep reports the highest Step recorded for id, across its checkpoint and its
+// tail, so MemStore is a StepReporter.
+func (s *MemStore) LastStep(_ context.Context, id InstanceID) (int, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	inst, ok := s.instances[id]
+	if !ok || !inst.written() {
+		return 0, false, fmt.Errorf("%w: %q", ErrInstanceNotFound, id)
+	}
+	return inst.maxStep, inst.maxStep != noRecord, nil
+}
+
 // History implements HistoryStore for a MemStore constructed WithHistory: it returns
 // the instance's start baseline snapshot and its full ordered Record log, including
 // Records a checkpoint compacted out of the live tail, so a time-travel read can
@@ -329,6 +342,15 @@ func appendKey(cfg appendConfig, rec Record) (key, digest string, err error) {
 	return fmt.Sprintf("step:%d", rec.Step), digest, nil
 }
 
+// appendKeyOf is appendKey for a Record already encoded as encoded, the JSON form of
+// its clone, so a Store that writes those bytes doesn't encode the Record twice.
+func appendKeyOf(cfg appendConfig, step int, encoded []byte) (key, digest string) {
+	if cfg.idempotencyKey != "" {
+		return cfg.idempotencyKey, ""
+	}
+	return fmt.Sprintf("step:%d", step), digestOf(encoded)
+}
+
 // recordDigest returns a stable digest of rec. It digests the clone because
 // cloneRecord turns an empty field into nil, so the two compare equal.
 func recordDigest(rec Record) (string, error) {
@@ -336,8 +358,13 @@ func recordDigest(rec Record) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("durable: digesting record step %d: %w", rec.Step, err)
 	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), nil
+	return digestOf(b), nil
+}
+
+// digestOf returns the digest of a Record's encoded clone.
+func digestOf(encoded []byte) string {
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // fencedError reports a write whose token is below the highest seen.

@@ -108,8 +108,10 @@ type actorMessagePayload struct {
 // and a Spawn actor doesn't return. Resending a recorded delivery repeats
 // any message it sends the parent.
 func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	if err := h.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer h.release()
 	if err := h.refuse(); err != nil {
 		return false, err
 	}
@@ -121,7 +123,7 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	}
 
 	before := len(h.inst.History())
-	delivered := h.actors.Deliver(ctx, ref, event)
+	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
 	if !delivered {
 		return false, nil
 	}

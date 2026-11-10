@@ -1,0 +1,277 @@
+package durable_test
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stablekernel/crucible/durable"
+	"github.com/stablekernel/crucible/state"
+)
+
+// waitFor fails the test if done doesn't close within a few seconds, so a deadlock
+// fails the test instead of hanging it.
+func waitFor(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s didn't finish: deadlocked", what)
+	}
+}
+
+// TestHandle_EffectHandlerFiresBack_DoesNotDeadlock proves an effect handler can call
+// back into its own Handle: effects dispatch after the step releases the lock.
+func TestHandle_EffectHandlerFiresBack_DoesNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	m := effectMachine()
+	store := durable.NewMemStore()
+	var h *durable.Handle[string, string, *runCtx]
+	var firedBack atomic.Bool
+	var backErr error
+	handler := func(ctx context.Context, _ string, _ state.Effect) error {
+		if firedBack.CompareAndSwap(false, true) {
+			_, backErr = h.Fire(ctx, "bill")
+		}
+		return nil
+	}
+	opt := durable.WithEffectHandler[string, string, *runCtx](handler)
+	h, err := durable.NewRunner(m, store, opt).Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err = h.Fire(ctx, "go")
+	}()
+	waitFor(t, done, "Fire(go)")
+	if err != nil || backErr != nil {
+		t.Fatalf("Fire(go) = %v, the handler's Fire(bill) = %v; want both nil", err, backErr)
+	}
+	if got := h.Instance().Current(); got != "billed" {
+		t.Fatalf("live state %q, want billed", got)
+	}
+	recovered, err := durable.Recover(ctx, m, store, "e-1", opt)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "billed" {
+		t.Fatalf("recovered state %q, want billed", got)
+	}
+}
+
+// blockingFetch starts the single-service machine with a service that signals entered
+// and then waits for release, so a test can hold a step open.
+func blockingFetch(t *testing.T, entered chan<- struct{}, release <-chan struct{}) *durable.Handle[string, string, svcCtx] {
+	t.Helper()
+	ctx := context.Background()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return "done", nil
+	}
+	h, err := durable.NewRunner(fetchMachine(fn), durable.NewMemStore(),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))).
+		Start(ctx, "fetch-1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	return h
+}
+
+// TestHandle_WaitingStep_StopsAtItsDeadline proves a step waiting for the lock returns
+// its context's error when the context ends, instead of waiting out a slow step.
+func TestHandle_WaitingStep_StopsAtItsDeadline(t *testing.T) {
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	h := blockingFetch(t, entered, release)
+	running := make(chan struct{})
+	go func() {
+		defer close(running)
+		mustRunService(t, h, fetchID)
+	}()
+	<-entered // the service holds the step lock
+
+	waits := map[string]func(context.Context) error{
+		"Fire": func(ctx context.Context) error { _, err := h.Fire(ctx, "ok"); return err },
+		"Tick": func(ctx context.Context) error { _, err := h.Tick(ctx); return err },
+		"View": func(ctx context.Context) error { return h.View(ctx, func(*state.Instance[string, string, svcCtx]) {}) },
+	}
+	for name, wait := range waits {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		returned := make(chan struct{})
+		var err error
+		go func() {
+			defer close(returned)
+			err = wait(ctx)
+		}()
+		waitFor(t, returned, name)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s while the lock is held = %v, want context.DeadlineExceeded", name, err)
+		}
+	}
+	close(release)
+	waitFor(t, running, "RunService")
+	if got := h.Instance().Current(); got != "ready" {
+		t.Fatalf("state %q, want ready: a timed-out step changed the instance", got)
+	}
+}
+
+// TestHandle_ServiceCallsBackWithItsContext_IsRefused proves a service that calls back
+// into its own Handle with the context its step passed gets ErrReentrantStep at once
+// instead of deadlocking on the lock its step holds.
+func TestHandle_ServiceCallsBackWithItsContext_IsRefused(t *testing.T) {
+	ctx := context.Background()
+	var h *durable.Handle[string, string, svcCtx]
+	var fireErr, viewErr error
+	fn := func(ctx context.Context, _ state.ServiceCtx[svcCtx]) (any, error) {
+		_, fireErr = h.Fire(ctx, "ok")
+		viewErr = h.View(ctx, func(*state.Instance[string, string, svcCtx]) {})
+		return "done", nil
+	}
+	h, err := durable.NewRunner(fetchMachine(fn), durable.NewMemStore(),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))).
+		Start(ctx, "fetch-1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mustRunService(t, h, fetchID)
+	}()
+	waitFor(t, done, "RunService")
+	if !errors.Is(fireErr, durable.ErrReentrantStep) || !errors.Is(viewErr, durable.ErrReentrantStep) {
+		t.Fatalf("the service's Fire = %v and View = %v, want ErrReentrantStep", fireErr, viewErr)
+	}
+	if got := h.Instance().Current(); got != "ready" {
+		t.Fatalf("state %q, want ready", got)
+	}
+}
+
+// TestHandle_Checkpoint_WaitsForAnEarlierStepsDispatch proves a checkpoint doesn't
+// compact a step whose effect another goroutine is still dispatching, and is written
+// once that dispatch lands.
+func TestHandle_Checkpoint_WaitsForAnEarlierStepsDispatch(t *testing.T) {
+	ctx := context.Background()
+	store := durable.NewMemStore()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var waited atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if waited.CompareAndSwap(false, true) { // only step 0's notify waits
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first := make(chan struct{})
+	var firstErr error
+	go func() {
+		defer close(first)
+		_, firstErr = h.Fire(ctx, "go") // step 0, its notify still dispatching
+	}()
+	<-entered
+	if _, err = h.Fire(ctx, "bill"); err != nil { // step 1, where a checkpoint falls due
+		t.Fatalf("Fire(bill): %v", err)
+	}
+	if _, tail, err := store.Load(ctx, "e-1"); err != nil || len(tail) != 2 {
+		t.Fatalf("while step 0 dispatches: tail of %d, err %v; want both steps kept", len(tail), err)
+	}
+	close(release)
+	waitFor(t, first, "Fire(go)")
+	if firstErr != nil {
+		t.Fatalf("Fire(go): %v", firstErr)
+	}
+	if _, tail, err := store.Load(ctx, "e-1"); err != nil || len(tail) != 0 {
+		t.Fatalf("after step 0 dispatched: tail of %d, err %v; want the checkpoint written", len(tail), err)
+	}
+}
+
+// TestHandle_FailedDispatch_FailsTheHandle_AndRecoverRedispatches proves a failed
+// effect fails the Handle, so no later checkpoint compacts it away, and Recover
+// dispatches it again.
+func TestHandle_FailedDispatch_FailsTheHandle_AndRecoverRedispatches(t *testing.T) {
+	ctx := context.Background()
+	m := effectMachine()
+	store := durable.NewMemStore()
+	rec := newEffectRecorder()
+	rec.failKinds["demo.notify"] = errors.New("mail server down")
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()),
+		durable.WithCheckpointEvery[string, string, *runCtx](2),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = h.Fire(ctx, "go")
+	if !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, durable.ErrEffectDispatch) {
+		t.Fatalf("Fire(go) = %v, want ErrHandleFailed wrapping ErrEffectDispatch", err)
+	}
+	if _, err = h.Fire(ctx, "bill"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(bill) after the failure = %v, want ErrHandleFailed", err)
+	}
+	delete(rec.failKinds, "demo.notify")
+	recovered, err := durable.Recover(ctx, m, store, "e-1", opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := rec.totalApplies(); got != 1 {
+		t.Fatalf("Recover applied %d effects, want the failed notify once", got)
+	}
+	if _, err = recovered.Fire(ctx, "bill"); err != nil {
+		t.Fatalf("Fire(bill) on the recovered Handle: %v", err)
+	}
+}
+
+// TestHandle_View_DoesNotRaceSteps proves View reads under the step lock: run with
+// -race, a read outside it would be reported against the concurrent Fires.
+func TestHandle_View_DoesNotRaceSteps(t *testing.T) {
+	ctx := context.Background()
+	h, err := durable.NewRunner(pollingMachine(), durable.NewMemStore()).
+		Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 100 {
+			if _, err := h.Fire(ctx, "poke"); err != nil {
+				t.Errorf("Fire(poke): %v", err)
+				return
+			}
+		}
+	}()
+	var last int
+	for range 100 {
+		if err := h.View(ctx, func(inst *state.Instance[string, string, *runCtx]) {
+			last = inst.Entity().Count
+		}); err != nil {
+			t.Fatalf("View: %v", err)
+		}
+	}
+	waitFor(t, done, "the Fires")
+	if err := h.View(ctx, func(inst *state.Instance[string, string, *runCtx]) { last = inst.Entity().Count }); err != nil || last != 100 {
+		t.Fatalf("View after the Fires: count %d, err %v; want 100", last, err)
+	}
+}
