@@ -362,10 +362,10 @@ func (s *failingMemStore) Append(ctx context.Context, id durable.InstanceID, rec
 	return s.MemStore.Append(ctx, id, rec, opts...)
 }
 
-// TestHandle_FailedStep_WaitsForOtherDispatches proves a call that fails the Handle
-// returns only once another goroutine's effect has finished sending, so a host that
-// recovers right away can't send that effect a second time.
-func TestHandle_FailedStep_WaitsForOtherDispatches(t *testing.T) {
+// TestHandle_Drain_WaitsForOtherDispatches proves a call that fails the Handle returns
+// at once, and Drain returns only once another goroutine's effect has finished
+// sending, so a host that recovers after Drain can't send that effect a second time.
+func TestHandle_Drain_WaitsForOtherDispatches(t *testing.T) {
 	ctx := context.Background()
 	store := &failingMemStore{MemStore: durable.NewMemStore()}
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -391,25 +391,117 @@ func TestHandle_FailedStep_WaitsForOtherDispatches(t *testing.T) {
 	<-entered
 	store.armed.Store(true)
 	failed := make(chan error, 1)
-	go func() {
-		_, err := h.Fire(ctx, "bill") // its Append fails
-		failed <- err
-	}()
-	select {
-	case err := <-failed:
-		t.Fatalf("Fire(bill) returned %v while step 0's effect was still sending", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(release)
+	go func() { _, fireErr := h.Fire(ctx, "bill"); failed <- fireErr }() // its Append fails
 	select {
 	case err := <-failed:
 		if !errors.Is(err, durable.ErrHandleFailed) {
 			t.Fatalf("Fire(bill) = %v, want ErrHandleFailed", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Fire(bill) never returned after the dispatch finished")
+		t.Fatal("Fire(bill) waited for another goroutine's dispatch; it should return at once")
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- h.Drain(ctx) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain returned %v while step 0's effect was still sending", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain never returned after the dispatch finished")
 	}
 	waitFor(t, first, "Fire(go)")
+}
+
+// TestHandle_HandlerFailsTheHandleWithAnotherContext_DoesNotHang proves an effect handler
+// that calls back with a context other than its own, and fails the Handle, gets
+// ErrHandleFailed back at once instead of waiting on its own dispatch.
+func TestHandle_HandlerFailsTheHandleWithAnotherContext_DoesNotHang(t *testing.T) {
+	ctx := context.Background()
+	store := &failingMemStore{MemStore: durable.NewMemStore()}
+	var h *durable.Handle[string, string, *runCtx]
+	var once atomic.Bool
+	var backErr error
+	handler := func(context.Context, string, state.Effect) error {
+		if once.CompareAndSwap(false, true) {
+			store.armed.Store(true)
+			_, backErr = h.Fire(context.Background(), "bill") // not the handler's context
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = h.Fire(ctx, "go")
+	}()
+	waitFor(t, done, "Fire(go)")
+	if !errors.Is(backErr, durable.ErrHandleFailed) {
+		t.Fatalf("the handler's Fire = %v, want ErrHandleFailed", backErr)
+	}
+	if err := h.Drain(ctx); err != nil {
+		t.Fatalf("Drain after the dispatch finished = %v, want nil", err)
+	}
+}
+
+// TestHandle_DrainFromAHandler_IsRefused proves Drain called with an effect handler's
+// own context returns ErrReentrantStep instead of waiting on its own dispatch.
+func TestHandle_DrainFromAHandler_IsRefused(t *testing.T) {
+	ctx := context.Background()
+	var h *durable.Handle[string, string, *runCtx]
+	var drainErr error
+	var once atomic.Bool
+	handler := func(ctx context.Context, _ string, _ state.Effect) error {
+		if once.CompareAndSwap(false, true) {
+			drainErr = h.Drain(ctx)
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](handler)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = h.Fire(ctx, "go")
+	}()
+	waitFor(t, done, "Fire(go)")
+	if !errors.Is(drainErr, durable.ErrReentrantStep) {
+		t.Fatalf("Drain from the handler = %v, want ErrReentrantStep", drainErr)
+	}
+}
+
+// TestHandle_View_AfterAFailure_IsRefused proves View refuses a failed Handle without
+// running its function.
+func TestHandle_View_AfterAFailure_IsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := &failingMemStore{MemStore: durable.NewMemStore()}
+	h, err := durable.NewRunner(pollingMachine(), store).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	store.armed.Store(true)
+	if _, err = h.Fire(ctx, "start"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire = %v, want ErrHandleFailed", err)
+	}
+	ran := false
+	if err = h.View(ctx, func(*state.Instance[string, string, *runCtx]) { ran = true }); !errors.Is(err, durable.ErrHandleFailed) || ran {
+		t.Fatalf("View = %v (ran %v), want ErrHandleFailed without running", err, ran)
+	}
 }
 
 // blockingMemStore is a MemStore whose next Append, once armed, signals entered and
@@ -454,19 +546,19 @@ func TestHandle_StepAfterAFailure_LeavesItsEffectsForRecover(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	firstDone := make(chan error, 1)
-	go func() { _, err := h.Fire(ctx, "go"); firstDone <- err }()
+	go func() { _, fireErr := h.Fire(ctx, "go"); firstDone <- fireErr }()
 	<-handlerIn
 	store.armed.Store(true)
 	secondDone := make(chan error, 1)
-	go func() { _, err := h.Fire(ctx, "bill"); secondDone <- err }()
+	go func() { _, fireErr := h.Fire(ctx, "bill"); secondDone <- fireErr }()
 	<-store.entered // step 1 holds the lock, in its Append
 	close(failNow)
-	if err := <-firstDone; !errors.Is(err, durable.ErrHandleFailed) {
-		t.Fatalf("Fire(go) = %v, want ErrHandleFailed", err)
+	if got := <-firstDone; !errors.Is(got, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(go) = %v, want ErrHandleFailed", got)
 	}
 	close(store.release)
-	if err := <-secondDone; !errors.Is(err, durable.ErrHandleFailed) {
-		t.Fatalf("Fire(bill) = %v, want ErrHandleFailed", err)
+	if got := <-secondDone; !errors.Is(got, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(bill) = %v, want ErrHandleFailed", got)
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("step 1 sent %d effects after the Handle failed, want 0", n)

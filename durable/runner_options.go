@@ -155,7 +155,7 @@ func WithEffectHandler[S comparable, E comparable, C any](h EffectHandler) Optio
 const defaultMaxEventDataBytes = 8 << 20
 
 // WithMaxEventDataBytes sets the largest state.WithEventData payload Handle.Fire
-// accepts, measured as its JSON form, or for an error, its message's. A larger one
+// accepts, measured as its JSON form; for an error, its message's JSON form. A larger one
 // refuses the Fire with ErrEventDataEncoding before the kernel runs. It defaults to
 // 8 MiB, which leaves a payload room in FileStore's journal line; raise it for a Store
 // with no such limit. The cap covers the payload only, so a Record can still exceed a

@@ -131,15 +131,16 @@ in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 goroutines: each holds the Handle's lock while it applies to the kernel and records the
 step. Effects dispatch after the lock is released, so an effect handler can call back
 into its Handle. A service, guard, action, reducer or actor behavior runs under the lock
-and must not: a service that passes its own context gets `ErrReentrantStep`. A step
+and must not call back in: to act on the Handle when a step happens, an action returns an
+effect, whose handler runs after the lock. A call back that carries the step's context,
+as a service gets, returns `ErrReentrantStep`; one without it deadlocks. A step
 waiting for the lock stops when its context ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
-effect handler that returns an error or panics. A call that returns `ErrHandleFailed`
-first waits until no effect of the Handle is still being sent, or its context ends, so
-`Recover` right after it can't send an effect twice. `Recover` a new Handle with the same
-options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
+effect handler that returns an error or panics. Before `Recover`, call `Handle.Drain`,
+which waits until no effect of the Handle is still being sent, so the recovered Handle
+can't send one twice. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
 instance, so stop.
 
 ## A note on serialized payloads

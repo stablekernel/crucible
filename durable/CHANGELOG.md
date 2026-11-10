@@ -27,8 +27,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **`ErrHandleFailed`** reports a Handle out of step with its journal.
 
-- **`Handle.View`** reads the instance under the Handle's step lock. **`ErrReentrantStep`**
-  reports a call back into a Handle from inside one of its steps.
+- **`Handle.View`** reads the instance under the Handle's step lock. **`Handle.Drain`**
+  waits until no effect of the Handle is still being sent; call it before `Recover` after
+  `ErrHandleFailed`. **`ErrReentrantStep`** reports a call back into a Handle that carries
+  the context one of its steps passed to a callback, such as a service's. A guard,
+  action, reducer or actor behavior gets no context here, so its call back deadlocks
+  instead; #245 passes them the step's context.
 
 - **`StepReporter`**, implemented by `MemStore` and `FileStore`, lets `Recover` number the
   next step past every recorded one after a checkpoint from before checkpoints carried
@@ -46,8 +50,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock
   is released, so an effect handler can still call back into its Handle; a checkpoint
   waits for every earlier step's effects to dispatch. A service, guard, action, reducer
-  or actor behavior runs under the lock and must not call back in: a service that passes
-  its context gets the new `ErrReentrantStep`. A step waiting for the lock returns its
+  or actor behavior runs under the lock and must not call back in; an action reaches the
+  Handle by returning an effect. A service that calls back with its context gets the
+  new `ErrReentrantStep`. A step waiting for the lock returns its
   context's error once the context ends, and changes nothing. The new `Handle.View` reads
   the instance under the lock; `Instance()` is outside it.
 - **A failed effect dispatch fails the Handle**, and so does an effect handler that
@@ -55,10 +60,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   effect stays unmarked in the journal, so no later checkpoint compacts it away, and
   `Recover` dispatches it again.
 - **A step that may not have been recorded fails the Handle.** That call and every later
-  one return `ErrHandleFailed`, wrapping the cause. A call that returns it first waits
-  until no effect of the Handle is still being sent, or its context ends, so a `Recover`
-  right after it can't send an effect twice. `Recover` a new Handle with the same
-  options to continue. A service whose result wasn't recorded is in flight again, so
+  one return `ErrHandleFailed`, wrapping the cause. Call `Drain` before `Recover`, so an
+  effect another goroutine is still sending isn't sent twice. `Recover` a new Handle
+  with the same options to continue. A service whose result wasn't recorded is in flight again, so
   `RunService` runs it a second time. An `InvokeActor` actor restarts from its initial
   state, and a `Spawn` actor doesn't return. If the cause is `ErrFenced`, a newer owner
   holds the instance: stop.

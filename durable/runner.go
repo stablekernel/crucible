@@ -91,19 +91,20 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // error.
 //
 // Code that runs under the lock (a service, guard, action, reducer or actor behavior)
-// must not call back into the same Handle. A call that carries the context the step
-// passed to it, as a service gets, returns ErrReentrantStep at once; one without that
-// context deadlocks. A step waiting for the lock returns its context's error once the
+// must not call back into the same Handle; to act on the Handle when a step happens, an
+// action returns an effect, and its handler runs after the lock and may call back. A
+// call that carries the context the step passed to the callback, as a service gets,
+// returns ErrReentrantStep at once; one without that context deadlocks. A step waiting for the lock returns its context's error once the
 // context ends, and changes nothing. View reads the instance under the lock; Instance
 // returns it outside the lock. A stateless Runner.Fire builds its own Handle, so it
 // isn't serialized with this one.
 //
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal. That call and every later one return ErrHandleFailed,
-// wrapping the cause, which can be a context that ended during the Store write. A call
-// that returns it waits first until no effect of this Handle is still being sent (or
-// its context ends), unless it was made from inside an effect handler. Recover a new
-// Handle with the same options to continue. A service
+// wrapping the cause, which can be a context that ended during the Store write. Before
+// recovering, call Drain: a step on another goroutine may still be sending an effect,
+// and a recovered Handle would send it again. Recover a new Handle with the same
+// options to continue. A service
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
 // A running InvokeActor actor restarts from its initial state on any Recover, losing every
 // delivery so far, and a Spawn actor doesn't return. If the cause is ErrFenced, a
@@ -224,25 +225,30 @@ func (h *Handle[S, E, C]) inDispatch(ctx context.Context) bool {
 	return false
 }
 
-// afterFailure holds a call that returns ErrHandleFailed until no effect of h is still
-// being dispatched, or ctx ends, so a host that recovers a new Handle as soon as the
-// call returns can't send an effect a second time while the old one is still sending
-// it. A call from inside an effect handler returns at once: its own dispatch is one of
-// those still running.
-func (h *Handle[S, E, C]) afterFailure(ctx context.Context, err error) error {
-	if !errors.Is(err, ErrHandleFailed) || h.inDispatch(ctx) {
-		return err
+// Drain waits until no domain effect of h is still being dispatched, or ctx ends.
+// Call it after ErrHandleFailed and before Recover: a step on another goroutine may
+// still be sending an effect it recorded, and a recovered Handle would send it again
+// because it isn't marked yet. Drain works on a healthy Handle too. It returns ctx's
+// error if ctx ends first, and ErrReentrantStep, without waiting, when called from
+// inside a step or an effect handler of h, whose own work it would wait on forever.
+// A call from a goroutine an effect handler started, without the handler's context,
+// can't be told apart and waits for that handler.
+func (h *Handle[S, E, C]) Drain(ctx context.Context) error {
+	if h.inStep(ctx) || h.inDispatch(ctx) {
+		return fmt.Errorf("%w: %q: Drain from inside a step or an effect handler", ErrReentrantStep, h.id)
 	}
 	h.out.mu.Lock()
 	idle := h.out.idle
 	h.out.mu.Unlock()
-	if idle != nil {
-		select {
-		case <-idle:
-		case <-ctx.Done():
-		}
+	if idle == nil {
+		return nil
 	}
-	return err
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // refuse reports why a step that holds the lock must not run: ErrHandleFailed once
@@ -427,14 +433,8 @@ func (h *Handle[S, E, C]) Instance() *state.Instance[S, E, C] { return h.inst }
 // read can't race a step on another goroutine. fn must not call back into the Handle,
 // and must not keep the instance past its return. View returns ctx's error if ctx ends
 // before the lock is free, ErrReentrantStep if ctx is a step's own context, and
-// ErrHandleFailed once the Handle has failed, without running fn. Like every call that
-// returns ErrHandleFailed, it first waits until no effect is still being sent.
+// ErrHandleFailed once the Handle has failed, without running fn.
 func (h *Handle[S, E, C]) View(ctx context.Context, fn func(*state.Instance[S, E, C])) error {
-	return h.afterFailure(ctx, h.view(ctx, fn))
-}
-
-// view is View without the wait after a failure.
-func (h *Handle[S, E, C]) view(ctx context.Context, fn func(*state.Instance[S, E, C])) error {
 	if err := h.acquire(ctx); err != nil {
 		return err
 	}
@@ -576,7 +576,8 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // step's ordinal (write-ahead, before returning), and — when the
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
 // kernel transition error journals nothing (no step was produced) and is
-// returned to the caller.
+// returned to the caller. A failed checkpoint returns the result and that error: the
+// step is recorded and its effects sent, and the Handle carries on.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -597,12 +598,12 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	}
 	res, rec, des, err := h.lockedFireStep(ctx, event, opts)
 	if err != nil {
-		return res, h.afterFailure(ctx, err)
+		return res, err
 	}
 	// Dispatch after releasing the step lock, so an effect handler can call back into
 	// this Handle. The Record already names every effect (write-ahead), so a crash here
 	// leaves it for recovery to redispatch, deduped by id.
-	return res, h.afterFailure(ctx, h.finishStep(ctx, rec, des))
+	return res, h.finishStep(ctx, rec, des)
 }
 
 // lockedFireStep runs fireStep and releases the step lock however it returns, a panic
@@ -693,12 +694,12 @@ func (h *Handle[S, E, C]) finishStep(ctx context.Context, rec *Record, des []dis
 	return h.offerCheckpointLocked(ctx, rec)
 }
 
-// dispatchGuarded dispatches des, turning a panic in the effect handler into an
-// ErrEffectDispatch error.
+// dispatchGuarded dispatches des, turning a panic in the effect handler, or in the
+// Store's dispatch tracking, into an ErrEffectDispatch error.
 func (h *Handle[S, E, C]) dispatchGuarded(ctx context.Context, step int, des []dispatchableEffect) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("%w: step %d for %q: effect handler panicked: %v", ErrEffectDispatch, step, h.id, p)
+			err = fmt.Errorf("%w: step %d for %q: effect dispatch panicked: %v", ErrEffectDispatch, step, h.id, p)
 		}
 	}()
 	return h.dispatchEffects(ctx, des)
@@ -713,12 +714,6 @@ func (h *Handle[S, E, C]) dispatchGuarded(ctx context.Context, step int, des []d
 // count of timers fired — so recovery re-derives the same timers at their
 // recorded instants. It returns the FireResults of the timers it fired, in order.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
-	results, err := h.tick(ctx)
-	return results, h.afterFailure(ctx, err)
-}
-
-// tick is Tick without the wait after a failure.
-func (h *Handle[S, E, C]) tick(ctx context.Context) ([]state.FireResult[S], error) {
 	if err := h.acquire(ctx); err != nil {
 		return nil, err
 	}

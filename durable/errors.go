@@ -55,18 +55,18 @@ var (
 	// applied the step, so the Handle fails with ErrHandleFailed.
 	ErrRecordTooLarge = errors.New(errorPrefix + errorRecordTooLarge)
 
-	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService,
-	// DeliverToActor and View once a step applied to the live instance but may not have been
-	// recorded, or an effect handler failed, on that call and every later one. It wraps the cause. The call returns
-	// once no effect of the Handle is still being sent, so recovering right away can't
-	// send one twice. Recover a new Handle with the same options to continue, unless the
-	// cause is ErrFenced: then a newer owner holds the instance, so stop.
+	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService, DeliverToActor
+	// and View once a step applied to the live instance but may not have been recorded,
+	// or an effect handler failed, on that call and every later one. It wraps the cause.
+	// Call Handle.Drain, then Recover a new Handle with the same options to continue,
+	// unless the cause is ErrFenced: then a newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
 
 	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor
 	// and View when called with the context a step passed to host code, such as a
 	// service: the step holds the Handle's lock, so waiting would deadlock. Nothing
-	// applied. Effect handlers run after the lock is released and may call back in.
+	// applied. Effect handlers run after the lock is released and may call back in. Drain
+	// reports it when called from inside a step or an effect handler.
 	ErrReentrantStep = errors.New(errorPrefix + errorReentrantStep)
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
