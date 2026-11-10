@@ -21,7 +21,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `PlanPath`, it's `context.Background()`, never nil. Callbacks see the context as
   the middleware chain passes it down. The in-process bindings pass their `EvalGuard`,
   `EvalAction` and `EvalAssign` context through, and a binding registered with
-  `BindGuard` gets the Fire's context instead of a background one.
+  `BindGuard` gets the context of the Fire evaluating it, where it used to get a
+  background one.
 - **`WithContext`** sets the context `Cast` gives the guards, actions and reducers that
   settle the initial state.
 - **`ActorSystem.RegisterContext`** registers a `ContextActorBehavior`, an actor factory
@@ -725,7 +726,8 @@ locks today's surface precisely so these can be added without a major bump.
 - `context.Context` on `Verify` / `PlanPath` / `Cast` / `Restore` and the snapshot
   codecs: these take no `context.Context` at v1. A future `WithContext` option on
   each existing option tail threads cancellation and deadlines without changing a
-  signature. (`RestoreActors` already takes a `context.Context`.)
+  signature. (`RestoreActors` already takes a `context.Context`. Unreleased: `Cast`'s
+  `WithContext` now gives the callbacks that settle its initial state a context.)
 - Relaxing `SnapshotActors`' non-quiesced refusal: it refuses to snapshot a
   non-quiesced actor system by design. A future `SnapshotActorsOption` lets a host
   opt into a defined non-quiesced capture; the strict refusal stays the default.

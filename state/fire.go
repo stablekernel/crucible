@@ -1109,6 +1109,14 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	return effects, "", nil
 }
 
+// settleWith settles the initial state with ctx as its callbacks' context, clearing it
+// however the settle ends.
+func (i *Instance[S, E, C]) settleWith(ctx context.Context, current S) {
+	i.callCtx = ctx
+	defer func() { i.callCtx = nil }()
+	i.settleInitial(current)
+}
+
 // callbackContext returns the context a guard, action or reducer gets as its Ctx: the
 // running Fire's or settling Cast's, or context.Background() outside one.
 func (i *Instance[S, E, C]) callbackContext() context.Context {

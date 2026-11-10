@@ -37,7 +37,7 @@ Transition(Authorizing).On(Authorized).
     GoTo(Active).Assign("recordHold")
 ```
 
-Field predicates support `.Eq`, `.Ne`, `.Lt`, `.Le`, `.Gt`, `.Ge`, and `.In`, with operands built from `state.Str`, `state.Int`, `state.Float`, and `state.Bool`. `state.StateIn(s)` lets a guard depend on the active configuration. When a transition carries *both* `When` and `WhenExpr`, every named guard **and** the whole expression must evaluate true.
+Field predicates support `.Eq`, `.Ne`, `.Lt`, `.Le`, `.Gt`, `.Ge`, and `.In`, with operands built from `state.Str`, `state.Int`, `state.Float`, and `state.Bool`. `state.StateIn(s)` lets a guard depend on the active configuration. A named guard also gets `Ctx`, the context of the `Fire` evaluating it, to pass on if it ever has to call back into the host driving the instance. When a transition carries *both* `When` and `WhenExpr`, every named guard **and** the whole expression must evaluate true.
 
 ```mermaid
 stateDiagram-v2

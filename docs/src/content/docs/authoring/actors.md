@@ -10,7 +10,7 @@ sidebar:
 
 When a state needs to delegate work to a self-contained, concurrently-living unit, forge an **actor**: a child state machine the parent supervises through messages. Each actor has its own `(S, E, C)` types, runs independently, and reports back to the parent on completion.
 
-An `ActorSystem` is the registry and supervisor. You bind a *behavior* (a factory that casts a fresh child instance) under a name, then a state invokes that name to spawn one.
+An `ActorSystem` is the registry and supervisor. You bind a *behavior* (a factory that casts a fresh child instance) under a name, then a state invokes that name to spawn one. A behavior registered with `RegisterContext` also gets the context of the step spawning the actor, to pass to its child's `Cast` with `state.WithContext`.
 
 ```go
 sys := state.NewActorSystem(orderInstance).

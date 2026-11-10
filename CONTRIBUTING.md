@@ -136,7 +136,8 @@ Run `mage -l` to list everything. Each target iterates the suite's modules.
 
 Before you push, **tests, lint, vet, and `govulncheck` must all pass.** The
 quickest way to verify locally is `mage check`. CI runs the same gates across a
-OS matrix on every PR.
+OS matrix on every ready PR. A draft PR runs only the `gate` check, which fails until
+the PR is marked ready for review; marking it ready runs the full CI.
 
 Docs-only pull requests (changing only `*.md`, `docs/`, `LICENSE`, or `NOTICE`)
 skip the Go matrix automatically and are gated solely by the aggregate `gate`
@@ -144,7 +145,7 @@ check, so a README tweak doesn't spend the full test run.
 
 ## Performance
 
-Performance regressions fail the build. On every pull request, CI runs the
+Performance regressions fail the build. On every ready pull request, CI runs the
 `state` benchmarks on **both your branch head and the PR base, on the same
 runner**, then `benchstat`-diffs the two. Running both refs on one machine
 cancels machine-to-machine variance, so a genuine regression stands apart from

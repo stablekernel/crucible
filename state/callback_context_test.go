@@ -191,3 +191,64 @@ func TestCallbacks_SeeTheContextMiddlewarePasses(t *testing.T) {
 		t.Fatalf("the guard saw %q, want the middleware's context", seen.Guard)
 	}
 }
+
+// TestCallbacks_EventlessSettleAtCastGetsTheCastContext proves a guard and reducer on an
+// eventless transition that settles during Cast see WithContext's context.
+func TestCallbacks_EventlessSettleAtCastGetsTheCastContext(t *testing.T) {
+	m := state.ForgeFor[*ctxSeen]("eventless").
+		Guard("g", func(c state.GuardCtx[*ctxSeen]) bool {
+			c.Entity.Guard = tagOf(c.Ctx)
+			return true
+		}).
+		Reducer("r", func(c state.AssignCtx[*ctxSeen]) *ctxSeen {
+			c.Entity.Assign = tagOf(c.Ctx)
+			return c.Entity
+		}).
+		State("start").
+		Always().GoTo("settled").When("g").Assign("r").
+		State("settled").
+		Initial("start").
+		Quench()
+	seen := &ctxSeen{}
+	inst := m.Cast(seen, state.WithInitialState("start"), state.WithContext[string](tagged("cast")))
+	if inst.Current() != "settled" {
+		t.Fatalf("Cast settled in %q, want settled", inst.Current())
+	}
+	if seen.Guard != "cast" || seen.Assign != "cast" {
+		t.Fatalf("the eventless guard saw %q and reducer %q, want cast", seen.Guard, seen.Assign)
+	}
+}
+
+// TestCallbacks_ParallelRegionGetsTheFiresContext proves a guard and reducer on a
+// transition inside a parallel region see the Fire's context.
+func TestCallbacks_ParallelRegionGetsTheFiresContext(t *testing.T) {
+	m := state.ForgeFor[*ctxSeen]("regions").
+		Guard("g", func(c state.GuardCtx[*ctxSeen]) bool {
+			c.Entity.Guard = tagOf(c.Ctx)
+			return true
+		}).
+		Reducer("r", func(c state.AssignCtx[*ctxSeen]) *ctxSeen {
+			c.Entity.Assign = tagOf(c.Ctx)
+			return c.Entity
+		}).
+		SuperState("live").
+		Region("r1").
+		Initial("r1a").
+		SubState("r1a").On("tick").GoTo("r1b").When("g").Assign("r").
+		SubState("r1b").
+		EndRegion().
+		Region("r2").
+		Initial("r2a").
+		SubState("r2a").
+		EndRegion().
+		EndSuperState().
+		Initial("live").
+		Quench()
+	seen := &ctxSeen{}
+	if res := m.Cast(seen, state.WithInitialState("live")).Fire(tagged("fire"), "tick"); res.Err != nil {
+		t.Fatalf("Fire: %v", res.Err)
+	}
+	if seen.Guard != "fire" || seen.Assign != "fire" {
+		t.Fatalf("the region's guard saw %q and reducer %q, want fire", seen.Guard, seen.Assign)
+	}
+}
