@@ -212,16 +212,34 @@ func TestCanceledGuard_IsNotReportedAsAGuardFailure(t *testing.T) {
 }
 
 // TestCanceledGuard_KeepsTheBindingsError proves the Fire's error names the guard and
-// keeps the binding's own error, while still matching the context's.
+// keeps the binding's own error, while still matching the context's, on an
+// event-driven transition and on an eventless one.
 func TestCanceledGuard_KeepsTheBindingsError(t *testing.T) {
-	_, res := fireCanceled(t, errors.New("lookup failed"), func(b *Builder[string, string, bindOrder]) *Builder[string, string, bindOrder] {
-		return b.State("from").Transition("from").On("go").GoTo("to").When("bound").State("to")
-	}, "from")
-	if !errors.Is(res.Err, context.Canceled) {
-		t.Fatalf("Fire err = %v, want context.Canceled", res.Err)
+	tests := []struct {
+		name  string
+		build func(*Builder[string, string, bindOrder]) *Builder[string, string, bindOrder]
+	}{
+		{"event-driven", func(b *Builder[string, string, bindOrder]) *Builder[string, string, bindOrder] {
+			return b.State("from").Transition("from").On("go").GoTo("to").When("bound").State("to")
+		}},
+		{"eventless", func(b *Builder[string, string, bindOrder]) *Builder[string, string, bindOrder] {
+			return b.State("from").
+				Transition("from").On("go").GoTo("deciding").
+				State("deciding").
+				Always().GoTo("to").When("bound").
+				State("to")
+		}},
 	}
-	if msg := res.Err.Error(); !strings.Contains(msg, "lookup failed") || !strings.Contains(msg, `"bound"`) {
-		t.Fatalf("Fire err %q doesn't name the guard and keep its error", msg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, res := fireCanceled(t, errors.New("lookup failed"), tt.build, "from")
+			if !errors.Is(res.Err, context.Canceled) {
+				t.Fatalf("Fire err = %v, want context.Canceled", res.Err)
+			}
+			if msg := res.Err.Error(); !strings.Contains(msg, "lookup failed") || !strings.Contains(msg, `"bound"`) {
+				t.Fatalf("Fire err %q doesn't name the guard and keep its error", msg)
+			}
+		})
 	}
 }
 

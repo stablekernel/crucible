@@ -38,7 +38,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
   counts as a false verdict: the Fire fails with the context's error at once. Before,
   another transition could be chosen and its actions and reducers run under the ended
   context, until the next cancellation check rolled the Fire back. The Fire's error
-  wraps the binding's own error. A Fire whose context ended while its eventless
+  names the guard and wraps the binding's own error, on event-driven and eventless
+  transitions alike. A Fire whose context ended while its eventless
   transitions' guards ran now fails, whether or not one was chosen, where it could
   succeed before.
 

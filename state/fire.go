@@ -34,7 +34,8 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	// Guards, actions and reducers see this Fire's context as their Ctx (as the
 	// middleware chain passes it down). A Fire nested inside another on the same
 	// instance restores the outer Fire's context when it returns; it doesn't restore
-	// the outer Fire's other per-Fire state, such as its WithEventData payload.
+	// the outer Fire's other per-Fire state, such as its WithEventData payload or its
+	// queue of raised events, which the nested Fire clears.
 	outerCtx := i.callCtx
 	i.callCtx = ctx
 	defer func() { i.callCtx = outerCtx }()
@@ -282,11 +283,16 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		}
 
 		// No pending internal events: fire one enabled eventless transition.
-		t, anc, leaf, ok := i.selectEventless()
-		// Selection reads a guard that couldn't decide as not passing. If the context
-		// ended while the guards ran, that choice may not be the one a live context would
-		// make, so stop here, before its callbacks run, as the boundary check above would
-		// one microstep later.
+		t, anc, leaf, ok, selErr := i.selectEventless()
+		// A guard stopped by an ended context ends selection with its error, which names
+		// the guard. Any other guard that couldn't decide reads as not passing, so if the
+		// context ended while the guards ran, the choice may not be the one a live
+		// context would make: stop here, before its callbacks run, as the boundary check
+		// above would one microstep later.
+		if selErr != nil {
+			res.Err = selErr
+			return res
+		}
 		if err := ctx.Err(); err != nil {
 			res.Err = err
 			return res
@@ -505,7 +511,7 @@ func (i *Instance[S, E, C]) seedTrace(event string) Trace {
 // macrostep microstep fires exactly one eventless transition; multiple regions'
 // eventless transitions settle across successive microsteps in declaration
 // order, preserving the run-to-completion determinism contract.
-func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool) {
+func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool, err error) {
 	m := i.machine
 	for _, l := range i.config {
 		for _, a := range m.ancestors(l) {
@@ -518,14 +524,19 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 				if !cand.EventLess {
 					continue
 				}
-				if i.guardsPass(cand) {
-					return cand, a, l, true
+				pass, gErr := i.guardsPass(cand)
+				if gErr != nil {
+					var zero S
+					return nil, zero, zero, false, gErr
+				}
+				if pass {
+					return cand, a, l, true, nil
 				}
 			}
 		}
 	}
 	var zero S
-	return nil, zero, zero, false
+	return nil, zero, zero, false, nil
 }
 
 // guardsPass reports whether every guard on a transition currently passes. A
@@ -538,20 +549,29 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 // fails LOUD — an error there sets OutcomeGuardPanic and is returned as a Fire
 // error (see the guard evaluation in fireSpine). The kernel owns this policy; the
 // expr subpackage documents the same asymmetry from its side.
-func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
+//
+// The one exception is a guard stopped by an ended context: it has no verdict, so
+// guardsPass returns its error and selection stops there.
+func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) (bool, error) {
 	for _, g := range t.Guards {
 		ok, err := i.machine.evalGuard(i.callbackContext(), g, i.entity)
+		if err != nil && isCanceled(err) {
+			return false, err
+		}
 		if err != nil || !ok {
-			return false
+			return false, nil
 		}
 	}
 	if t.GuardExpr != nil {
 		res := i.evalGuardExpr(t.GuardExpr, i.entity, nil)
+		if res.err != nil && isCanceled(res.err) {
+			return false, res.err
+		}
 		if res.err != nil || !res.ok {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // absorbMicrosteps folds an internal sub-step's observable trace detail into the

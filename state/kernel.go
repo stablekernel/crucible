@@ -558,8 +558,8 @@ type BatchResult[S comparable] struct {
 type GuardCtx[C any] struct {
 	Entity C
 	Params map[string]any
-	// Ctx is the context of the Fire running this callback, or of the Cast that
-	// settles the initial state (see WithContext); context.Background() outside one,
+	// Ctx is the context of the Fire running this callback, or one carrying the values
+	// of the Cast's (see WithContext) while it settles the initial state; context.Background() outside one,
 	// such as a guard PlanPath evaluates. It is never nil. Pass it to any call the callback makes
 	// back into the host that drives this instance, so the host can tell the call
 	// comes from inside a step. Don't branch on it, its values, deadline or
@@ -575,8 +575,8 @@ type GuardFn[C any] func(ctx GuardCtx[C]) bool
 type ActionCtx[C any] struct {
 	Entity C
 	Params map[string]any
-	// Ctx is the context of the Fire running this callback, or of the Cast that
-	// settles the initial state (see WithContext); context.Background() when there's
+	// Ctx is the context of the Fire running this callback, or one carrying the values
+	// of the Cast's (see WithContext) while it settles the initial state; context.Background() when there's
 	// none, such as a Cast without WithContext. It is never nil. Pass it to any call the callback makes
 	// back into the host that drives this instance, so the host can tell the call
 	// comes from inside a step. Don't branch on it, its values, deadline or

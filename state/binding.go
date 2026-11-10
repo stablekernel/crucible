@@ -184,7 +184,10 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 // an error it returns is treated as a false verdict, matching how a Go guard that
 // cannot decide yields false rather than transitioning. The exception is an error
 // returned once that context has ended: the Fire then fails with the context's error,
-// as it would at its next cancellation check, rather than take another transition. An optional Describe option
+// as it would at its next cancellation check, rather than take another transition.
+// "That context" is the one the guard got: the Fire's, as the middleware chain passed
+// it down, so a middleware that substitutes a context it cancels can end a Fire this
+// way although the Fire's own context is live. An optional Describe option
 // adds palette metadata exactly as Guard does.
 func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = func(gctx GuardCtx[C]) bool {
