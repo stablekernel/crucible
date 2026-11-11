@@ -387,10 +387,14 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 	if err = inst.admitFence(id, cfg.fence); err != nil {
 		return 0, err
 	}
-	key, digest, err := appendKey(cfg, rec)
+	// Encode the Record once: the same bytes are its digest and, unless trimmed below,
+	// its journal line.
+	kept := cloneRecord(rec)
+	line, err := json.Marshal(kept)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
 	}
+	key, digest := appendKeyOf(cfg, rec.Step, line)
 	if existing, ok := inst.applied[key]; ok {
 		return existing.check(id, rec.Step, digest)
 	}
@@ -399,11 +403,6 @@ func (s *FileStore) Append(_ context.Context, id InstanceID, rec Record, opts ..
 			ErrStepOutOfOrder, rec.Step, inst.maxStep, id)
 	}
 
-	line, err := json.Marshal(cloneRecord(rec))
-	if err != nil {
-		return 0, fmt.Errorf("durable: marshaling record step %d for %q: %w", rec.Step, id, err)
-	}
-	kept := cloneRecord(rec)
 	if len(line) >= maxLineBytes && len(rec.Snapshot) > 0 {
 		// Recovery reads the checkpoint, never a tail Record's Snapshot, so an oversized
 		// Record drops it rather than leaving a line Load can't read. The in-memory tail
@@ -462,6 +461,21 @@ func (s *FileStore) Load(_ context.Context, id InstanceID) ([]byte, []Record, er
 		tail[i] = cloneRecord(rec)
 	}
 	return snapshot, tail, nil
+}
+
+// LastStep reports the highest Step recorded for id, across its checkpoint and its
+// tail, so FileStore is a StepReporter.
+func (s *FileStore) LastStep(_ context.Context, id InstanceID) (int, bool, error) {
+	inst, existed, err := s.instance(id)
+	if err != nil {
+		return 0, false, err
+	}
+	if !existed {
+		return 0, false, fmt.Errorf("%w: %q", ErrInstanceNotFound, id)
+	}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.maxStep, inst.maxStep != noRecord, nil
 }
 
 // Checkpoint implements Store. It atomically persists snapshot at throughStep

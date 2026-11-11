@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/kafka
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/stablekernel/crucible/sink v0.0.0

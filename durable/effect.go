@@ -59,9 +59,9 @@ import (
 //     once) and, because it is then marked, never again.
 //   - Crash AFTER dispatch (id marked): recovery re-emits the effect but finds its
 //     id already marked and skips it — so it is not redispatched (exactly once).
-//   - Handler error: the effect is left un-marked and the error surfaces wrapped in
-//     ErrEffectDispatch, so a later recovery retries it (at-least-once until it
-//     succeeds; exactly-once thereafter).
+//   - Handler error: the effect is left un-marked, and the Handle fails with
+//     ErrHandleFailed wrapping ErrEffectDispatch, so Recover retries it
+//     (at-least-once until it succeeds; exactly-once thereafter).
 //
 // The dedup set is held by the Store (DispatchStore) so it shares the Record's
 // durability and survives checkpoint compaction — a delayed redispatch of an
@@ -70,7 +70,8 @@ import (
 // EffectHandler applies one emitted domain effect, identified by its stamped
 // EffectID. The Runner calls it exactly once per EffectID over the lifetime of an
 // instance (see WithEffectHandler). A non-nil error leaves the effect un-marked
-// for a later retry and is surfaced to the caller wrapped in ErrEffectDispatch.
+// for Recover to retry, and fails the Handle with ErrHandleFailed wrapping
+// ErrEffectDispatch and the error.
 type EffectHandler func(ctx context.Context, effectID string, effect state.Effect) error
 
 // DispatchStore is the dedup seam for idempotent effect dispatch: the Store
@@ -226,7 +227,7 @@ func (r *Runner[S, E, C]) dispatch(ctx context.Context, id InstanceID, des []dis
 			continue
 		}
 		if err := r.cfg.effectHandler(ctx, de.id, de.effect); err != nil {
-			return fmt.Errorf("%w: effect %q for %q: %v", ErrEffectDispatch, de.id, id, err)
+			return fmt.Errorf("%w: effect %q for %q: %w", ErrEffectDispatch, de.id, id, err)
 		}
 		if err := ds.MarkDispatched(ctx, id, de.id); err != nil {
 			return fmt.Errorf("durable: marking effect %q dispatched for %q: %w", de.id, id, err)

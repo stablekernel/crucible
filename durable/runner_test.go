@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -511,6 +515,21 @@ func quantityMachine() *state.Machine[string, string, *runCtx] {
 		Quench()
 }
 
+// flakyAppendStore fails the first Append of one step, then delegates.
+type flakyAppendStore struct {
+	durable.Store
+	failStep int
+	failed   bool
+}
+
+func (s *flakyAppendStore) Append(ctx context.Context, id durable.InstanceID, rec durable.Record, opts ...durable.AppendOption) (int64, error) {
+	if rec.Step == s.failStep && !s.failed {
+		s.failed = true
+		return 0, errors.New("store unavailable")
+	}
+	return s.Store.Append(ctx, id, rec, opts...)
+}
+
 // TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory proves
 // two Handles on one instance (a stalled worker, and the worker that recovered the
 // instance after it) cannot both have their Fires acknowledged while the journal
@@ -549,6 +568,71 @@ func TestRecover_TwoHandlesOnOneInstance_JournalMatchesAnAcknowledgedHistory(t *
 	}
 	if staleErr == nil && stale.Instance().Current() != got {
 		t.Fatalf("stale Handle's Fires were acknowledged at %q, but recovery yields %q", stale.Instance().Current(), got)
+	}
+}
+
+// TestRunner_FireDuringTimerLoop_LosesNoAcknowledgedSteps proves the "Tick from its
+// own timer loop" pattern that drainClock documents holds while requests Fire on
+// the same Handle: the recovered instance matches the live one, and every
+// acknowledged Fire survives.
+func TestRunner_FireDuringTimerLoop_LosesNoAcknowledgedSteps(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs two CPUs to interleave Fire and Tick")
+	}
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+
+	const n = 200
+	var acked, fired, failed atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // the host's timer loop
+		defer wg.Done()
+		for range n {
+			clk.Advance(time.Second)
+			results, terr := h.Tick(ctx)
+			if terr != nil {
+				failed.Add(1)
+			}
+			fired.Add(int64(len(results)))
+		}
+	}()
+	go func() { // request traffic
+		defer wg.Done()
+		for range n {
+			if _, ferr := h.Fire(ctx, "poke"); ferr != nil {
+				failed.Add(1)
+				continue
+			}
+			acked.Add(1)
+		}
+	}()
+	wg.Wait()
+	if failed.Load() != 0 || acked.Load() != n || fired.Load() == 0 {
+		t.Fatalf("failed %d calls, acknowledged %d of %d Fires, fired %d timers", failed.Load(), acked.Load(), n, fired.Load())
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got, want := recovered.Instance().Entity().Count, int(acked.Load()); got != want {
+		t.Fatalf("recovered %d pokes, want %d acknowledged", got, want)
+	}
+	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
+		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
 	}
 }
 
@@ -629,6 +713,36 @@ func TestRecover_StepAfterTickCheckpoint_IsPersisted(t *testing.T) {
 	}
 }
 
+// TestRunner_FireAfterFailedAppend_MatchesJournal proves a Fire whose Append failed
+// acknowledges nothing further: the Handle refuses, and recovery matches the journal.
+func TestRunner_FireAfterFailedAppend_MatchesJournal(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &flakyAppendStore{Store: durable.NewMemStore(), failStep: 1}
+	id := durable.InstanceID("poll-1")
+	h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); !errors.Is(err, durable.ErrHandleFailed) { // step 1: the Append fails
+		t.Fatalf("Fire(poke) = %v, want ErrHandleFailed", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("second Fire(poke) = %v, want ErrHandleFailed", err)
+	}
+
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Entity().Count; got != 0 {
+		t.Fatalf("recovered %d pokes, want 0: none was recorded", got)
+	}
+}
+
 // lastStep returns the Step of the newest Record in a history-keeping store.
 func lastStep(t *testing.T, store *durable.MemStore, id durable.InstanceID) int {
 	t.Helper()
@@ -697,12 +811,13 @@ func (s oldEnvelopeStore) Load(ctx context.Context, id durable.InstanceID) ([]by
 }
 
 // TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount proves a checkpoint from before
-// the field still recovers, from the restored Trace count.
+// the field still recovers from the restored Trace count on a Store that can't report
+// its last step.
 func TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount(t *testing.T) {
 	ctx := context.Background()
 	m := pollingMachine()
 	mem := durable.NewMemStore(durable.WithHistory())
-	store := oldEnvelopeStore{mem}
+	store := struct{ durable.Store }{oldEnvelopeStore{mem}} // hides LastStep
 	id := durable.InstanceID("poll-1")
 	opts := []durable.Option[string, string, *runCtx]{durable.WithCheckpointEvery[string, string, *runCtx](3)}
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
@@ -723,5 +838,225 @@ func TestRecover_CheckpointWithoutNextStep_UsesTheTraceCount(t *testing.T) {
 	}
 	if got := lastStep(t, mem, id); got != 3 {
 		t.Fatalf("poke recorded at step %d, want 3", got)
+	}
+}
+
+// TestRecover_CheckpointWithoutNextStep_AfterTicks_NumbersPastTheJournal proves a
+// checkpoint from before the field recovers past every recorded step when tick barriers
+// left fewer Traces than step numbers, so the next Append doesn't conflict.
+func TestRecover_CheckpointWithoutNextStep_AfterTicks_NumbersPastTheJournal(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	mem := durable.NewMemStore(durable.WithHistory())
+	store := oldEnvelopeStore{mem}
+	id := durable.InstanceID("poll-1")
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](8),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	for range 4 { // five Traces, but the checkpoint compacts through step 7
+		clk.Advance(time.Second)
+		if _, err = h.Tick(ctx); err != nil {
+			t.Fatalf("Tick: %v", err)
+		}
+	}
+	for i := range 2 { // a second Recover must number past the first one's step too
+		resumed, err := durable.Recover(ctx, m, store, id, opts...)
+		if err != nil {
+			t.Fatalf("Recover %d: %v", i, err)
+		}
+		if _, err = resumed.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke) after Recover %d: %v", i, err)
+		}
+		if got, want := lastStep(t, mem, id), 8+i; got != want {
+			t.Fatalf("poke recorded at step %d, want %d", got, want)
+		}
+	}
+}
+
+// TestHandle_FailedAppend_RefusesEveryStep proves the failed Handle stays refused,
+// names the cause, and that a recovered Handle continues from the journal.
+func TestHandle_FailedAppend_RefusesEveryStep(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &flakyAppendStore{Store: durable.NewMemStore(), failStep: 1}
+	id := durable.InstanceID("poll-1")
+	h, err := durable.NewRunner(m, store).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(poke) = %v, want ErrHandleFailed", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); !errors.Is(err, durable.ErrHandleFailed) || !strings.Contains(err.Error(), "store unavailable") {
+		t.Fatalf("Fire after the failure = %v, want ErrHandleFailed naming the cause", err)
+	}
+	if _, err = h.Tick(ctx); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Tick after the failure = %v, want ErrHandleFailed", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = recovered.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire on the recovered Handle: %v", err)
+	}
+}
+
+// failingCheckpointStore fails the next Checkpoint after armed is set.
+type failingCheckpointStore struct {
+	durable.Store
+	armed bool
+}
+
+func (s *failingCheckpointStore) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
+	if s.armed {
+		s.armed = false
+		return errors.New("checkpoint unavailable")
+	}
+	return s.Store.Checkpoint(ctx, id, snapshot, throughStep, opts...)
+}
+
+// TestHandle_FailedCheckpointOnTick_KeepsGoing proves a failed checkpoint doesn't fail
+// the Handle or make the next step conflict: the Record is durable.
+func TestHandle_FailedCheckpointOnTick_KeepsGoing(t *testing.T) {
+	ctx := context.Background()
+	store := &failingCheckpointStore{Store: durable.NewMemStore()}
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithRunnerClock[string, string, *runCtx](clk),
+		durable.WithCheckpointEvery[string, string, *runCtx](2),
+	}
+	h, err := durable.NewRunner(pollingMachine(), store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	store.armed = true
+	clk.Advance(time.Second)
+	if _, err = h.Tick(ctx); err == nil || errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Tick = %v, want the plain checkpoint error", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire after the failed checkpoint: %v", err)
+	}
+}
+
+// TestHandle_FencedOwner_Stops proves a Handle that lost its instance reports the fence
+// through ErrHandleFailed, so a host can tell it must stop rather than recover.
+func TestHandle_FencedOwner_Stops(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := durable.NewMemStore()
+	const id = durable.InstanceID("poll-1")
+	owner := func(token int64) durable.Option[string, string, *runCtx] {
+		return durable.WithOwnerFence[string, string, *runCtx](token)
+	}
+	old, err := durable.NewRunner(m, store, owner(1)).Start(ctx, id, &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = old.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	newer, err := durable.Recover(ctx, m, store, id, owner(2))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err = newer.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("newer Fire: %v", err)
+	}
+	_, err = old.Fire(ctx, "poke")
+	if !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, durable.ErrFenced) {
+		t.Fatalf("old Fire = %v, want ErrHandleFailed wrapping ErrFenced", err)
+	}
+}
+
+// endsOnSecondCheck is a context that reports itself live the first time its Err is
+// read and canceled after, standing in for one that ends just as the step takes the
+// lock.
+type endsOnSecondCheck struct {
+	context.Context
+	checks atomic.Int32
+}
+
+func (c *endsOnSecondCheck) Err() error {
+	if c.checks.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+
+// TestHandle_ContextEndingAsTheLockIsTaken_ChangesNothing proves the check after the
+// lock is taken stops a Tick whose context ended while it took the lock, before the
+// scheduler consumes a due timer.
+func TestHandle_ContextEndingAsTheLockIsTaken_ChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &armedAppendStore{Store: durable.NewMemStore()}
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	clk.Advance(time.Second)
+	before := store.appends
+	if _, err = h.Tick(&endsOnSecondCheck{Context: ctx}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want context.Canceled", err)
+	}
+	if store.appends != before {
+		t.Fatalf("Tick appended %d Records, want 0", store.appends-before)
+	}
+	results, err := h.Tick(ctx)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("Tick after = (%d results, %v), want the timer still due", len(results), err)
+	}
+}
+
+// TestHandle_ContextEndedBeforeTheStep_ChangesNothing proves an ended context stops a
+// Tick before the scheduler consumes a due timer.
+func TestHandle_ContextEndedBeforeTheStep_ChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	m := pollingMachine()
+	store := &armedAppendStore{Store: durable.NewMemStore()}
+	clk := state.NewFakeClock(epoch)
+	opts := []durable.Option[string, string, *runCtx]{durable.WithRunnerClock[string, string, *runCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	clk.Advance(time.Second)
+	before := store.appends
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = h.Tick(ended); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want context.Canceled", err)
+	}
+	if store.appends != before {
+		t.Fatalf("Tick on an ended context appended %d Records, want 0", store.appends-before)
+	}
+	results, err := h.Tick(ctx)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("Tick after = (%d results, %v), want the timer still due", len(results), err)
 	}
 }

@@ -136,18 +136,45 @@ opts in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 `WithHistory`); `StateAt` falls back to `Load` (latest checkpoint plus tail)
 otherwise.
 
+## Handles across goroutines
+
+`Fire`, `Tick`, `RunService` and `DeliverToActor` are safe to call from different
+goroutines: each holds the Handle's lock while it applies to the kernel and records the
+step. Effects dispatch after the lock is released, so an effect handler can call back
+into its Handle. A service, guard, action, reducer or actor behavior runs under the lock,
+so it can't act on the Handle itself: to act on the Handle when a step happens, an action
+returns an effect, whose handler runs after the lock. If one calls back during a live
+step with the step's context, as a service gets and a guard, action or reducer finds in
+its input's `Ctx`, the call returns `ErrReentrantStep` instead of waiting. A call back
+without that context deadlocks, and so does one under middleware that passed down a
+context not derived from the step's. A step waiting for the lock stops when its context
+ends. Read the instance with `View`, which
+takes the lock; `Instance()` is outside it.
+
+A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
+effect handler that returns an error or panics. Before `Recover`, call `Handle.Drain`,
+which waits until no step of the failed Handle is still recording and no effect is still
+being sent, so the recovered Handle loads every recorded step and can't send an effect
+twice. Give `Drain` a context of its own, not the failed call's, and don't `Recover`
+until it returns nil: an error means it didn't finish draining. A step that was recording when another goroutine failed the Handle returns
+`ErrHandleFailed` saying it was recorded; `Recover` sends any of its effects. To move a healthy Handle's instance to a new Handle, stop
+calling the old one and let its calls return first: a step can start after `Drain`
+returns. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
+instance, so stop.
+
 ## Caveat: serialized payloads
 
 Events, service done-data, actor done-data, and actor messages are recorded as their
 JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
 observes the JSON-decoded shape on a replayed `onDone`. A `WithEventData` payload is
-JSON-decoded live as well as on replay, so a reducer gets the same value both ways: a
-struct is a map and an integer a `float64`. An error stays an error with the same
-message, with any invalid UTF-8 replaced. `Handle.Fire` refuses a payload it can't
+decoded from its JSON form live as well as on replay, so a reducer gets the same value
+both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per
+event, for example `durable.DecodeAs[Order]`. Without one, a payload decodes as JSON's own
+form, so `Handle.Fire` refuses a struct or an integer rather than hand the reducer a map
+or a `float64`. An error stays an error with the same message, with any invalid UTF-8
+replaced. `Handle.Fire` refuses a payload that decodes as a different type, one it can't
 record, or one over `WithMaxEventDataBytes` (8 MiB by default), with
-`ErrEventDataEncoding`, and nothing applies. A
-typed-codec option to carry the concrete Go value across the journal boundary is
-reserved for a later, additive change.
+`ErrEventDataEncoding`, and nothing applies.
 
 ## Performance
 

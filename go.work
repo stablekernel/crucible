@@ -1,4 +1,4 @@
-go 1.27.3
+go 1.27.4
 
 // Sink and source modules with a non-stdlib dependency are intentionally NOT
 // listed here: the SDK-backed sink destinations (the AWS family, redis, nats,

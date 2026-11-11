@@ -32,7 +32,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Changed
 
-- Requires Go 1.27.3.
+- Requires Go 1.27.4.
 - **A guard registered with `BindGuard` gets the Fire's context** in `EvalGuard`, where it
   used to get a background one. An error it returns after that context ended no longer
   counts as a false verdict: the Fire fails with the context's error at once. Before,

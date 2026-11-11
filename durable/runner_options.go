@@ -24,6 +24,9 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	eventCodec EventCodec[E]
 	// maxEventData caps a WithEventData payload's JSON form, in bytes.
 	maxEventData int
+	// eventDataDecoder rebuilds a recorded WithEventData payload; it defaults to
+	// DecodeAs[any].
+	eventDataDecoder EventDataDecoder[E]
 	// clock is the real time seam wrapped by the recording clock on the live path
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
@@ -130,8 +133,8 @@ func WithActorPalette[S comparable, E comparable, C any](palette map[string]stat
 // number of recoveries), deduped by a deterministic EffectID: the Runner stamps
 // each emitted effect, write-ahead persists the step Record carrying those ids,
 // then invokes the handler for every id not already marked dispatched, marking
-// each as it succeeds. A handler error is surfaced (wrapped in ErrEffectDispatch)
-// and the failing effect is left un-marked, so a later recovery retries it
+// each as it succeeds. A handler error or panic fails the Handle with ErrHandleFailed,
+// wrapping ErrEffectDispatch, and leaves the effect un-marked, so Recover retries it
 // (at-least-once until it succeeds; exactly-once once it does).
 //
 // The handler receives the stamped EffectID and the live effect value. It is nil
@@ -152,7 +155,7 @@ func WithEffectHandler[S comparable, E comparable, C any](h EffectHandler) Optio
 const defaultMaxEventDataBytes = 8 << 20
 
 // WithMaxEventDataBytes sets the largest state.WithEventData payload Handle.Fire
-// accepts, measured as its JSON form, or for an error, its message's. A larger one
+// accepts, measured as its JSON form; for an error, its message's JSON form. A larger one
 // refuses the Fire with ErrEventDataEncoding before the kernel runs. It defaults to
 // 8 MiB, which leaves a payload room in FileStore's journal line; raise it for a Store
 // with no such limit. The cap covers the payload only, so a Record can still exceed a
@@ -162,6 +165,20 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 	return func(c *runnerConfig[S, E, C]) {
 		if n > 0 {
 			c.maxEventData = n
+		}
+	}
+}
+
+// WithEventDataDecoder sets how a recorded state.WithEventData payload is decoded for
+// the live Fire and every replay of it. Without one, a payload decodes with
+// DecodeAs[any], so only a payload JSON already gives back as itself (a string, bool,
+// float64, map[string]any or []any) is accepted; a struct, an int or a typed slice is
+// refused with ErrEventDataEncoding until the decoder covers its event. A nil decoder is
+// ignored.
+func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		if d != nil {
+			c.eventDataDecoder = d
 		}
 	}
 }
@@ -197,6 +214,9 @@ func resolveRunner[S comparable, E comparable, C any](opts ...Option[S, E, C]) r
 	}
 	if c.eventCodec == nil {
 		c.eventCodec = jsonEventCodec[E]{}
+	}
+	if c.eventDataDecoder == nil {
+		c.eventDataDecoder = decodeAny[E]
 	}
 	if c.clock == nil {
 		c.clock = state.SystemClock()

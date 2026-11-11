@@ -84,10 +84,22 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // re-invoking the service.
 //
 // It returns the routed FireResult and true, or the zero result and false when id
-// names no in-flight service (already settled, stopped, or never started). A
-// persistence failure is returned as the error; the kernel transition itself does
-// not fail (a settled service always routes onDone or onError).
+// names no in-flight service (already settled, stopped, or never started), or false
+// and the error when the Handle had already failed or ctx has ended. If the service
+// settled but its outcome couldn't be recorded or appended, it returns the result,
+// true and ErrHandleFailed: the Handle has failed. If another goroutine failed the
+// Handle while this step was recording, it returns the result, true and ErrHandleFailed
+// saying the step was recorded. A failed checkpoint returns the result, true and that
+// error, and the Handle carries on. A recovered Handle has an
+// unrecorded service in flight again, and RunService runs it a second time.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
+	if err := h.acquire(ctx); err != nil {
+		return state.FireResult[S]{}, false, err
+	}
+	defer h.release()
+	if err := h.refuse(ctx); err != nil {
+		return state.FireResult[S]{}, false, err
+	}
 	if h.svc == nil {
 		return state.FireResult[S]{}, false, fmt.Errorf("durable: no service registry wired for %q (supply WithServiceRegistry)", h.id)
 	}
@@ -95,7 +107,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 
-	results := h.svc.Tick(ctx, id)
+	results := h.svc.Tick(h.stepContext(ctx), id)
 	if len(results) == 0 {
 		return state.FireResult[S]{}, false, nil
 	}
@@ -109,7 +121,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 
 	entry, err := recordServiceOutcome(id, h.svc.LastResult, h.svc.LastError())
 	if err != nil {
-		return res, true, fmt.Errorf("durable: recording service %q result for %q: %w", id, h.id, err)
+		return res, true, h.fail(fmt.Errorf("durable: recording service %q result for %q: %w", id, h.id, err))
 	}
 	if h.svcBuf != nil {
 		*h.svcBuf = append(*h.svcBuf, entry)
@@ -120,7 +132,6 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return res, true, err
 	}
-	h.nextStep++
 	return res, true, nil
 }
 

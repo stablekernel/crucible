@@ -11,7 +11,7 @@ dependency-free, and `expr` depends on `state`, never the reverse.
 
 ### Changed
 
-- Requires Go 1.27.3.
+- Requires Go 1.27.4.
 
 ### Added
 

@@ -9,7 +9,7 @@ time-travel operations between nodes over real gRPC (HTTP/2).
 
 Import path: `github.com/stablekernel/crucible/transport`
 
-Requires Go 1.27.3.
+Requires Go 1.27.4.
 
 ## What it is
 

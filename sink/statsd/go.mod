@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/statsd
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/DataDog/datadog-go/v5 v5.8.3

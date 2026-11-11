@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/gcppubsub
 
-go 1.27.3
+go 1.27.4
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.6.0

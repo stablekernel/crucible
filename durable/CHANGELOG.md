@@ -25,14 +25,62 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   a refused payload, and `ErrRecordTooLarge` a Record too large for a `FileStore` line.
   `Record.EventData` and `Record.EventDataError` hold the payload.
 
+- **`ErrHandleFailed`** reports a Handle out of step with its journal.
+
+- **`Handle.View`** reads the instance under the Handle's step lock.
+
+- **`Handle.Drain`** waits until no step of the Handle is still recording and no effect
+  is still being sent. Call it before `Recover` after `ErrHandleFailed`, with a context
+  of its own, and don't `Recover` until it returns nil. On a healthy Handle it covers
+  only work already under way.
+
+- **`ErrReentrantStep`** reports a call back into a Handle that carries the context one
+  of its steps passed to a callback: a service's context, or the `Ctx` a guard, action
+  or reducer gets (#245). A call back without that context deadlocks instead.
+
+- **`StepReporter`**, implemented by `MemStore` and `FileStore`, lets `Recover` number the
+  next step past every recorded one after a checkpoint from before checkpoints carried
+  it. Without it, such a checkpoint followed by tick barriers made every `Append`
+  conflict.
+
+- **`WithEventDataDecoder`** decodes a `WithEventData` payload as the caller's type,
+  given the event it rode with. `DecodeAs[T]` is the usual body of each case.
+
 ### Changed
 
-- Requires Go 1.27.3.
-- **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.** A
-  struct arrives as a map and an integer as a `float64`, which loses precision above
-  2^53, so an assertion to the original
-  type now fails at `Fire`, not at `Recover`. An error arrives as an error with the same
-  message, any invalid UTF-8 replaced, and `errors.Is` no longer matches it.
+- Requires Go 1.27.4.
+- **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
+  `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
+  host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock
+  is released, so an effect handler can still call back into its Handle; a checkpoint
+  waits for every earlier step's effects to dispatch. A service, guard, action, reducer
+  or actor behavior runs under the lock, so it can't act on the Handle itself; an action
+  reaches the Handle by returning an effect. A service, guard, action or reducer that
+  calls back with the context its step passed gets the new `ErrReentrantStep`. A step
+  waiting for the lock returns its context's error once the context ends, and changes
+  nothing. The new `Handle.View` reads the instance under the lock; `Instance()` is
+  outside it.
+- **A failed effect dispatch fails the Handle**, and so does an effect handler that
+  panics, which now returns `ErrEffectDispatch` instead of panicking out of `Fire`. The
+  effect stays unmarked in the journal, so no later checkpoint compacts it away, and
+  `Recover` dispatches it again.
+- **A step that may not have been recorded fails the Handle.** That call and every later
+  one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
+  another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
+  recorded; `Recover` sends any of its effects. Call `Drain` before `Recover`, so a
+  step another goroutine is still recording is loaded, and an effect it is still sending
+  isn't sent twice. `Recover` a new Handle
+  with the same options to continue. A service whose result wasn't recorded is in flight again, so
+  `RunService` runs it a second time. An `InvokeActor` actor restarts from its initial
+  state, and a `Spawn` actor doesn't return. If the cause is `ErrFenced`, a newer owner
+  holds the instance: stop.
+- **A `WithEventData` payload reaches `Assign` decoded, live as well as on replay.**
+  `WithEventDataDecoder` decodes it as the caller's type, chosen per event, with
+  `DecodeAs[T]`. A payload that decodes as a different type than the caller passed
+  refuses the `Fire` with `ErrEventDataEncoding`, so without a decoder a struct or an
+  integer is refused rather than reaching `Assign` as a map or a `float64`. An error
+  arrives as an error with the same message, any invalid UTF-8 replaced, and `errors.Is`
+  no longer matches it.
 - **`Handle.Fire` can refuse a payload.** One with no JSON form that decodes again, or
   over `WithMaxEventDataBytes` (8 MiB by default), returns the new `ErrEventDataEncoding`
   before the kernel runs. Fires of that size used to pass, because the payload wasn't
@@ -59,6 +107,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
+  and `DeliverToActor` now advance the next step as soon as the append lands.
+- **A deferred checkpoint survives an unrelated caller's cancel.** A checkpoint that
+  waited for an earlier step's effects to dispatch, and was canceled by the context of
+  the caller whose step finished last, isn't reported to that caller, since its own
+  step succeeded, and the next step writes it; a failure of that retry is returned to
+  the step that tried it. A retry the Store refuses as not advancing means the first
+  write landed, and counts as written. Any other checkpoint failure is returned, and
+  after that only the next step the policy makes due tries again.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a

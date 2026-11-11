@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/tools/docsgen
 
-go 1.27.3
+go 1.27.4
 
 // The generator builds real example machines and renders their diagrams, and
 // shells out to gomarkdoc for the API reference. It depends on the local state

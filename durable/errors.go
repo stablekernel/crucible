@@ -16,9 +16,11 @@ const (
 	errorStepOutOfRange         = "time-travel step out of range"
 	errorEventDataEncoding      = "event data can't be recorded"
 	errorRecordTooLarge         = "record too large for the journal"
+	errorHandleFailed           = "handle is out of step with the journal"
+	errorReentrantStep          = "step called from inside a step on the same handle"
 )
 
-// Sentinel errors a Store reports. Callers match them with errors.Is.
+// Sentinel errors a Store or a Handle reports. Callers match them with errors.Is.
 var (
 	// ErrInstanceNotFound is reported by Store.Load for an instance that has
 	// never been written.
@@ -41,7 +43,8 @@ var (
 	ErrFenced = errors.New(errorPrefix + errorFenced)
 
 	// ErrEventDataEncoding wraps a Handle.Fire refused before the kernel ran, because
-	// its state.WithEventData payload has no JSON form that decodes again, panics while
+	// its state.WithEventData payload has no JSON form that decodes again, decodes as a
+	// different type than the caller passed (see WithEventDataDecoder), panics while
 	// encoding (such as an error that's a typed nil), or exceeds WithMaxEventDataBytes.
 	// Nothing applied, so the Handle stays usable.
 	ErrEventDataEncoding = errors.New(errorPrefix + errorEventDataEncoding)
@@ -49,8 +52,23 @@ var (
 	// ErrRecordTooLarge is reported by FileStore.Append for a Record whose journal line
 	// exceeds the store's line limit, which a later Load could not read back, even
 	// without its Snapshot. No journal line is written, but a Handle's kernel has already
-	// applied the step.
+	// applied the step, so the Handle fails with ErrHandleFailed.
 	ErrRecordTooLarge = errors.New(errorPrefix + errorRecordTooLarge)
+
+	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService, DeliverToActor
+	// and View once a step applied to the live instance but may not have been recorded,
+	// or an effect handler failed, on that call and every later one. It wraps the cause.
+	// Call Handle.Drain, then Recover a new Handle with the same options to continue,
+	// unless the cause is ErrFenced: then a newer owner holds the instance, so stop.
+	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
+
+	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor
+	// and View when called with the context a step passed to host code, such as a
+	// service's context or the Ctx a guard, action or reducer gets: the step holds the
+	// Handle's lock, so waiting would deadlock. Nothing applied. Effect handlers run
+	// after the lock is released and may call back in. Drain reports it when called
+	// from inside a step or an effect handler.
+	ErrReentrantStep = errors.New(errorPrefix + errorReentrantStep)
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep
 	// does not advance beyond the instance's current checkpoint.
@@ -61,9 +79,10 @@ var (
 	ErrInstanceExists = errors.New(errorPrefix + errorInstanceExists)
 
 	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
-	// handler (WithEffectHandler) while applying an emitted effect. The effect was
-	// persisted (write-ahead) but not marked dispatched, so a later recovery
-	// retries it; callers match this with errors.Is to distinguish a dispatch
-	// failure from a kernel transition or persistence error.
+	// handler (WithEffectHandler) while applying an emitted effect, or a panic in it. The effect was
+	// persisted (write-ahead) but not marked dispatched, so the Handle fails with
+	// ErrHandleFailed wrapping it, and Recover dispatches it again. Callers match
+	// this with errors.Is to tell a dispatch failure from a kernel transition or
+	// persistence error.
 	ErrEffectDispatch = errors.New(errorPrefix + errorEffectDispatch)
 )

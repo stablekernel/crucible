@@ -9,7 +9,7 @@ versioned independently of the `state` module.
 
 ### Changed
 
-- Requires Go 1.27.3.
+- Requires Go 1.27.4.
 
 ### Added
 
