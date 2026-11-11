@@ -136,8 +136,8 @@ Run `mage -l` to list everything. Each target iterates the suite's modules.
 
 Before you push, **tests, lint, vet, and `govulncheck` must all pass.** The
 quickest way to verify locally is `mage check`. CI runs the same gates across a
-OS matrix on every ready PR. A draft PR runs only the `gate` check, which fails until
-the PR is marked ready for review; marking it ready runs the full CI.
+OS matrix on every ready PR. A draft PR runs no jobs, the `gate` check included;
+marking it ready for review runs the full CI.
 
 Docs-only pull requests (changing only `*.md`, `docs/`, `LICENSE`, or `NOTICE`)
 skip the Go matrix automatically and are gated solely by the aggregate `gate`
