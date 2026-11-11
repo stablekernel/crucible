@@ -98,11 +98,24 @@ type actorMessagePayload struct {
 // JournalActorMessage correlated by the actor id so recovery replays it without
 // re-instantiating the actor.
 //
-// It returns whether the actor was found running (false for a ref that names no
-// live actor — already settled, stopped, or never spawned), and a persistence
-// failure as the error. The kernel transitions the delivery drove do not
-// themselves fail.
+// It returns false for a ref that names no live actor (already settled, stopped, or
+// never spawned), and false with the error when the Handle had already failed or ctx
+// has ended. If the actor received the event but the delivery couldn't be recorded or
+// appended, it returns true and ErrHandleFailed: the Handle has failed. A failed
+// checkpoint returns true and that error, and the Handle carries on. The kernel
+// transitions the delivery drove do not themselves fail. When a delivery wasn't
+// recorded, on a recovered Handle an InvokeActor actor restarts from its initial state,
+// and a Spawn actor doesn't return. Resending a recorded delivery repeats
+// any message it sends the parent.
 func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef, event any) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.refuse(); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if h.actors == nil {
 		return false, fmt.Errorf("durable: no actor palette wired for %q (supply WithActorPalette)", h.id)
 	}
@@ -116,7 +129,7 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	output, settled, settleErr := h.actorOutcome()
 	entries, err := recordActorTransitions(ref.ID, h.inst.History(), before, output, settled, settleErr)
 	if err != nil {
-		return true, fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err)
+		return true, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
 	}
 	if h.actorBuf != nil {
 		*h.actorBuf = append(*h.actorBuf, entries...)
@@ -127,7 +140,6 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return true, err
 	}
-	h.nextStep++
 	return true, nil
 }
 
