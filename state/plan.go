@@ -1,5 +1,7 @@
 package state
 
+import "context"
+
 // PlanPath returns the shortest event sequence that drives an instance from the
 // `from` state to the `to` state, found by breadth-first search over the static
 // transition graph. Guards are honored against the supplied entity, so the
@@ -68,7 +70,7 @@ func (m *Machine[S, E, C]) PlanPath(from, to S, entity C, opts ...PlanOption) ([
 // not traversable), keeping PlanPath pure and non-panicking.
 func (m *Machine[S, E, C]) guardsPass(t *Transition[S, E, C], entity C) bool {
 	for _, g := range t.Guards {
-		ok, err := m.evalGuard(g, entity)
+		ok, err := m.evalGuard(context.Background(), g, entity)
 		if err != nil || !ok {
 			return false
 		}
@@ -91,7 +93,7 @@ func (m *Machine[S, E, C]) planGuardExpr(g *GuardNode[S], entity C) bool {
 	}
 	switch g.Op {
 	case GuardLeaf:
-		ok, err := m.evalGuard(*g.Ref, entity)
+		ok, err := m.evalGuard(context.Background(), *g.Ref, entity)
 		return err == nil && ok
 	case GuardStateIn:
 		// Configuration-dependent: assume satisfiable for planning.

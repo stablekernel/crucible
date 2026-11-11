@@ -1,6 +1,9 @@
 package state
 
-import "log/slog"
+import (
+	"context"
+	"log/slog"
+)
 
 // This file declares the functional-option types for every public constructor
 // and operation, per the kernel's functional-options convention. Each is an
@@ -174,6 +177,17 @@ type castConfig[S comparable] struct {
 	traceFull     bool // set by WithFullTrace
 	histLimit     int  // set by WithHistory (positive value enables ring buffer)
 	histUnbounded bool // set by WithUnboundedHistory
+	ctx           context.Context
+}
+
+// WithContext sets the context Cast hands to the guards, actions and reducers that
+// settle the initial state, as their Ctx. They get its values but not its cancellation
+// or deadline: Cast settles the state to completion, so a callback mustn't see the
+// context end partway. A host that casts an instance inside its own step,
+// such as an actor factory, passes that step's context. When omitted, it is
+// context.Background().
+func WithContext[S comparable](ctx context.Context) CastOption[S] {
+	return func(c *castConfig[S]) { c.ctx = ctx }
 }
 
 // WithClock injects the time seam an instance's delayed-transition driver uses.

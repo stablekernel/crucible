@@ -1,6 +1,9 @@
 package state
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // This file makes behavior invocation a binding rather than a bare Go func
 // pointer. A binding turns a serializable request envelope into a serializable
@@ -96,9 +99,9 @@ func inProcessGuard[C any](fn GuardFn[C]) GuardBinding[C] {
 
 // EvalGuard reads the live entity from the request's context view and invokes the
 // wrapped GuardFn. The view is read-only; the func receives the entity by value.
-func (b guardFnBinding[C]) EvalGuard(_ context.Context, req GuardRequest[C]) (GuardResult, error) {
+func (b guardFnBinding[C]) EvalGuard(ctx context.Context, req GuardRequest[C]) (GuardResult, error) {
 	entity, _ := req.Context.Raw().(C)
-	return GuardResult{OK: b.fn(GuardCtx[C]{Entity: entity, Params: req.Params})}, nil
+	return GuardResult{OK: b.fn(GuardCtx[C]{Entity: entity, Params: req.Params, Ctx: nonNil(ctx)})}, nil
 }
 
 // actionFnBinding is the default in-process ActionBinding: it adapts an ActionFn.
@@ -114,9 +117,9 @@ func inProcessAction[C any](fn ActionFn[C]) ActionBinding[C] {
 // EvalAction invokes the wrapped ActionFn and lifts its single effect into the
 // ActionResult envelope. Actions emit effects only; context is written through an
 // assign, not here.
-func (b actionFnBinding[C]) EvalAction(_ context.Context, req ActionRequest[C]) (ActionResult, error) {
+func (b actionFnBinding[C]) EvalAction(ctx context.Context, req ActionRequest[C]) (ActionResult, error) {
 	entity, _ := req.Context.Raw().(C)
-	eff, err := b.fn(ActionCtx[C]{Entity: entity, Params: req.Params})
+	eff, err := b.fn(ActionCtx[C]{Entity: entity, Params: req.Params, Ctx: nonNil(ctx)})
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -176,18 +179,32 @@ func (r *Registry[C]) bindGuard(name string, b GuardBinding[C]) {
 // (which reads r.guards) finds it; the binding is also recorded on the parallel
 // binding seam so a future out-of-process transport can swap it under the same name.
 //
-// EvalGuard is called with a background context and the in-process context view;
+// EvalGuard is called with the context of the Fire evaluating the guard (the
+// GuardCtx.Ctx the kernel hands the adapter) and the in-process context view;
 // an error it returns is treated as a false verdict, matching how a Go guard that
-// cannot decide yields false rather than transitioning. An optional Describe option
+// cannot decide yields false rather than transitioning. The exception is an error
+// returned once that context has ended: the Fire then fails with the context's error,
+// as it would at its next cancellation check, rather than take another transition.
+// "That context" is the one the guard got: the Fire's, as the middleware chain passed
+// it down, so a middleware that substitutes a context it cancels can end a Fire this
+// way although the Fire's own context is live. An optional Describe option
 // adds palette metadata exactly as Guard does.
 func (r *Registry[C]) BindGuard(name string, b GuardBinding[C], opts ...DescribeOption) *Registry[C] {
 	r.guards[name] = func(gctx GuardCtx[C]) bool {
-		res, err := b.EvalGuard(context.Background(), GuardRequest[C]{
+		ctx := nonNil(gctx.Ctx)
+		res, err := b.EvalGuard(ctx, GuardRequest[C]{
 			Name:    name,
 			Params:  gctx.Params,
 			Context: newInProcessView(gctx.Entity),
 		})
 		if err != nil {
+			// A binding that failed once the Fire's context ended has no verdict. Reading it
+			// as false would choose another transition and run its callbacks under the ended
+			// context before the Fire's next cancellation check rolled it back. Surface the
+			// context's error instead, so the Fire stops here.
+			if cerr := ctx.Err(); cerr != nil {
+				panic(guardCanceled{err: fmt.Errorf("%w (guard %q: %w)", cerr, name, err)})
+			}
 			return false
 		}
 		return res.OK

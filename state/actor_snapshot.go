@@ -276,7 +276,7 @@ func (s *ActorSystem[S, E, C]) restoreActor(ctx context.Context, snap actorSnaps
 	if !ok {
 		return nil
 	}
-	inst, err := behavior(snap.Input)
+	inst, err := behavior(ctx, snap.Input)
 	if err != nil {
 		return &SnapshotError{Op: "restore", State: snap.ID, Reason: "actor re-spawn failed: " + err.Error(), Cause: err}
 	}

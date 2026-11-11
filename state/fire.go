@@ -31,6 +31,14 @@ func (i *Instance[S, E, C]) Fire(ctx context.Context, event E, opts ...FireOptio
 	// when the macrostep settles, so it never leaks into a later Fire.
 	i.fireData = cfg.eventData
 	i.hasFireData = cfg.hasData
+	// Guards, actions and reducers see this Fire's context as their Ctx (as the
+	// middleware chain passes it down). A Fire nested inside another on the same
+	// instance restores the outer Fire's context when it returns; it doesn't restore
+	// the outer Fire's other per-Fire state, such as its WithEventData payload or its
+	// queue of raised events, which the nested Fire clears.
+	outerCtx := i.callCtx
+	i.callCtx = ctx
+	defer func() { i.callCtx = outerCtx }()
 	defer func() {
 		i.fireData = nil
 		i.hasFireData = false
@@ -58,6 +66,10 @@ func (i *Instance[S, E, C]) eventData(event E) any {
 // outside-in, so the first-installed middleware is the outermost wrapper.
 func (i *Instance[S, E, C]) fireWithMiddleware(ctx context.Context, event E) FireResult[S] {
 	next := func(ctx context.Context, event E) FireResult[S] {
+		// Callbacks see the context the middleware chain passes down, which may carry
+		// values or a deadline a middleware added. Fire's deferred restore puts the
+		// outer context back when it returns.
+		i.callCtx = ctx
 		return i.fireCore(ctx, event)
 	}
 	mws := i.machine.middleware
@@ -271,7 +283,20 @@ func (i *Instance[S, E, C]) runToCompletion(ctx context.Context, res FireResult[
 		}
 
 		// No pending internal events: fire one enabled eventless transition.
-		t, anc, leaf, ok := i.selectEventless()
+		t, anc, leaf, ok, selErr := i.selectEventless()
+		// A guard stopped by an ended context ends selection with its error, which names
+		// the guard. Any other guard that couldn't decide reads as not passing, so if the
+		// context ended while the guards ran, the choice may not be the one a live
+		// context would make: stop here, before its callbacks run, as the boundary check
+		// above would one microstep later.
+		if selErr != nil {
+			res.Err = selErr
+			return res
+		}
+		if err := ctx.Err(); err != nil {
+			res.Err = err
+			return res
+		}
 		if !ok {
 			return res
 		}
@@ -374,6 +399,8 @@ func (i *Instance[S, E, C]) settleInitial(current S) {
 	// first external event.
 	i.entity = cur
 	res := FireResult[S]{NewState: i.current, Effects: effects, Trace: tr}
+	// The settle runs to completion whatever WithContext's context says: a Cast has
+	// no result to abandon it with. Its callbacks still see that context as their Ctx.
 	res = i.runToCompletion(context.Background(), res)
 	i.initialEffects = res.Effects
 	i.initialErr = res.Err
@@ -484,7 +511,7 @@ func (i *Instance[S, E, C]) seedTrace(event string) Trace {
 // macrostep microstep fires exactly one eventless transition; multiple regions'
 // eventless transitions settle across successive microsteps in declaration
 // order, preserving the run-to-completion determinism contract.
-func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool) {
+func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf S, ok bool, err error) {
 	m := i.machine
 	for _, l := range i.config {
 		for _, a := range m.ancestors(l) {
@@ -497,14 +524,19 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 				if !cand.EventLess {
 					continue
 				}
-				if i.guardsPass(cand) {
-					return cand, a, l, true
+				pass, gErr := i.guardsPass(cand)
+				if gErr != nil {
+					var zero S
+					return nil, zero, zero, false, gErr
+				}
+				if pass {
+					return cand, a, l, true, nil
 				}
 			}
 		}
 	}
 	var zero S
-	return nil, zero, zero, false
+	return nil, zero, zero, false, nil
 }
 
 // guardsPass reports whether every guard on a transition currently passes. A
@@ -517,20 +549,29 @@ func (i *Instance[S, E, C]) selectEventless() (t *Transition[S, E, C], anc, leaf
 // fails LOUD — an error there sets OutcomeGuardPanic and is returned as a Fire
 // error (see the guard evaluation in fireSpine). The kernel owns this policy; the
 // expr subpackage documents the same asymmetry from its side.
-func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) bool {
+//
+// The one exception is a guard stopped by an ended context: it has no verdict, so
+// guardsPass returns its error and selection stops there.
+func (i *Instance[S, E, C]) guardsPass(t *Transition[S, E, C]) (bool, error) {
 	for _, g := range t.Guards {
-		ok, err := i.machine.evalGuard(g, i.entity)
+		ok, err := i.machine.evalGuard(i.callbackContext(), g, i.entity)
+		if err != nil && isCanceled(err) {
+			return false, err
+		}
 		if err != nil || !ok {
-			return false
+			return false, nil
 		}
 	}
 	if t.GuardExpr != nil {
 		res := i.evalGuardExpr(t.GuardExpr, i.entity, nil)
+		if res.err != nil && isCanceled(res.err) {
+			return false, res.err
+		}
 		if res.err != nil || !res.ok {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // absorbMicrosteps folds an internal sub-step's observable trace detail into the
@@ -659,9 +700,11 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 			passed := true
 			for _, g := range t.Guards {
 				tr.recordGuard(g.Name)
-				ok, gErr := m.evalGuard(g, entity)
+				ok, gErr := m.evalGuard(i.callbackContext(), g, entity)
 				if gErr != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(gErr) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: gErr}
 				}
 				if !ok {
@@ -678,7 +721,9 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 			if passed && t.GuardExpr != nil {
 				res := i.evalGuardExpr(t.GuardExpr, entity, &tr)
 				if res.err != nil {
-					tr.Outcome = OutcomeGuardPanic
+					if !isCanceled(res.err) {
+						tr.Outcome = OutcomeGuardPanic
+					}
 					return FireResult[S]{NewState: from, Trace: tr, Err: res.err}
 				}
 				if !res.ok {
@@ -1077,7 +1122,7 @@ func transName[S comparable](from, to S) string {
 // failing action's name, and the cause.
 func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects []Effect, name string, err error) {
 	for _, a := range refs {
-		e, aerr := i.machine.evalAction(a, entity)
+		e, aerr := i.machine.evalAction(i.callbackContext(), a, entity)
 		if aerr != nil {
 			tr.recordEffect(a.Name)
 			return effects, a.Name, aerr
@@ -1097,8 +1142,34 @@ func (i *Instance[S, E, C]) runActions(refs []Ref, entity C, tr *Trace) (effects
 	return effects, "", nil
 }
 
+// settleWith settles the initial state with ctx's values, but not its cancellation or
+// deadline, as its callbacks' context, clearing it however the settle ends. Cast always
+// settles to completion, so a callback mustn't see the context end partway: a guard
+// that failed on an ended context would quietly send the settle down another
+// transition, with no error to report it.
+func (i *Instance[S, E, C]) settleWith(ctx context.Context, current S) {
+	i.callCtx = context.WithoutCancel(nonNil(ctx))
+	defer func() { i.callCtx = nil }()
+	i.settleInitial(current)
+}
+
+// callbackContext returns the context a guard, action or reducer gets as its Ctx: the
+// running Fire's or settling Cast's, or context.Background() outside one.
+func (i *Instance[S, E, C]) callbackContext() context.Context {
+	return nonNil(i.callCtx)
+}
+
+// nonNil returns ctx, or context.Background() for a nil one, so a callback's Ctx is
+// always usable.
+func nonNil(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // evalGuard resolves and runs a guard ref, recovering panics into GuardPanicError.
-func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
+func (m *Machine[S, E, C]) evalGuard(ctx context.Context, g Ref, entity C) (ok bool, err error) {
 	fn, found := m.guards[g.Name]
 	if !found {
 		// Unbound refs are caught at Quench; defensively treat as a guard panic.
@@ -1107,17 +1178,43 @@ func (m *Machine[S, E, C]) evalGuard(g Ref, entity C) (ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
+			if gc, canceled := r.(guardCanceled); canceled {
+				err = &canceledGuardError{err: gc.err}
+				return
+			}
 			err = &GuardPanicError{GuardName: g.Name, Recovered: r}
 		}
 	}()
-	return fn(GuardCtx[C]{Entity: entity, Params: g.Params}), nil
+	return fn(GuardCtx[C]{Entity: entity, Params: g.Params, Ctx: ctx}), nil
+}
+
+// guardCanceled is how a guard adapter reports that it couldn't decide because the
+// Fire's context ended: evalGuard returns err, the context's own error, so the Fire
+// stops with it instead of reading the guard as false.
+type guardCanceled struct{ err error }
+
+// canceledGuardError is the error evalGuard returns for a guard that couldn't decide
+// because its context ended. It wraps the context's error, so errors.Is matches it, and
+// marks the cause as the kernel's own signal, not a guard that panicked with a value
+// that happens to wrap a context error.
+type canceledGuardError struct{ err error }
+
+func (e *canceledGuardError) Error() string { return e.err.Error() }
+func (e *canceledGuardError) Unwrap() error { return e.err }
+
+// isCanceled reports whether err is a guard stopped by its ended context. Such a guard
+// leaves the Trace's outcome as a Fire on an ended context does, rather than reporting
+// a guard panic; a guard that panicked is reported as one whatever its value wraps.
+func isCanceled(err error) bool {
+	var ce *canceledGuardError
+	return errors.As(err, &ce)
 }
 
 // evalAction resolves and runs an action ref, recovering a panicking host action
 // into a typed ActionPanicError so a faulty action fails the fire deterministically
 // rather than crashing Fire. Kernel built-in actions (e.g. the Cancel built-in) are
 // handled directly without consulting the host registry.
-func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
+func (m *Machine[S, E, C]) evalAction(ctx context.Context, a Ref, entity C) (eff Effect, err error) {
 	if isBuiltinAction(a.Name) {
 		return evalBuiltinAction(a)
 	}
@@ -1131,7 +1228,7 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 			err = &ActionPanicError{ActionName: a.Name, Recovered: r}
 		}
 	}()
-	return fn(ActionCtx[C]{Entity: entity, Params: a.Params})
+	return fn(ActionCtx[C]{Entity: entity, Params: a.Params, Ctx: ctx})
 }
 
 // applyAssigns folds a list of assign refs onto cur in declaration order, each
@@ -1141,7 +1238,7 @@ func (m *Machine[S, E, C]) evalAction(a Ref, entity C) (eff Effect, err error) {
 // error that stops the commit, mirroring a guard panic.
 func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *Trace) (C, string, error) {
 	for _, a := range refs {
-		next, err := i.machine.evalAssign(a, cur, eventData)
+		next, err := i.machine.evalAssign(i.callbackContext(), a, cur, eventData)
 		if err != nil {
 			tr.recordAssign(a.Name)
 			return cur, a.Name, err
@@ -1155,7 +1252,7 @@ func (i *Instance[S, E, C]) applyAssigns(refs []Ref, cur C, eventData any, tr *T
 // evalAssign resolves and runs an assign ref, folding the prior context into the
 // next. A reducer panic is recovered into a typed AssignPanicError so a faulty
 // reducer fails the commit deterministically rather than corrupting context.
-func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err error) {
+func (m *Machine[S, E, C]) evalAssign(ctx context.Context, a Ref, cur C, eventData any) (next C, err error) {
 	fn, found := m.assigns[a.Name]
 	if !found {
 		return cur, &AssignPanicError{AssignName: a.Name, Recovered: "unbound assign at fire time"}
@@ -1166,7 +1263,7 @@ func (m *Machine[S, E, C]) evalAssign(a Ref, cur C, eventData any) (next C, err 
 			err = &AssignPanicError{AssignName: a.Name, Recovered: r}
 		}
 	}()
-	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params}), nil
+	return fn(AssignCtx[C]{Entity: cur, Event: eventData, Params: a.Params, Ctx: ctx}), nil
 }
 
 // projectTransition erases the generic parameters of a Transition into the

@@ -426,8 +426,8 @@
 // so adopting it never breaks a v1 caller. These are intentional boundaries, not
 // oversights: a payload-carrying raise, multi-target transitions (a .ToAll builder
 // over an optional Targets field, leaving To single-target), a context.Context
-// option on Verify/PlanPath/Cast/Restore and the snapshot codecs (RestoreActors
-// already takes one), an opt-in to snapshot a non-quiesced actor tree (today
+// option on Verify/PlanPath/Restore and the snapshot codecs (RestoreActors already
+// takes one, and Cast has WithContext for the callbacks that settle its initial state), an opt-in to snapshot a non-quiesced actor tree (today
 // SnapshotActors refuses with a typed error), a finer per-microstep Inspector
 // cadence (the v1 contract fires the Inspector once per macrostep), and a metrics
 // Meter seam alongside the logger and inspector seams. The frozen v1 surface is
