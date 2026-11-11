@@ -570,3 +570,155 @@ func TestHandle_StepAfterAFailure_LeavesItsEffectsForRecover(t *testing.T) {
 		t.Fatalf("Recover sent %d effects, want 3", n)
 	}
 }
+
+// TestHandle_CallbackCallsBackWithItsCtx_IsRefused proves a guard, an action and a
+// reducer that call back into their Handle with the Ctx their input carries get
+// ErrReentrantStep at once instead of deadlocking on the lock their step holds, on
+// each step that runs them: Fire, an eventless transition settling after it, a Fire
+// through middleware that derives its context, Tick, RunService and DeliverToActor.
+func TestHandle_CallbackCallsBackWithItsCtx_IsRefused(t *testing.T) {
+	type probe = *state.Builder[string, string, svcCtx]
+	type handle = *durable.Handle[string, string, svcCtx]
+	derive := func(next state.FireFunc[string, string, svcCtx]) state.FireFunc[string, string, svcCtx] {
+		return func(ctx context.Context, event string) state.FireResult[string] {
+			return next(context.WithValue(ctx, reentryKey{}, "derived"), event)
+		}
+	}
+	clock := state.NewFakeClock(epoch)
+	var runs int64
+	cases := []struct {
+		name  string
+		build func(probe) probe
+		opts  []durable.Option[string, string, svcCtx]
+		init  string
+		drive func(t *testing.T, h handle) error
+	}{
+		{
+			name: "Fire",
+			build: func(b probe) probe {
+				return b.State("idle").State("done").Final().Initial("idle").
+					Transition("idle").On("go").GoTo("done").When("g").Do("a").Assign("r")
+			},
+			init:  "idle",
+			drive: func(_ *testing.T, h handle) error { _, err := h.Fire(context.Background(), "go"); return err },
+		},
+		{
+			name: "eventless after Fire",
+			build: func(b probe) probe {
+				return b.State("idle").State("mid").State("done").Final().Initial("idle").
+					Transition("idle").On("go").GoTo("mid").
+					Transition("mid").Always().GoTo("done").When("g").Do("a").Assign("r")
+			},
+			init:  "idle",
+			drive: func(_ *testing.T, h handle) error { _, err := h.Fire(context.Background(), "go"); return err },
+		},
+		{
+			name: "Fire through middleware",
+			build: func(b probe) probe {
+				return b.Use(derive).State("idle").State("done").Final().Initial("idle").
+					Transition("idle").On("go").GoTo("done").When("g").Do("a").Assign("r")
+			},
+			init:  "idle",
+			drive: func(_ *testing.T, h handle) error { _, err := h.Fire(context.Background(), "go"); return err },
+		},
+		{
+			name: "Tick",
+			build: func(b probe) probe {
+				return b.State("idle").State("arming").State("done").Final().Initial("idle").
+					Transition("idle").On("arm").GoTo("arming").
+					Transition("arming").After(5 * time.Second).On("elapsed").GoTo("done").When("g").Do("a").Assign("r")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithRunnerClock[string, string, svcCtx](clock)},
+			init: "idle",
+			drive: func(_ *testing.T, h handle) error {
+				ctx := context.Background()
+				if _, err := h.Fire(ctx, "arm"); err != nil {
+					return err
+				}
+				clock.Advance(6 * time.Second)
+				_, err := h.Tick(ctx)
+				return err
+			},
+		},
+		{
+			name: "RunService",
+			build: func(b probe) probe {
+				return b.Service("fetch", counterService(&runs)).
+					State("idle").
+					State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+					State("done").Final().Initial("idle").
+					Transition("idle").On("start").GoTo("loading").
+					Transition("loading").On("ok").GoTo("done").When("g").Do("a").Assign("r")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](
+				state.NewRegistry[svcCtx]().Service("fetch", counterService(&runs)))},
+			init: "idle",
+			drive: func(_ *testing.T, h handle) error {
+				ctx := context.Background()
+				if _, err := h.Fire(ctx, "start"); err != nil {
+					return err
+				}
+				_, _, err := h.RunService(ctx, state.InvokeID("probe", "loading", 0))
+				return err
+			},
+		},
+		{
+			name: "DeliverToActor",
+			build: func(b probe) probe {
+				return b.Actor("spawnChild").
+					State("supervising").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).
+					State("done").Final().Initial("supervising").
+					Transition("supervising").On("childDone").GoTo("done").When("g").Do("a").Assign("r")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithActorPalette[string, string, svcCtx](counterPalette(&runs))},
+			init: "supervising",
+			drive: func(t *testing.T, h handle) error {
+				ref, ok := h.ActorRef(state.ActorID("probe", "supervising", 0))
+				if !ok {
+					t.Fatal("no actor ref for the spawned child")
+				}
+				_, err := h.DeliverToActor(context.Background(), ref, "finish")
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var h handle
+			got := map[string]error{}
+			view := func(name string, ctx context.Context) {
+				got[name] = h.View(ctx, func(*state.Instance[string, string, svcCtx]) {})
+			}
+			machine := tc.build(state.ForgeFor[svcCtx]("probe").
+				Guard("g", func(in state.GuardCtx[svcCtx]) bool { view("guard", in.Ctx); return true }).
+				Action("a", func(in state.ActionCtx[svcCtx]) (state.Effect, error) { view("action", in.Ctx); return nil, nil }).
+				Reducer("r", func(in state.AssignCtx[svcCtx]) svcCtx { view("reducer", in.Ctx); return in.Entity })).
+				Quench()
+			var err error
+			h, err = durable.NewRunner(machine, durable.NewMemStore(), tc.opts...).
+				Start(context.Background(), "probe-1", svcCtx{}, state.WithInitialState(tc.init))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if err := tc.drive(t, h); err != nil {
+					t.Errorf("drive: %v", err)
+				}
+			}()
+			waitFor(t, done, tc.name)
+			for _, name := range []string{"guard", "action", "reducer"} {
+				if !errors.Is(got[name], durable.ErrReentrantStep) {
+					t.Errorf("the %s's View = %v, want ErrReentrantStep", name, got[name])
+				}
+			}
+			if cur := h.Instance().Current(); cur != "done" {
+				t.Fatalf("state %q, want done", cur)
+			}
+		})
+	}
+}
+
+// reentryKey is the key the middleware case derives its context with.
+type reentryKey struct{}

@@ -34,9 +34,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   already under way.
 
 - **`ErrReentrantStep`** reports a call back into a Handle that carries the context one
-  of its steps passed to a callback, such as a service's. A guard,
-  action, reducer or actor behavior gets no context here, so its call back deadlocks
-  instead; #245 passes them the step's context.
+  of its steps passed to a callback: a service's context, or the `Ctx` a guard, action
+  or reducer gets (#245). A call back without that context deadlocks instead.
 
 - **`StepReporter`**, implemented by `MemStore` and `FileStore`, lets `Recover` number the
   next step past every recorded one after a checkpoint from before checkpoints carried
@@ -54,11 +53,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock
   is released, so an effect handler can still call back into its Handle; a checkpoint
   waits for every earlier step's effects to dispatch. A service, guard, action, reducer
-  or actor behavior runs under the lock and must not call back in; an action reaches the
-  Handle by returning an effect. A service that calls back with its context gets the
-  new `ErrReentrantStep`. A step waiting for the lock returns its
-  context's error once the context ends, and changes nothing. The new `Handle.View` reads
-  the instance under the lock; `Instance()` is outside it.
+  or actor behavior runs under the lock, so it can't act on the Handle itself; an action
+  reaches the Handle by returning an effect. A service, guard, action or reducer that
+  calls back with the context its step passed gets the new `ErrReentrantStep`. A step
+  waiting for the lock returns its context's error once the context ends, and changes
+  nothing. The new `Handle.View` reads the instance under the lock; `Instance()` is
+  outside it.
 - **A failed effect dispatch fails the Handle**, and so does an effect handler that
   panics, which now returns `ErrEffectDispatch` instead of panicking out of `Fire`. The
   effect stays unmarked in the journal, so no later checkpoint compacts it away, and

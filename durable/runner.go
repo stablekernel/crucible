@@ -91,13 +91,15 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // error.
 //
 // Code that runs under the lock (a service, guard, action, reducer or actor behavior)
-// must not call back into the same Handle; to act on the Handle when a step happens, an
-// action returns an effect, and its handler runs after the lock and may call back. A
-// call that carries the context the step passed to the callback, as a service gets,
-// returns ErrReentrantStep at once; one without that context deadlocks. A step waiting for the lock returns its context's error once the
-// context ends, and changes nothing. View reads the instance under the lock; Instance
-// returns it outside the lock. A stateless Runner.Fire builds its own Handle, so it
-// isn't serialized with this one.
+// can't act on the Handle itself; to act on the Handle when a step happens, an action
+// returns an effect, and its handler runs after the lock and may call back. A call back
+// during a live step that carries the step's context, as a service gets and a guard,
+// action or reducer finds in its input's Ctx, returns ErrReentrantStep at once. One
+// without that context deadlocks, and so does one under middleware that passed down a
+// context not derived from the step's. A step waiting for the lock returns its context's
+// error once the context ends, and changes nothing. View reads the instance under the
+// lock; Instance returns it outside the lock. A stateless Runner.Fire builds its own
+// Handle, so it isn't serialized with this one.
 //
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal. That call and every later one return ErrHandleFailed,

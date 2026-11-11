@@ -64,9 +64,10 @@ var (
 
 	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor
 	// and View when called with the context a step passed to host code, such as a
-	// service: the step holds the Handle's lock, so waiting would deadlock. Nothing
-	// applied. Effect handlers run after the lock is released and may call back in. Drain
-	// reports it when called from inside a step or an effect handler.
+	// service's context or the Ctx a guard, action or reducer gets: the step holds the
+	// Handle's lock, so waiting would deadlock. Nothing applied. Effect handlers run
+	// after the lock is released and may call back in. Drain reports it when called
+	// from inside a step or an effect handler.
 	ErrReentrantStep = errors.New(errorPrefix + errorReentrantStep)
 
 	// ErrCheckpointNotAdvancing is reported by Store.Checkpoint when throughStep

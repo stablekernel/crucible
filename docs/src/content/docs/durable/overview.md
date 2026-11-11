@@ -130,11 +130,14 @@ in by implementing `HistoryStore` (the in-tree `MemStore` does so under
 `Fire`, `Tick`, `RunService` and `DeliverToActor` are safe to call from different
 goroutines: each holds the Handle's lock while it applies to the kernel and records the
 step. Effects dispatch after the lock is released, so an effect handler can call back
-into its Handle. A service, guard, action, reducer or actor behavior runs under the lock
-and must not call back in: to act on the Handle when a step happens, an action returns an
-effect, whose handler runs after the lock. A call back that carries the step's context,
-as a service gets, returns `ErrReentrantStep`; one without it deadlocks. A step
-waiting for the lock stops when its context ends. Read the instance with `View`, which
+into its Handle. A service, guard, action, reducer or actor behavior runs under the lock,
+so it can't act on the Handle itself: to act on the Handle when a step happens, an action
+returns an effect, whose handler runs after the lock. If one calls back during a live
+step with the step's context, as a service gets and a guard, action or reducer finds in
+its input's `Ctx`, the call returns `ErrReentrantStep` instead of waiting. A call back
+without that context deadlocks, and so does one under middleware that passed down a
+context not derived from the step's. A step waiting for the lock stops when its context
+ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
