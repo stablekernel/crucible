@@ -1,6 +1,6 @@
 module github.com/stablekernel/crucible/sink/sns
 
-go 1.27.3
+go 1.27.4
 
 replace github.com/stablekernel/crucible/sink => ../
 

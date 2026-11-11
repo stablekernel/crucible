@@ -47,7 +47,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
-- Requires Go 1.27.3.
+- Requires Go 1.27.4.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
   host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock

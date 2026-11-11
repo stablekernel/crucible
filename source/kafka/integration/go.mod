@@ -7,7 +7,7 @@ module github.com/stablekernel/crucible/source/kafka/integration
 // `go test -tags integration ./...` from this directory (Docker required;
 // tests skip cleanly when a daemon is unreachable).
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/stablekernel/crucible/source v0.0.0

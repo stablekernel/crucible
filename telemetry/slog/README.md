@@ -4,7 +4,7 @@ A standard-library `log/slog` adapter for
 [`crucible/telemetry`](../README.md). Emits spans and metric instruments as
 structured log records, with **zero external dependencies**.
 
-Requires Go 1.27.3.
+Requires Go 1.27.4.
 
 Import path: `github.com/stablekernel/crucible/telemetry/slog`
 

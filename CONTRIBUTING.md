@@ -104,7 +104,7 @@ let them bring their own? If it forces, redesign it as a seam with a no-op defau
 
 Requirements:
 
-- **Go**: 1.27.3, the version every `go.mod` and `go.work` declares. CI reads it from
+- **Go**: 1.27.4, the version every `go.mod` and `go.work` declares. CI reads it from
   `go.work`.
 - **[Mage](https://magefile.org)**: the build tool. Install with
   `go install github.com/magefile/mage@latest`, or run targets via
