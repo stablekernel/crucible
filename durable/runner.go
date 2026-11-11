@@ -741,7 +741,10 @@ func (h *Handle[S, E, C]) dispatchGuarded(ctx context.Context, step int, des []d
 // recorded instants. It returns the FireResults of the timers it fired, in order. A
 // failed checkpoint returns them with that error, and the Handle carries on. If another
 // goroutine failed the Handle while this step was recording, it returns them with
-// ErrHandleFailed saying the step was recorded.
+// ErrHandleFailed saying the step was recorded. If ctx ends partway, so the kernel
+// refuses a due timer's Fire, it fails the Handle with ErrHandleFailed and records
+// nothing: the results it returns weren't recorded, so don't act on their effects;
+// a recovered Handle re-arms those timers and fires them again.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
 	if err := h.acquire(ctx); err != nil {
 		return nil, err

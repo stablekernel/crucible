@@ -72,7 +72,7 @@ the first time, and replayed verbatim on recovery:
 | Seam | Wire with | Recorded as |
 | --- | --- | --- |
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
-| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service, a failed `Append`, a crash) runs again when the host calls `RunService` |
+| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service or its settle, a failed `Append`, a crash) runs again when the host calls `RunService` |
 | **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run, and a running one restarts from its initial state on any `Recover` |
 | **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
 

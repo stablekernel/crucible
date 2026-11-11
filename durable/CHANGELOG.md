@@ -119,7 +119,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A step whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
   or `DeliverToActor` used to record a result the live instance never applied, which
   recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`
-  wrapping the error and records nothing. After `Recover` the service stays in flight and
+  wrapping the error and records nothing; `RunService` and `DeliverToActor` do so for any
+  context that ended by the end of the step, `RunService` including the absorb of its
+  settle's effects. After `Recover` the service stays in flight and
   must tolerate running again, the timer is re-armed, and the actor restarts. `Recover`
   and `StateAt` now fail on a canceled context, rather than returning state short of the
   journal.

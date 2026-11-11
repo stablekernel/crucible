@@ -90,7 +90,8 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // before the service started.
 //
 // Once the service has run, it returns true with any error. A failed Append, a result
-// that won't encode, or a ctx that ended during the service returns ErrHandleFailed and
+// that won't encode, or a ctx that ended during the service or while its settle's
+// effects were absorbed (even after a clean settle) returns ErrHandleFailed and
 // records nothing: a recovered Handle has the service in flight again, and RunService
 // runs it a second time. If another goroutine failed the Handle while this step was
 // recording, it returns the result, true and ErrHandleFailed saying the step was
@@ -118,19 +119,20 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	}
 	res := results[0]
 
-	// A context canceled during the service stops the settle's Fire before it applies,
-	// so the instance never saw this result: journaling it would commit it on recovery.
-	// The runner has already dropped the service, so this Handle can't run it again;
-	// Recover re-arms it.
-	if res.Err != nil && ctx.Err() != nil {
-		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, res.Err))
-	}
-
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
 	// that arms a timer, starts another service, or spawns an actor. Absorb those
 	// effects into every driver so the next seam method finds them armed — the service
 	// seam composes with the timer and actor seams in one instance.
-	h.absorbDrivers(ctx, res.Effects)
+	h.absorbDrivers(h.stepContext(ctx), res.Effects)
+
+	// A context that ended during the service or the absorb can stop the settle's Fire,
+	// or a Fire an actor spawn routes, before it applies, so the instance may not have
+	// seen this result: journaling it would commit on recovery what live never applied.
+	// The runner has already dropped the service, so this Handle can't run it again;
+	// Recover re-arms it.
+	if err := ctx.Err(); err != nil {
+		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
+	}
 
 	entry, err := recordServiceOutcome(id, h.svc.LastResult, h.svc.LastError())
 	if err != nil {

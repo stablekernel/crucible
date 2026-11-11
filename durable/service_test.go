@@ -671,3 +671,49 @@ func (c *cancelingClock) Now() time.Time {
 	}
 	return c.Clock.Now()
 }
+
+// TestService_ContextEndedDuringAbsorb_RecordsNothing proves a service that settles
+// cleanly, and whose context then ends while the settle's actor spawn is absorbed,
+// fails the Handle and records nothing: the spawn's onError Fire was refused, so the
+// live instance never applied what the journal would otherwise commit.
+func TestService_ContextEndedDuringAbsorb_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return "ok", nil }
+	spawn := func(map[string]any) (state.ActorInstance, error) {
+		cancel() // the turn's deadline passes while the settle's spawn is absorbed
+		return nil, errors.New("worker unavailable")
+	}
+	m := state.ForgeFor[svcCtx]("absorb").
+		Service("fetch", fn).
+		Actor("spawnChild").
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+		State("failed").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("spawning").
+		Transition("spawning").On("spawnFailed").GoTo("failed").
+		Quench()
+	store := durable.NewMemStore()
+	h, err := durable.NewRunner(m, store,
+		durable.WithServiceRegistry[string, string, svcCtx](state.NewRegistry[svcCtx]().Service("fetch", fn)),
+		durable.WithActorPalette[string, string, svcCtx](map[string]state.ActorBehavior{"spawnChild": spawn})).
+		Start(ctx, "absorb-1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	before := tailLen(t, store, "absorb-1")
+	_, ran, err := h.RunService(turnCtx, state.InvokeID("absorb", "loading", 0))
+	if !ran || !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("RunService = %v, %v; want true, ErrHandleFailed", ran, err)
+	}
+	if after := tailLen(t, store, "absorb-1"); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+}

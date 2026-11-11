@@ -89,8 +89,9 @@ type actorMessagePayload struct {
 	HasData bool `json:"hasData,omitempty"`
 }
 
-// DeliverToActor routes event into the running actor identified by ref, runs the actor (settling it when it reaches its final state), records each
-// parent transition the delivery drove, and persists the produced step. The actor
+// DeliverToActor routes event into the running actor identified by ref, runs the
+// actor (settling it when it reaches its final state), records each parent
+// transition the delivery drove, and persists the produced step. The actor
 // behavior is resolved and run against the palette supplied with WithActorPalette;
 // the done-data, error, or parent-driving message it routes is journaled as a
 // JournalActorMessage correlated by the actor id so recovery replays it without
