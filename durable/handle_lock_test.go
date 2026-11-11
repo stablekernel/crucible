@@ -788,11 +788,13 @@ func TestHandle_Drain_WaitsForAStepStillRecording(t *testing.T) {
 // checkpointSpy is a MemStore that records the steps it checkpointed through after
 // Start's initial checkpoint and refuses a checkpoint whose context has ended. Once
 // armed, it fails the next checkpoint (diskFull first, ahead of the context check), or
-// writes it and then reports it canceled (landThenFail, also ahead of the check).
+// writes it and then reports it canceled (landThenFail, also ahead of the check), or
+// reports an ended context as canceled whatever ended it (canceledAs).
 type checkpointSpy struct {
 	*durable.MemStore
 	failNext     atomic.Bool
 	diskFull     atomic.Bool
+	canceledAs   atomic.Bool
 	landThenFail atomic.Bool
 	mu           sync.Mutex
 	through      []int
@@ -810,6 +812,9 @@ func (s *checkpointSpy) Checkpoint(ctx context.Context, id durable.InstanceID, s
 		return context.Canceled
 	}
 	if err := ctx.Err(); err != nil {
+		if s.canceledAs.CompareAndSwap(true, false) {
+			return context.Canceled
+		}
 		return err
 	}
 	if s.failNext.CompareAndSwap(true, false) {
@@ -1123,5 +1128,49 @@ func TestHandle_DeferredCheckpointStoreError_OnAnEndedContext_IsReported(t *test
 	close(release)
 	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("Fire(go) = %v, want the Store's disk-full error", err)
+	}
+}
+
+// TestHandle_DeferredCheckpoint_StoreReportsAnotherContextError_IsNotReported proves a
+// deferred checkpoint the Store refuses with a different context error than the one
+// that ended the finishing caller's context still isn't reported to that caller.
+func TestHandle_DeferredCheckpoint_StoreReportsAnotherContextError_IsNotReported(t *testing.T) {
+	ctx := context.Background()
+	store := &checkpointSpy{MemStore: durable.NewMemStore()}
+	handlerIn, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits
+			close(handlerIn)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(firstCtx, "go"); firstDone <- fireErr }()
+	<-handlerIn
+	if _, err := h.Fire(ctx, "bill"); err != nil { // step 1's checkpoint is due, and waits on step 0
+		t.Fatalf("Fire(bill): %v", err)
+	}
+	<-firstCtx.Done() // ended by its deadline
+	store.canceledAs.Store(true)
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("Fire(go) = %v, want nil: the Store's context.Canceled for a deadline is still a context error", err)
+	}
+	if _, err := h.Fire(ctx, "finish"); err != nil {
+		t.Fatalf("Fire(finish): %v", err)
+	}
+	if got := store.steps(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("checkpointed through %v, want [1]", got)
 	}
 }

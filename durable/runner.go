@@ -598,9 +598,10 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // kernel transition error journals nothing (no step was produced) and is
 // returned to the caller. A failed checkpoint returns the result and that error: the
 // step is recorded and its effects sent, the Handle carries on, and the next step the
-// policy makes due checkpoints. If another goroutine failed the Handle while this step
-// was recording, Fire returns ErrHandleFailed saying the step was recorded; Recover
-// sends its effects.
+// policy makes due checkpoints. A checkpoint this step wrote for an earlier one, which
+// failed because ctx ended, isn't reported, since this step succeeded. If another
+// goroutine failed the Handle while this step was recording, Fire returns
+// ErrHandleFailed saying the step was recorded; Recover sends its effects.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -735,9 +736,10 @@ func (h *Handle[S, E, C]) dispatchGuarded(ctx context.Context, step int, des []d
 // timer loop (with a real clock) or a test calls it after advancing a fake clock.
 // It records one tick barrier — carrying the consumed clock readings and the
 // count of timers fired — so recovery re-derives the same timers at their
-// recorded instants. It returns the FireResults of the timers it fired, in order. If
-// another goroutine failed the Handle while this step was recording, it returns them
-// with ErrHandleFailed saying the step was recorded.
+// recorded instants. It returns the FireResults of the timers it fired, in order. A
+// failed checkpoint returns them with that error, and the Handle carries on. If another
+// goroutine failed the Handle while this step was recording, it returns them with
+// ErrHandleFailed saying the step was recorded.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
 	if err := h.acquire(ctx); err != nil {
 		return nil, err
@@ -809,7 +811,8 @@ func (h *Handle[S, E, C]) recordedOnFailedLocked(step int) error {
 // ended, that caller isn't told, since its own step succeeded, and the next step writes
 // it. Any other failure is returned to the caller, and the checkpoint waits for the next
 // step the policy makes due, whose newer checkpoint replaces it. A retry the Store
-// refuses as not advancing landed the first time, and counts as written. A failed Handle writes none. h.out.mu must be held.
+// refuses as not advancing landed the first time, and counts as written. A failed
+// Handle writes none. h.out.mu must be held.
 func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record) error {
 	if h.out.failed != nil {
 		return nil
@@ -838,7 +841,7 @@ func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record
 		}
 		cp.retry = true
 		h.out.pending = cp
-		if cp.step != rec.Step && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		if cp.step != rec.Step && ctx.Err() != nil && isContextErr(err) {
 			return nil // not this caller's checkpoint: the next step writes it
 		}
 		cp.waitDue = true
@@ -1291,4 +1294,10 @@ func (jsonEventCodec[E]) Decode(payload []byte) (E, error) {
 	}
 	err := json.Unmarshal(payload, &e)
 	return e, err
+}
+
+// isContextErr reports whether err is a context's cancellation or deadline, which a
+// Store may report for either when the caller's context ends.
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

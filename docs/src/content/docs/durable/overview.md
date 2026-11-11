@@ -147,8 +147,8 @@ being sent, so the recovered Handle loads every recorded step and can't send an 
 twice. Give `Drain` a context of its own, not the failed call's, and don't `Recover`
 until it returns nil: an error means it didn't finish draining. A step that was recording when another goroutine failed the Handle returns
 `ErrHandleFailed` saying it was recorded; `Recover` sends any of its effects. To move a healthy Handle's instance to a new Handle, stop
-calling the old one and let its calls return first: `Drain` alone doesn't cover a step
-that is still recording. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
+calling the old one and let its calls return first: a step can start after `Drain`
+returns. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
 instance, so stop.
 
 ## A note on serialized payloads

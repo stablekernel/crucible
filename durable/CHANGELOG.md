@@ -65,7 +65,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   effect stays unmarked in the journal, so no later checkpoint compacts it away, and
   `Recover` dispatches it again.
 - **A step that may not have been recorded fails the Handle.** That call and every later
-  one return `ErrHandleFailed`, wrapping the cause. Call `Drain` before `Recover`, so a
+  one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
+  another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
+  recorded; `Recover` sends any of its effects. Call `Drain` before `Recover`, so a
   step another goroutine is still recording is loaded, and an effect it is still sending
   isn't sent twice. `Recover` a new Handle
   with the same options to continue. A service whose result wasn't recorded is in flight again, so
@@ -110,9 +112,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A deferred checkpoint survives an unrelated caller's cancel.** A checkpoint that
   waited for an earlier step's effects to dispatch, and was canceled by the context of
   the caller whose step finished last, isn't reported to that caller, since its own
-  step succeeded, and the next step writes it. A retry the Store refuses as not
-  advancing means the first write landed, and counts as written. Any other checkpoint
-  failure is returned, and only the next step the policy makes due tries again.
+  step succeeded, and the next step writes it; a failure of that retry is returned to
+  the step that tried it. A retry the Store refuses as not advancing means the first
+  write landed, and counts as written. Any other checkpoint failure is returned, and
+  after that only the next step the policy makes due tries again.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a
