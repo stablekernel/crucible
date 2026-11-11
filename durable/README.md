@@ -82,8 +82,8 @@ the first time, and replayed verbatim on recovery:
 | Seam | Wire with | Recorded as |
 | --- | --- | --- |
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
-| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; the service runs once, then recovery replays its result through the kernel's settle seam |
-| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; the behavior runs once, then recovery re-fires the recorded parent transition |
+| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service, a failed `Append`, a crash) runs again when the host calls `RunService` |
+| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run, and a running one restarts from its initial state on any `Recover` |
 | **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written (a
@@ -142,7 +142,8 @@ otherwise.
 goroutines: each holds the Handle's lock for the whole step. A host callback must not
 call back into its Handle. `Instance()` is outside the lock.
 
-A step that may not have been recorded fails the Handle with `ErrHandleFailed`. `Recover`
+A step that may not have been recorded, or a `Tick`, `RunService` or `DeliverToActor` whose
+context ended partway, fails the Handle with `ErrHandleFailed`. `Recover`
 a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a
 newer owner holds the instance, so stop.
 
