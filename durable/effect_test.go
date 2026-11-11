@@ -507,3 +507,182 @@ func TestMemStore_DispatchSet_MarkAndQuery(t *testing.T) {
 		t.Fatalf("unmarked id reported dispatched")
 	}
 }
+
+// entryNotifyMachine emits a host effect on entering the state an instance starts
+// in, so the effect originates in Start rather than Fire.
+func entryNotifyMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("entryNotify").
+		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
+			return notifyEffect{To: "ops@example.com"}, nil
+		}).
+		State("ready").OnEntry("notify").
+		Initial("ready").
+		Quench()
+}
+
+// TestRunner_EffectDispatch_Start_AppliesEntryEffect proves a domain effect emitted
+// on entering the initial state reaches the handler.
+func TestRunner_EffectDispatch_Start_AppliesEntryEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	r := durable.NewRunner(entryNotifyMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()))
+	if _, err := r.Start(ctx, "i1", &runCtx{}, state.WithInitialState("ready")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := rec.totalApplies(); n != 1 {
+		t.Fatalf("handler applied %d effects, want 1 (the initial state's entry notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_TimerTransition_AppliesEffect proves a domain effect
+// emitted by a timer-driven transition reaches the handler.
+func TestRunner_EffectDispatch_TimerTransition_AppliesEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	clk := state.NewFakeClock(epoch)
+	r := durable.NewRunner(timerNotifyMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()),
+		durable.WithRunnerClock[string, string, *runCtx](clk))
+	h, err := r.Start(ctx, "i1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire go: %v", err)
+	}
+	clk.Advance(2 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if n := rec.totalApplies(); n != 2 {
+		t.Fatalf("handler applied %d effects, want 2 (the timer transition's notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_ServiceSettle_AppliesEffect proves a domain effect
+// emitted by the transition a service result drives reaches the handler.
+func TestRunner_EffectDispatch_ServiceSettle_AppliesEffect(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	var calls int64
+	fn := counterService(&calls)
+	r := durable.NewRunner(fetchThenWaitMachine(fn), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, svcCtx](rec.handler()),
+		durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn)))
+	h, err := r.Start(ctx, "i1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetchThenWait", "loading", 0))
+	if n := rec.totalApplies(); n != 1 {
+		t.Fatalf("handler applied %d effects, want 1 (the settle transition's notify)", n)
+	}
+}
+
+// TestRunner_EffectDispatch_FailedThenCheckpointed_AppliedOnce proves an effect
+// whose dispatch failed is still applied exactly once, live or on recovery, after
+// a later checkpoint compacts its step.
+func TestRunner_EffectDispatch_FailedThenCheckpointed_AppliedOnce(t *testing.T) {
+	ctx := context.Background()
+	st := durable.NewMemStore()
+	live := newEffectRecorder()
+	live.failKinds["demo.notify"] = errors.New("downstream unavailable")
+	opts := []durable.Option[string, string, *runCtx]{
+		durable.WithEffectHandler[string, string, *runCtx](live.handler()),
+		durable.WithCheckpointEvery[string, string, *runCtx](2),
+	}
+	h, err := durable.NewRunner(effectMachine(), st, opts...).Start(ctx, "i1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err == nil { // step 0: its notify fails
+		t.Fatalf("Fire go: want the handler error")
+	}
+	delete(live.failKinds, "demo.notify")
+	if _, err = h.Fire(ctx, "bill"); err != nil { // step 1: checkpoint compacts step 0
+		// A Handle that refuses Fires after a failed dispatch is resumed by Recover.
+		if h, err = durable.Recover(ctx, effectMachine(), st, "i1", opts...); err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if _, err = h.Fire(ctx, "bill"); err != nil {
+			t.Fatalf("Fire bill: %v", err)
+		}
+	}
+
+	healthy := newEffectRecorder()
+	if _, err = durable.Recover(ctx, effectMachine(), st, "i1",
+		durable.WithEffectHandler[string, string, *runCtx](healthy.handler())); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	// go emits notify; bill emits charge and notify. Each applies exactly once.
+	ids := append(live.ids(), healthy.ids()...)
+	if len(ids) != 3 {
+		t.Fatalf("applied %d effect ids across live and recovery, want 3: %v", len(ids), ids)
+	}
+	for _, id := range ids {
+		if n := live.count(id) + healthy.count(id); n != 1 {
+			t.Fatalf("effect %q applied %d times, want once", id, n)
+		}
+	}
+}
+
+// failingEntryMachine emits a host effect on entry, then fails the entry.
+func failingEntryMachine() *state.Machine[string, string, *runCtx] {
+	return state.ForgeFor[*runCtx]("failingEntry").
+		Action("notify", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
+			return notifyEffect{To: "ops@example.com"}, nil
+		}).
+		Action("boom", func(state.ActionCtx[*runCtx]) (state.Effect, error) {
+			return nil, errors.New("boom")
+		}).
+		State("ready").OnEntry("notify").OnEntry("boom").
+		Initial("ready").
+		Quench()
+}
+
+// TestRunner_EffectDispatch_Start_FailedEntryAppliesNothing proves an effect emitted
+// before a failed entry action doesn't reach the handler, as with a failed Fire.
+func TestRunner_EffectDispatch_Start_FailedEntryAppliesNothing(t *testing.T) {
+	ctx := context.Background()
+	rec := newEffectRecorder()
+	r := durable.NewRunner(failingEntryMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](rec.handler()))
+	if _, err := r.Start(ctx, "i1", &runCtx{}, state.WithInitialState("ready")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := rec.totalApplies(); n != 0 {
+		t.Fatalf("handler applied %d effects from a failed entry, want 0", n)
+	}
+}
+
+// TestEffectInstance_ReachesTheHandler proves a handler can tell instances apart, on
+// Start and on a step.
+func TestEffectInstance_ReachesTheHandler(t *testing.T) {
+	ctx := context.Background()
+	var seen []durable.InstanceID
+	handler := func(ctx context.Context, _ string, _ state.Effect) error {
+		id, ok := durable.EffectInstance(ctx)
+		if !ok {
+			t.Error("no instance on the handler's ctx")
+		}
+		seen = append(seen, id)
+		return nil
+	}
+	r := durable.NewRunner(entryNotifyMachine(), durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, *runCtx](handler))
+	for _, id := range []durable.InstanceID{"a", "b"} {
+		if _, err := r.Start(ctx, id, &runCtx{}, state.WithInitialState("ready")); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+	if len(seen) != 2 || seen[0] != "a" || seen[1] != "b" {
+		t.Fatalf("handler saw %v, want [a b]", seen)
+	}
+	if _, ok := durable.EffectInstance(ctx); ok {
+		t.Fatal("instance on a ctx the runner never touched")
+	}
+}

@@ -9,6 +9,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- **`EffectInstance`** reads the instance from the ctx an `EffectHandler` receives, because
+  effect ids repeat across instances.
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
   than the highest it has seen for the instance with `ErrFenced`, writing nothing.
@@ -30,6 +32,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 
 - Requires Go 1.27.3.
+- **A failed effect dispatch fails the Handle.** The call returns `ErrHandleFailed`
+  wrapping `ErrEffectDispatch`, before any checkpoint, so the effect can't be compacted
+  away. `Recover` retries it, and fails with `ErrEffectDispatch` while the handler still
+  does. A `Fire` after a failed dispatch used to be accepted. A failed `MarkDispatched`
+  fails the Handle too, and `Recover` applies that effect again. The handler's error now
+  matches through `errors.Is`.
+- **A `KindedEffect` that can't marshal fails `Tick` and `RunService`,** as it already
+  failed `Fire`, even with no handler wired.
+- **A service result reaches `Assign` decoded, live as well as on replay,** so a retried
+  effect can't differ from the first attempt: a struct arrives as a map, an integer as a
+  `float64`, which loses precision above 2^53, and an error as an error with the same
+  message, any invalid UTF-8 replaced, which `errors.Is` no longer matches. An `Error`
+  method that panics settles with a message saying so. The journal records this decoded
+  value.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock for the whole step, so a host's timer loop no longer loses
   acknowledged steps. A host callback must not call back into its Handle, or it
@@ -75,6 +91,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
   and `DeliverToActor` now advance the next step as soon as the append lands.
+- **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
+  dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
+  baseline and before writing it, and only if the entry succeeded. Those effects are
+  at-least-once: a handler failure, a failed baseline write or overlapping `Start` calls
+  re-apply them, so key any dedupe on `EffectInstance` plus the effect id. Effects from a
+  parent transition an actor drives, including during `Fire`, are still not dispatched.
+  The first `Recover` of an older journal applies effects from uncompacted `Tick` and
+  service steps.
 - **A step whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
   or `DeliverToActor` used to record a result the live instance never applied, which
   recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`

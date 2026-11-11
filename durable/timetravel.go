@@ -257,7 +257,7 @@ func replayThrough[S comparable, E comparable, C any](
 			}
 		case hasServiceEntry(rec):
 			for _, entry := range serviceEntries(rec) {
-				if err := replayService(ctx, svc, entry); err != nil {
+				if _, err := replayService(ctx, svc, entry); err != nil {
 					return fmt.Errorf("at step %d: %w", rec.Step, err)
 				}
 			}

@@ -388,10 +388,17 @@ func settleReducer(in state.AssignCtx[Order]) Order {
 // onDone event's payload — the saga's compensation made observable.
 func recordRefund(in state.AssignCtx[Order]) Order {
 	c := in.Entity
-	if amount, ok := in.Event.(int64); ok {
-		c.Refund = amount
-		c.Log = append(c.Log, fmt.Sprintf("refunded:%d", amount))
+	var amount int64
+	switch v := in.Event.(type) {
+	case int64:
+		amount = v
+	case float64: // a durable Runner delivers a service result JSON-decoded
+		amount = int64(v)
+	default:
+		return c
 	}
+	c.Refund = amount
+	c.Log = append(c.Log, fmt.Sprintf("refunded:%d", amount))
 	return c
 }
 

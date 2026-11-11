@@ -472,6 +472,25 @@ func TestService_Determinism(t *testing.T) {
 	}
 }
 
+// fetchThenWaitMachine routes its service result into a state that arms a timer,
+// emitting a host effect on the way, so both originate in RunService.
+func fetchThenWaitMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
+	return state.ForgeFor[svcCtx]("fetchThenWait").
+		Service("fetch", fn).
+		Action("notify", func(state.ActionCtx[svcCtx]) (state.Effect, error) {
+			return notifyEffect{To: "ops@example.com"}, nil
+		}).
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("waiting").
+		State("done").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("waiting").Do("notify").
+		Transition("waiting").After(5 * time.Second).On("elapsed").GoTo("done").
+		Quench()
+}
+
 // TestService_ResultFromCanceledTurn_NotCommittedOnRecover proves a service result
 // whose settle is canceled with the turn's context, and so never reaches the live
 // instance, is not committed by recovery either.
@@ -670,4 +689,40 @@ func (c *cancelingClock) Now() time.Time {
 		f()
 	}
 	return c.Clock.Now()
+}
+
+// TestRunService_AssignSeesTheDecodedResult proves a typed result reaches Assign in the
+// form a replay supplies, so the two can't differ.
+func TestRunService_AssignSeesTheDecodedResult(t *testing.T) {
+	type user struct{ Email string }
+	ctx := context.Background()
+	var seen []any
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return user{Email: "a@b.c"}, nil }
+	m := state.ForgeFor[svcCtx]("decoded").
+		Service("fetch", fn).
+		Reducer("note", func(in state.AssignCtx[svcCtx]) svcCtx {
+			seen = append(seen, in.Event)
+			return in.Entity
+		}).
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("done"), state.WithInvokeOnError("fail")).
+		State("ready").Final().
+		State("failed").Final().
+		Initial("loading").
+		Transition("loading").On("done").GoTo("ready").Assign("note").
+		Transition("loading").On("fail").GoTo("failed").
+		Quench()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("d-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("loading"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("decoded", "loading", 0))
+	if _, err = durable.Recover(ctx, m, store, id, opts...); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if len(seen) != 2 || fmt.Sprintf("%T:%v", seen[0], seen[0]) != fmt.Sprintf("%T:%v", seen[1], seen[1]) {
+		t.Fatalf("live and replay saw %#v", seen)
+	}
 }
