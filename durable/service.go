@@ -87,8 +87,10 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // names no in-flight service (already settled, stopped, or never started), or false
 // and the error when the Handle had already failed or ctx has ended. If the service
 // settled but its outcome couldn't be recorded or appended, it returns the result,
-// true and ErrHandleFailed: the Handle has failed. A failed checkpoint returns the
-// result, true and that error, and the Handle carries on. A recovered Handle has an
+// true and ErrHandleFailed: the Handle has failed. If another goroutine failed the
+// Handle while this step was recording, it returns the result, true and ErrHandleFailed
+// saying the step was recorded. A failed checkpoint returns the result, true and that
+// error, and the Handle carries on. A recovered Handle has an
 // unrecorded service in flight again, and RunService runs it a second time.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {

@@ -101,8 +101,10 @@ type actorMessagePayload struct {
 // It returns false for a ref that names no live actor (already settled, stopped, or
 // never spawned), and false with the error when the Handle had already failed or ctx
 // has ended. If the actor received the event but the delivery couldn't be recorded or
-// appended, it returns true and ErrHandleFailed: the Handle has failed. A failed
-// checkpoint returns true and that error, and the Handle carries on. The kernel
+// appended, it returns true and ErrHandleFailed: the Handle has failed. If another
+// goroutine failed the Handle while this step was recording, it returns true and
+// ErrHandleFailed saying the step was recorded. A failed checkpoint returns true and
+// that error, and the Handle carries on. The kernel
 // transitions the delivery drove do not themselves fail. When a delivery wasn't
 // recorded, on a recovered Handle an InvokeActor actor restarts from its initial state,
 // and a Spawn actor doesn't return. Resending a recorded delivery repeats

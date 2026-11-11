@@ -153,8 +153,11 @@ takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does an
 effect handler that returns an error or panics. Before `Recover`, call `Handle.Drain`,
-which waits until no effect of the failed Handle is still being sent, so the recovered
-Handle can't send one twice. To move a healthy Handle's instance to a new Handle, stop
+which waits until no step of the failed Handle is still recording and no effect is still
+being sent, so the recovered Handle loads every recorded step and can't send an effect
+twice. Give `Drain` a context of its own, not the failed call's, and don't `Recover`
+until it returns nil: an error means it didn't finish draining. A step that was recording when another goroutine failed the Handle returns
+`ErrHandleFailed` saying it was recorded; `Recover` sends any of its effects. To move a healthy Handle's instance to a new Handle, stop
 calling the old one and let its calls return first: `Drain` alone doesn't cover a step
 that is still recording. `Recover` a new Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer owner holds the
 instance, so stop.

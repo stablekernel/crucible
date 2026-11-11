@@ -29,9 +29,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **`Handle.View`** reads the instance under the Handle's step lock.
 
-- **`Handle.Drain`** waits until no effect of the Handle is still being sent. Call it
-  before `Recover` after `ErrHandleFailed`. On a healthy Handle it covers only dispatches
-  already under way.
+- **`Handle.Drain`** waits until no step of the Handle is still recording and no effect
+  is still being sent. Call it before `Recover` after `ErrHandleFailed`, with a context
+  of its own, and don't `Recover` until it returns nil. On a healthy Handle it covers
+  only work already under way.
 
 - **`ErrReentrantStep`** reports a call back into a Handle that carries the context one
   of its steps passed to a callback: a service's context, or the `Ctx` a guard, action
@@ -64,8 +65,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   effect stays unmarked in the journal, so no later checkpoint compacts it away, and
   `Recover` dispatches it again.
 - **A step that may not have been recorded fails the Handle.** That call and every later
-  one return `ErrHandleFailed`, wrapping the cause. Call `Drain` before `Recover`, so an
-  effect another goroutine is still sending isn't sent twice. `Recover` a new Handle
+  one return `ErrHandleFailed`, wrapping the cause. Call `Drain` before `Recover`, so a
+  step another goroutine is still recording is loaded, and an effect it is still sending
+  isn't sent twice. `Recover` a new Handle
   with the same options to continue. A service whose result wasn't recorded is in flight again, so
   `RunService` runs it a second time. An `InvokeActor` actor restarts from its initial
   state, and a `Spawn` actor doesn't return. If the cause is `ErrFenced`, a newer owner
@@ -105,6 +107,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
   and `DeliverToActor` now advance the next step as soon as the append lands.
+- **A deferred checkpoint survives an unrelated caller's cancel.** A checkpoint that
+  waited for an earlier step's effects to dispatch, and was canceled by the context of
+  the caller whose step finished last, isn't reported to that caller, since its own
+  step succeeded, and the next step writes it. A retry the Store refuses as not
+  advancing means the first write landed, and counts as written. Any other checkpoint
+  failure is returned, and only the next step the policy makes due tries again.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a

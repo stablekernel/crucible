@@ -104,8 +104,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal. That call and every later one return ErrHandleFailed,
 // wrapping the cause, which can be a context that ended during the Store write. Before
-// recovering, call Drain: a step on another goroutine may still be sending an effect,
-// and a recovered Handle would send it again. Recovering a healthy Handle's instance
+// recovering, call Drain: a step on another goroutine may still be recording, which a
+// recovered Handle wouldn't load, or sending an effect, which it would send again. Recovering a healthy Handle's instance
 // instead needs this Handle's calls to have returned first. Recover a new Handle with the same
 // options to continue. A service
 // whose result wasn't recorded is in flight again, so RunService runs it a second time.
@@ -158,6 +158,8 @@ type outbox struct {
 type dueCheckpoint struct {
 	step     int
 	snapshot []byte
+	retry    bool // an earlier write failed, so the Store may already hold it
+	waitDue  bool // the Store refused it: wait for a step the policy makes due
 }
 
 // stepKey marks a context passed to host code during a step, so a call from that code
@@ -228,21 +230,33 @@ func (h *Handle[S, E, C]) inDispatch(ctx context.Context) bool {
 	return false
 }
 
-// Drain waits until no domain effect of h is still being dispatched, or ctx ends.
-// Call it after ErrHandleFailed and before Recover: a step on another goroutine may
-// still be sending an effect it recorded, and a recovered Handle would send it again
-// because it isn't marked yet. Once the Handle has failed, no step can start sending,
-// so Drain covers every effect. On a healthy Handle it covers only dispatches already
-// under way: a step still recording can start sending after Drain returns, so before
-// handing the instance to a new Handle, stop driving this one and let its calls return. It returns ctx's
-// error if ctx ends first, and ErrReentrantStep, without waiting, when called from
-// inside a step or an effect handler of h, whose own work it would wait on forever.
+// Drain waits until no step of h is still recording and no domain effect of h is still
+// being dispatched, or ctx ends. Call it after ErrHandleFailed and before Recover: a
+// step on another goroutine may still be appending its Record, which a recovered
+// Handle wouldn't load, or sending an effect it recorded, which a recovered Handle
+// would send again because it isn't marked yet. Drain first waits for the step lock, so
+// a step that was recording has finished, then for dispatch. Once the Handle has
+// failed, no step can start, so Drain covers every step and effect. On a healthy Handle
+// it covers only work already under way: a step can start after Drain returns, so
+// before handing the instance to a new Handle, stop driving this one and let its calls
+// return. It returns ctx's error if ctx ends first, at once if ctx has already ended:
+// then nothing is drained, so don't Recover until Drain returns nil. Give it a context
+// of its own, not the failed call's. It returns ErrReentrantStep, without waiting, when
+// called from inside a step or an effect handler of h, whose own work it would wait on
+// forever.
 // A call from a goroutine an effect handler started, without the handler's context,
-// can't be told apart and waits for that handler.
+// can't be told apart and waits for that handler; one from a goroutine a service or a
+// View callback started, without the step's context, waits for that step.
 func (h *Handle[S, E, C]) Drain(ctx context.Context) error {
 	if h.inStep(ctx) || h.inDispatch(ctx) {
 		return fmt.Errorf("%w: %q: Drain from inside a step or an effect handler", ErrReentrantStep, h.id)
 	}
+	// A step that holds the lock may be partway through its Append. Wait it out, so
+	// Recover loads its Record and any effect it registers is covered below.
+	if err := h.acquire(ctx); err != nil {
+		return err
+	}
+	h.release()
 	h.out.mu.Lock()
 	idle := h.out.idle
 	h.out.mu.Unlock()
@@ -583,7 +597,10 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // checkpoint policy is due — persists a full Snapshot and compacts the tail. A
 // kernel transition error journals nothing (no step was produced) and is
 // returned to the caller. A failed checkpoint returns the result and that error: the
-// step is recorded and its effects sent, and the Handle carries on.
+// step is recorded and its effects sent, the Handle carries on, and the next step the
+// policy makes due checkpoints. If another goroutine failed the Handle while this step
+// was recording, Fire returns ErrHandleFailed saying the step was recorded; Recover
+// sends its effects.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -658,15 +675,15 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 		return res, nil, nil, h.fail(err)
 	}
 	h.nextStep = rec.followingStep()
+	h.out.mu.Lock()
+	defer h.out.mu.Unlock()
+	// Another goroutine's dispatch may have failed the Handle while this step held the
+	// lock, and its caller may already be recovering. Leave this step's effects unmarked
+	// in the journal for that Recover to send, rather than race it.
+	if err := h.recordedOnFailedLocked(step); err != nil {
+		return res, nil, nil, err
+	}
 	if len(des) > 0 {
-		h.out.mu.Lock()
-		defer h.out.mu.Unlock()
-		// Another goroutine's dispatch may have failed the Handle while this step held
-		// the lock, and its caller may already be recovering. Leave this step's effects
-		// unmarked in the journal for that Recover to send, rather than race it.
-		if err := h.refuseLocked(); err != nil {
-			return res, nil, nil, err
-		}
 		if len(h.out.dispatching) == 0 {
 			h.out.idle = make(chan struct{})
 		}
@@ -718,7 +735,9 @@ func (h *Handle[S, E, C]) dispatchGuarded(ctx context.Context, step int, des []d
 // timer loop (with a real clock) or a test calls it after advancing a fake clock.
 // It records one tick barrier — carrying the consumed clock readings and the
 // count of timers fired — so recovery re-derives the same timers at their
-// recorded instants. It returns the FireResults of the timers it fired, in order.
+// recorded instants. It returns the FireResults of the timers it fired, in order. If
+// another goroutine failed the Handle while this step was recording, it returns them
+// with ErrHandleFailed saying the step was recorded.
 func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], error) {
 	if err := h.acquire(ctx); err != nil {
 		return nil, err
@@ -767,13 +786,30 @@ func (h *Handle[S, E, C]) persistStep(ctx context.Context, step int, rec *Record
 	h.nextStep = rec.followingStep()
 	h.out.mu.Lock()
 	defer h.out.mu.Unlock()
+	if err := h.recordedOnFailedLocked(step); err != nil {
+		return err
+	}
 	return h.offerCheckpointLocked(ctx, rec)
+}
+
+// recordedOnFailedLocked reports a step that was recorded while another goroutine failed
+// the Handle: ErrHandleFailed, saying the step was recorded and Recover sends any of its
+// effects. It returns nil on a healthy Handle. h.out.mu must be held.
+func (h *Handle[S, E, C]) recordedOnFailedLocked(step int) error {
+	if err := h.refuseLocked(); err != nil {
+		return fmt.Errorf("%w (step %d was recorded; Recover sends any of its effects)", err, step)
+	}
+	return nil
 }
 
 // offerCheckpointLocked makes rec's checkpoint pending when the policy is due at its
 // step, then writes the pending checkpoint if no step at or before it is still
-// dispatching. Otherwise the step that finishes dispatching last writes it. A failed
-// Handle writes none. h.out.mu must be held.
+// dispatching. Otherwise the step that finishes dispatching last writes it, with its
+// context. When that write fails because the context of a step that didn't make it due
+// ended, that caller isn't told, since its own step succeeded, and the next step writes
+// it. Any other failure is returned to the caller, and the checkpoint waits for the next
+// step the policy makes due, whose newer checkpoint replaces it. A retry the Store
+// refuses as not advancing landed the first time, and counts as written. A failed Handle writes none. h.out.mu must be held.
 func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record) error {
 	if h.out.failed != nil {
 		return nil
@@ -782,7 +818,7 @@ func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record
 		h.out.pending = &dueCheckpoint{step: rec.Step, snapshot: rec.Snapshot}
 	}
 	cp := h.out.pending
-	if cp == nil {
+	if cp == nil || (cp.waitDue && !h.checkpointDue(rec.Step)) {
 		return nil
 	}
 	for step := range h.out.dispatching {
@@ -795,6 +831,17 @@ func (h *Handle[S, E, C]) offerCheckpointLocked(ctx context.Context, rec *Record
 		return nil
 	}
 	if err := h.runner.store.Checkpoint(ctx, h.id, cp.snapshot, cp.step, WithCheckpointFence(h.runner.cfg.fence)); err != nil {
+		if cp.retry && errors.Is(err, ErrCheckpointNotAdvancing) {
+			// The failed write landed after all: the Store holds this checkpoint.
+			h.out.checkpointed = cp.step
+			return nil
+		}
+		cp.retry = true
+		h.out.pending = cp
+		if cp.step != rec.Step && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil // not this caller's checkpoint: the next step writes it
+		}
+		cp.waitDue = true
 		return fmt.Errorf("durable: checkpointing step %d for %q: %w", cp.step, h.id, err)
 	}
 	h.out.checkpointed = cp.step

@@ -3,6 +3,8 @@ package durable_test
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -722,3 +724,404 @@ func TestHandle_CallbackCallsBackWithItsCtx_IsRefused(t *testing.T) {
 
 // reentryKey is the key the middleware case derives its context with.
 type reentryKey struct{}
+
+// TestHandle_Drain_WaitsForAStepStillRecording proves Drain doesn't return while a
+// step that held the lock when the Handle failed is still in its Append: Recover then
+// loads that step, and its caller learns the step was recorded.
+func TestHandle_Drain_WaitsForAStepStillRecording(t *testing.T) {
+	ctx := context.Background()
+	m := effectMachine()
+	store := &blockingMemStore{MemStore: durable.NewMemStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	handlerIn, failNow := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits, then fails
+			close(handlerIn)
+			<-failNow
+			return errors.New("mail server down")
+		}
+		return nil
+	}
+	opt := durable.WithEffectHandler[string, string, *runCtx](handler)
+	h, err := durable.NewRunner(m, store, opt).Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(ctx, "go"); firstDone <- fireErr }()
+	<-handlerIn
+	store.armed.Store(true)
+	secondDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(ctx, "bill"); secondDone <- fireErr }()
+	<-store.entered // step 1 holds the lock, in its Append
+	close(failNow)
+	if got := <-firstDone; !errors.Is(got, durable.ErrHandleFailed) {
+		t.Fatalf("Fire(go) = %v, want ErrHandleFailed", got)
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- h.Drain(ctx) }()
+	select {
+	case drainErr := <-drained:
+		t.Fatalf("Drain returned %v while step 1 was still in its Append", drainErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(store.release)
+	if drainErr := <-drained; drainErr != nil {
+		t.Fatalf("Drain: %v", drainErr)
+	}
+	got := <-secondDone
+	if !errors.Is(got, durable.ErrHandleFailed) || !strings.Contains(got.Error(), "step 1 was recorded") {
+		t.Fatalf("Fire(bill) = %v, want ErrHandleFailed saying step 1 was recorded", got)
+	}
+	r, err := durable.Recover(ctx, m, store.MemStore, "e-1", opt)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if cur := r.Instance().Current(); cur != "billed" {
+		t.Fatalf("recovered state %q, want billed: Recover missed step 1", cur)
+	}
+	if _, err := r.Fire(ctx, "finish"); err != nil {
+		t.Fatalf("Fire(finish) on the recovered Handle: %v", err)
+	}
+}
+
+// checkpointSpy is a MemStore that records the steps it checkpointed through after
+// Start's initial checkpoint and refuses a checkpoint whose context has ended. Once
+// armed, it fails the next checkpoint (diskFull first, ahead of the context check), or
+// writes it and then reports it canceled (landThenFail, also ahead of the check).
+type checkpointSpy struct {
+	*durable.MemStore
+	failNext     atomic.Bool
+	diskFull     atomic.Bool
+	landThenFail atomic.Bool
+	mu           sync.Mutex
+	through      []int
+}
+
+func (s *checkpointSpy) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
+	if s.diskFull.CompareAndSwap(true, false) {
+		return errors.New("disk full")
+	}
+	if throughStep >= 0 && s.landThenFail.CompareAndSwap(true, false) {
+		if err := s.MemStore.Checkpoint(context.Background(), id, snapshot, throughStep, opts...); err != nil {
+			return err
+		}
+		s.record(throughStep)
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.failNext.CompareAndSwap(true, false) {
+		return errors.New("disk full")
+	}
+	if err := s.MemStore.Checkpoint(ctx, id, snapshot, throughStep, opts...); err != nil {
+		return err
+	}
+	if throughStep >= 0 { // not Start's initial checkpoint
+		s.record(throughStep)
+	}
+	return nil
+}
+
+func (s *checkpointSpy) record(step int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.through = append(s.through, step)
+}
+
+func (s *checkpointSpy) steps() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.through...)
+}
+
+// TestHandle_DeferredCheckpoint_SurvivesTheFinishingCallersCancel proves a checkpoint
+// deferred to the step that finishes dispatching last isn't dropped when that step's
+// caller cancels, and that caller isn't told: it stays pending, and the next step
+// writes it.
+func TestHandle_DeferredCheckpoint_SurvivesTheFinishingCallersCancel(t *testing.T) {
+	ctx := context.Background()
+	store := &checkpointSpy{MemStore: durable.NewMemStore()}
+	handlerIn, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits
+			close(handlerIn)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(firstCtx, "go"); firstDone <- fireErr }()
+	<-handlerIn
+	if _, err := h.Fire(ctx, "bill"); err != nil { // step 1's checkpoint is due, and waits on step 0
+		t.Fatalf("Fire(bill): %v", err)
+	}
+	if got := store.steps(); len(got) != 0 {
+		t.Fatalf("checkpointed through %v before step 0 dispatched, want none", got)
+	}
+	cancel()
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("Fire(go) = %v, want nil: step 1's checkpoint isn't its caller's", err)
+	}
+	if got := store.steps(); len(got) != 0 {
+		t.Fatalf("checkpointed through %v on a canceled context, want none yet", got)
+	}
+	if _, err := h.Fire(ctx, "finish"); err != nil {
+		t.Fatalf("Fire(finish): %v", err)
+	}
+	if got := store.steps(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("checkpointed through %v, want [1]: the deferred checkpoint was dropped", got)
+	}
+}
+
+// TestHandle_FailedCheckpoint_WaitsForTheNextDueStep proves a checkpoint the Store
+// refuses isn't retried, or reported, on a step the policy didn't make due: the next
+// due step checkpoints instead.
+func TestHandle_FailedCheckpoint_WaitsForTheNextDueStep(t *testing.T) {
+	ctx := context.Background()
+	store := &checkpointSpy{MemStore: durable.NewMemStore()}
+	loop := state.ForgeFor[*runCtx]("loop").
+		State("a").State("b").Initial("a").
+		Transition("a").On("t").GoTo("b").
+		Transition("b").On("t").GoTo("a").
+		Quench()
+	h, err := durable.NewRunner(loop, store, durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "l-1", &runCtx{}, state.WithInitialState("a"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fire := func(step int) error { _, err := h.Fire(ctx, "t"); return err }
+	if err := fire(0); err != nil {
+		t.Fatalf("step 0: %v", err)
+	}
+	store.failNext.Store(true)
+	if err := fire(1); err == nil { // due
+		t.Fatal("step 1 = nil, want its checkpoint's error")
+	}
+	if err := fire(2); err != nil { // not due
+		t.Fatalf("step 2 = %v, want nil: it didn't make step 1's checkpoint due", err)
+	}
+	if err := fire(3); err != nil { // due
+		t.Fatalf("step 3: %v", err)
+	}
+	if got := store.steps(); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("checkpointed through %v, want [3]: only the next due step checkpoints", got)
+	}
+}
+
+// TestHandle_StepRecordedAsTheHandleFails_SaysSo proves each step method that was in
+// its Append when another goroutine failed the Handle returns ErrHandleFailed saying
+// the step was recorded, a step with no domain effects included, and that Drain then
+// Recover load it.
+func TestHandle_StepRecordedAsTheHandleFails_SaysSo(t *testing.T) {
+	type handle = *durable.Handle[string, string, svcCtx]
+	type probe = *state.Builder[string, string, svcCtx]
+	clock := state.NewFakeClock(epoch)
+	var runs int64
+	cases := []struct {
+		name  string
+		build func(probe) probe
+		opts  []durable.Option[string, string, svcCtx]
+		step  func(ctx context.Context, h handle) error
+		want  string
+	}{
+		{
+			name: "Fire with no effects",
+			build: func(b probe) probe {
+				return b.State("hub").State("end").Final().Transition("hub").On("poke").GoTo("end")
+			},
+			step: func(ctx context.Context, h handle) error { _, err := h.Fire(ctx, "poke"); return err },
+		},
+		{
+			name: "Tick",
+			build: func(b probe) probe {
+				return b.State("hub").State("end").Final().Transition("hub").After(5 * time.Second).On("elapsed").GoTo("end")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithRunnerClock[string, string, svcCtx](clock)},
+			step: func(ctx context.Context, h handle) error {
+				clock.Advance(6 * time.Second)
+				_, err := h.Tick(ctx)
+				return err
+			},
+		},
+		{
+			name: "RunService",
+			build: func(b probe) probe {
+				return b.Service("fetch", counterService(&runs)).
+					State("hub").Invoke("fetch", state.WithInvokeOnDone("ok")).State("end").Final().
+					Transition("hub").On("ok").GoTo("end")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](
+				state.NewRegistry[svcCtx]().Service("fetch", counterService(&runs)))},
+			step: func(ctx context.Context, h handle) error {
+				_, _, err := h.RunService(ctx, state.InvokeID("recorded", "hub", 0))
+				return err
+			},
+		},
+		{
+			name: "DeliverToActor",
+			build: func(b probe) probe {
+				return b.Actor("spawnChild").
+					State("hub").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).State("end").Final().
+					Transition("hub").On("childDone").GoTo("end")
+			},
+			opts: []durable.Option[string, string, svcCtx]{durable.WithActorPalette[string, string, svcCtx](counterPalette(&runs))},
+			step: func(ctx context.Context, h handle) error {
+				ref, ok := h.ActorRef(state.ActorID("recorded", "hub", 0))
+				if !ok {
+					return errors.New("no actor ref for the spawned child")
+				}
+				_, err := h.DeliverToActor(ctx, ref, "finish")
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &blockingMemStore{MemStore: durable.NewMemStore(), entered: make(chan struct{}), release: make(chan struct{})}
+			handlerIn, failNow := make(chan struct{}), make(chan struct{})
+			var first atomic.Bool
+			handler := func(context.Context, string, state.Effect) error {
+				if first.CompareAndSwap(false, true) { // step 0's notify waits, then fails
+					close(handlerIn)
+					<-failNow
+					return errors.New("mail server down")
+				}
+				return nil
+			}
+			machine := tc.build(state.ForgeFor[svcCtx]("recorded").
+				Action("notify", func(state.ActionCtx[svcCtx]) (state.Effect, error) {
+					return notifyEffect{To: "ops@example.com"}, nil
+				}).
+				State("idle").Initial("idle").
+				Transition("idle").On("go").GoTo("hub").Do("notify")).
+				Quench()
+			opts := append([]durable.Option[string, string, svcCtx]{durable.WithEffectHandler[string, string, svcCtx](handler)}, tc.opts...)
+			h, err := durable.NewRunner(machine, store, opts...).Start(ctx, "r-1", svcCtx{}, state.WithInitialState("idle"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			firstDone := make(chan error, 1)
+			go func() { _, fireErr := h.Fire(ctx, "go"); firstDone <- fireErr }()
+			<-handlerIn
+			store.armed.Store(true)
+			stepDone := make(chan error, 1)
+			go func() { stepDone <- tc.step(ctx, h) }()
+			<-store.entered // step 1 holds the lock, in its Append
+			close(failNow)
+			if got := <-firstDone; !errors.Is(got, durable.ErrHandleFailed) {
+				t.Fatalf("Fire(go) = %v, want ErrHandleFailed", got)
+			}
+			close(store.release)
+			got := <-stepDone
+			if !errors.Is(got, durable.ErrHandleFailed) || !strings.Contains(got.Error(), "step 1 was recorded") {
+				t.Fatalf("%s = %v, want ErrHandleFailed saying step 1 was recorded", tc.name, got)
+			}
+			if drainErr := h.Drain(ctx); drainErr != nil {
+				t.Fatalf("Drain: %v", drainErr)
+			}
+			r, err := durable.Recover(ctx, machine, store.MemStore, "r-1", opts...)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if cur := r.Instance().Current(); cur != "end" {
+				t.Fatalf("recovered state %q, want end: Recover missed step 1", cur)
+			}
+		})
+	}
+}
+
+// TestHandle_CheckpointThatLandedDespiteAnError_IsNotRetriedForever proves a deferred
+// checkpoint the Store wrote but reported canceled doesn't fail the next step: the
+// retry the Store refuses as not advancing counts as written.
+func TestHandle_CheckpointThatLandedDespiteAnError_IsNotRetriedForever(t *testing.T) {
+	ctx := context.Background()
+	store := &checkpointSpy{MemStore: durable.NewMemStore()}
+	handlerIn, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits
+			close(handlerIn)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(firstCtx, "go"); firstDone <- fireErr }()
+	<-handlerIn
+	if _, err := h.Fire(ctx, "bill"); err != nil { // step 1's checkpoint is due, and waits on step 0
+		t.Fatalf("Fire(bill): %v", err)
+	}
+	cancel()
+	store.landThenFail.Store(true)
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("Fire(go) = %v, want nil", err)
+	}
+	if _, err := h.Fire(ctx, "finish"); err != nil {
+		t.Fatalf("Fire(finish) = %v, want nil: the checkpoint at step 1 had landed", err)
+	}
+	if got := store.steps(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("checkpointed through %v, want [1]", got)
+	}
+}
+
+// TestHandle_DeferredCheckpointStoreError_OnAnEndedContext_IsReported proves the
+// finishing caller still hears a deferred checkpoint's Store error when its context
+// has ended: only the cancellation itself is kept from it.
+func TestHandle_DeferredCheckpointStoreError_OnAnEndedContext_IsReported(t *testing.T) {
+	ctx := context.Background()
+	store := &checkpointSpy{MemStore: durable.NewMemStore()}
+	handlerIn, release := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	handler := func(context.Context, string, state.Effect) error {
+		if first.CompareAndSwap(false, true) { // step 0's notify waits
+			close(handlerIn)
+			<-release
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(effectMachine(), store,
+		durable.WithEffectHandler[string, string, *runCtx](handler),
+		durable.WithCheckpointEvery[string, string, *runCtx](2)).
+		Start(ctx, "e-1", &runCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	firstCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() { _, fireErr := h.Fire(firstCtx, "go"); firstDone <- fireErr }()
+	<-handlerIn
+	if _, err := h.Fire(ctx, "bill"); err != nil {
+		t.Fatalf("Fire(bill): %v", err)
+	}
+	cancel()
+	store.diskFull.Store(true)
+	close(release)
+	if err := <-firstDone; err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Fire(go) = %v, want the Store's disk-full error", err)
+	}
+}
