@@ -352,6 +352,7 @@ func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, effects []state.Eff
 		h.svc.Absorb(ctx, effects)
 	}
 	if h.actors != nil {
+		h.actorFires.attempt(effects)
 		h.actors.Absorb(ctx, effects)
 	}
 }
@@ -545,6 +546,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		// A parent Fire a starting actor drove (a failed spawn's onError) belongs to no
 		// recorded step, so it mustn't reach the first step's check.
 		actorFires.take()
+		actorFires.takeLifecycle()
 	}
 	// The actors that started are seen running, so one later stopped counts as ended.
 	seen := map[string]bool{}
@@ -592,7 +594,8 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.
 		return nil, nil
 	}
 	fires := &parentFires[S]{}
-	sys := state.NewActorSystem(inst).WithParentFireObserver(fires.note)
+	sys := state.NewActorSystem(inst).WithParentFireObserver(fires.note).
+		WithActorInspector(state.InspectorFunc(fires.inspect))
 	for src, behavior := range r.cfg.actorPalette {
 		sys.Register(src, behavior)
 	}
@@ -600,16 +603,62 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.
 }
 
 // parentFires collects the parent Fires an actor system drives, so the step that drove
-// them can check and record them.
+// them can check and record them, and the actors it spawned, so an actor spawned and
+// stopped inside one step still counts as having run.
 type parentFires[S comparable] struct {
-	mu    sync.Mutex
-	fires []state.ParentFire[S]
+	mu        sync.Mutex
+	fires     []state.ParentFire[S]
+	spawned   []string        // actors that started
+	attempted map[string]bool // actors the system was asked to spawn
+}
+
+// attempt notes the actors effects ask the system to spawn.
+func (p *parentFires[S]) attempt(effects []state.Effect) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok {
+			if p.attempted == nil {
+				p.attempted = map[string]bool{}
+			}
+			p.attempted[sp.ID] = true
+		}
+	}
+}
+
+// takeLifecycle returns the actors spawned and the actors asked to spawn since the
+// last call, and forgets them. It's safe on a nil collector, which has none.
+func (p *parentFires[S]) takeLifecycle() (spawned []string, attempted map[string]bool) {
+	if p == nil {
+		return nil, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	spawned, attempted = p.spawned, p.attempted
+	p.spawned, p.attempted = nil, nil
+	return spawned, attempted
+}
+
+// inspect notes each actor the system spawned. The system reports a spawn only once
+// the actor started, so a spawn that failed isn't noted.
+func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
+	if ev.Kind != state.InspectActor || ev.ActorPhase != state.ActorSpawned {
+		return
+	}
+	p.mu.Lock()
+	p.spawned = append(p.spawned, ev.ActorID)
+	p.mu.Unlock()
 }
 
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
 	p.mu.Unlock()
+	// The system absorbs a parent Fire's effects next, which spawns what they declare.
+	p.attempt(pf.Result.Effects)
 }
 
 // take returns the Fires noted since the last take, in fire order, and forgets them.
@@ -984,35 +1033,40 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 }
 
 // endedActors returns the actors the instance's state declares that ran and have
-// ended: not running now, and either settled (the actor system keeps a settled actor)
-// or seen running at an earlier step (a stopped actor is gone from the system). An
-// actor whose spawn failed was never either, so it isn't one, and Recover spawns it
-// again. It forgets what it saw of actors the state no longer declares. It is nil with
-// no actor palette.
+// ended, and remembers them for the next step. A declared actor that isn't running
+// has ended when it settled (the actor system keeps a settled actor), or when this
+// step asked the system to spawn it and a spawn this step started it (then something
+// stopped it), or, when this step didn't try to spawn it, when it was running or ended
+// at the previous step. So an actor whose spawn failed, at entry or on a re-entry,
+// hasn't ended, and Recover tries it again. It is nil with no actor palette.
 func (h *Handle[S, E, C]) endedActors() *ActorSet {
 	if h.actors == nil {
 		return nil
 	}
+	spawned, attempted := h.actorFires.takeLifecycle()
 	running := h.actors.IDs()
-	declared := declaredActors(h.inst.StartEffects())
-	for _, id := range running {
-		h.seen[id] = true
-	}
-	for id := range h.seen {
-		if !slices.Contains(declared, id) {
-			delete(h.seen, id)
-		}
-	}
 	ended := []string{}
-	for _, id := range declared {
+	for _, id := range declaredActors(h.inst.StartEffects()) {
 		if slices.Contains(running, id) {
 			continue
 		}
-		if _, settled := h.actors.Ref(id); settled || h.seen[id] {
+		_, ran := h.actors.Ref(id)
+		switch {
+		case ran:
+		case attempted[id]:
+			ran = slices.Contains(spawned, id)
+		default:
+			ran = h.seen[id]
+		}
+		if ran {
 			ended = append(ended, id)
 		}
 	}
 	slices.Sort(ended)
+	h.seen = map[string]bool{}
+	for _, id := range append(running, ended...) {
+		h.seen[id] = true
+	}
 	return &ActorSet{IDs: ended}
 }
 
@@ -1185,6 +1239,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
 		// recorded step, so it mustn't reach the next step's check.
 		actorFires.take()
+		actorFires.takeLifecycle()
 	}
 	// The journal's ended actors stay ended, and seen, so the next step records a set
 	// only when it changes them.
