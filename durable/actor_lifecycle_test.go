@@ -113,12 +113,11 @@ func probeChild() state.ActorBehavior {
 func probeMachine() *state.Machine[string, string, probeCtx] {
 	return state.ForgeFor[probeCtx]("probe").
 		Actor("spawnChild").
-		State("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
+		State("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).
 		State("done").Final().
 		Initial("working").
 		Transition("working").On("re").GoTo("working").Reenter().
 		Transition("working").On("poke").GoTo("working").
-		Transition("working").On("childErr").GoTo("working").
 		Transition("working").On("childDone").GoTo("done").
 		Quench()
 }
@@ -235,10 +234,9 @@ func TestRecover_RetriesASpawnThatFailedWhenASettleReentered(t *testing.T) {
 	ctx := context.Background()
 	m := state.ForgeFor[probeCtx]("probe2").
 		Actor("spawnChild").
-		State("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childErr")).
+		State("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).
 		Initial("working").
 		Transition("working").On("childDone").GoTo("working").Reenter().
-		Transition("working").On("childErr").GoTo("working").
 		Quench()
 	store := durable.NewMemStore()
 	id := durable.InstanceID("p4")
@@ -289,10 +287,9 @@ func rsChild() state.ActorBehavior {
 func rsMachine() *state.Machine[string, string, rsCtx] {
 	return state.ForgeFor[rsCtx]("rs").
 		Actor("spawnChild").
-		State("working").InvokeActor("spawnChild", state.WithInvokeOnError("childErr")).
+		State("working").InvokeActor("spawnChild").
 		Initial("working").
 		Transition("working").On("re").GoTo("working").Reenter().
-		Transition("working").On("childErr").GoTo("working").
 		Transition("working").On("poke").GoTo("working").
 		Quench()
 }
@@ -364,12 +361,11 @@ func TestRecover_RetriesAnActorWhoseLatestSpawnInAStepFailed(t *testing.T) {
 	m := state.ForgeFor[actorCtx]("flip").
 		Actor("spawnDriver").Actor("spawnChild").
 		State("y").InvokeActor("spawnDriver").
-		State("z").InvokeActor("spawnChild", state.WithInvokeOnError("childErr")).
+		State("z").InvokeActor("spawnChild").
 		Initial("y").
 		Transition("y").On("toZ").GoTo("z").
 		Transition("z").On("kill").GoTo("z").StopActor(state.ActorID("flip", "z", 0)).
 		Transition("z").On("re").GoTo("z").Reenter().
-		Transition("z").On("childErr").GoTo("z").
 		Quench()
 	var n, runs int64
 	pal := map[string]state.ActorBehavior{"spawnDriver": driver3(), "spawnChild": func(in map[string]any) (state.ActorInstance, error) {

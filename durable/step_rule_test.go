@@ -629,3 +629,152 @@ func TestRecover_RetriesAFailedSpawn(t *testing.T) {
 		t.Fatal("Recover didn't spawn the actor whose live spawn failed")
 	}
 }
+
+// failNoteMachine has a state whose actor can't start; its onError applies, staying in
+// the state (stay) or leaving it (leave), and notes the failure, so a recovered
+// context shows how many times it applied.
+func failNoteMachine(initial string, leave bool) stepMachine {
+	fail := func(in state.AssignCtx[stepCtx]) stepCtx {
+		c := in.Entity
+		c.Notes = append(c.Notes, "fail")
+		return c
+	}
+	target := "spawning"
+	if leave {
+		target = "failed"
+	}
+	poke := func(in state.AssignCtx[stepCtx]) stepCtx {
+		c := in.Entity
+		c.Notes = append(c.Notes, "poke")
+		return c
+	}
+	return state.ForgeFor[stepCtx]("noting").
+		Reducer("noteFail", fail).
+		Reducer("notePoke", poke).
+		Actor("spawnChild").
+		State("idle").
+		State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+		State("failed").
+		Initial(initial).
+		Transition("idle").On("start").GoTo("spawning").
+		Transition("spawning").On("spawnFailed").GoTo(target).Assign("noteFail").
+		Transition("spawning").On("poke").GoTo("spawning").Assign("notePoke").
+		Transition("failed").On("poke").GoTo("failed").Assign("notePoke").
+		Quench()
+}
+
+// TestRecover_ReplaysASpawnsOnErrorOnce proves a failed spawn's onError that applied is
+// journaled with the step that drove it, or with the step after Start or Recover drove
+// it, so Recover reaches the live state and context, applying it once, and doesn't
+// retry the spawn.
+func TestRecover_ReplaysASpawnsOnErrorOnce(t *testing.T) {
+	ctx := context.Background()
+	failing := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": failingSpawn(nil)})}
+	check := func(t *testing.T, h *durable.Handle[string, string, stepCtx], m stepMachine, store durable.Store, id durable.InstanceID, opts []stepOption) {
+		t.Helper()
+		liveState, liveNotes := h.Instance().Current(), fmt.Sprint(h.Instance().Entity().Notes)
+		for round := 1; round <= 2; round++ {
+			recovered, err := durable.Recover(ctx, m, store, id, opts...)
+			if err != nil {
+				t.Fatalf("Recover %d: %v", round, err)
+			}
+			if got, notes := recovered.Instance().Current(), fmt.Sprint(recovered.Instance().Entity().Notes); got != liveState || notes != liveNotes {
+				t.Fatalf("Recover %d = %s %s, want the live %s %s", round, got, notes, liveState, liveNotes)
+			}
+			if _, err = recovered.Fire(ctx, "poke"); err != nil {
+				t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+			}
+			// The next Recover rebuilds the Handle that just continued.
+			liveState, liveNotes = recovered.Instance().Current(), fmt.Sprint(recovered.Instance().Entity().Notes)
+		}
+	}
+	for _, leave := range []bool{false, true} {
+		for _, every := range []int{0, 1} {
+			opts := append([]stepOption{}, failing...)
+			if every > 0 {
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+			}
+			t.Run(fmt.Sprintf("Fire/leave=%v/every=%d", leave, every), func(t *testing.T) {
+				m, store, id := failNoteMachine("idle", leave), durable.NewMemStore(), durable.InstanceID("fire")
+				h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if _, err = h.Fire(ctx, "start"); err != nil {
+					t.Fatalf("Fire(start): %v", err)
+				}
+				check(t, h, m, store, id, opts)
+			})
+			t.Run(fmt.Sprintf("Start/leave=%v/every=%d", leave, every), func(t *testing.T) {
+				m, store, id := failNoteMachine("spawning", leave), durable.NewMemStore(), durable.InstanceID("start")
+				h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("spawning"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if _, err = h.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke): %v", err)
+				}
+				check(t, h, m, store, id, opts)
+			})
+		}
+	}
+	t.Run("RunService", func(t *testing.T) {
+		fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) { return "ok", nil }
+		fail := func(in state.AssignCtx[stepCtx]) stepCtx {
+			c := in.Entity
+			c.Notes = append(c.Notes, "fail")
+			return c
+		}
+		m := state.ForgeFor[stepCtx]("noting").
+			Service("fetch", fetch).
+			Reducer("noteFail", fail).
+			Actor("spawnChild").
+			State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+			State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+			Initial("loading").
+			Transition("loading").On("ok").GoTo("spawning").
+			Transition("spawning").On("spawnFailed").GoTo("spawning").Assign("noteFail").
+			Transition("spawning").On("poke").GoTo("spawning").
+			Quench()
+		opts := append([]stepOption{durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch))}, failing...)
+		store, id := durable.NewMemStore(), durable.InstanceID("settle")
+		h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("loading"))
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, ran, err := h.RunService(ctx, state.InvokeID("noting", "loading", 0)); err != nil || !ran {
+			t.Fatalf("RunService = %v, %v", ran, err)
+		}
+		check(t, h, m, store, id, opts)
+	})
+	t.Run("a spawn that fails during Recover", func(t *testing.T) {
+		m, store, id := failNoteMachine("spawning", false), durable.NewMemStore(), durable.InstanceID("at-recover")
+		good := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": finishingChild()})}
+		h, err := durable.NewRunner(m, store, good...).Start(ctx, id, stepCtx{}, state.WithInitialState("spawning"))
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err = h.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke): %v", err)
+		}
+		// Recover while the actor can't start: its onError applies on this Handle.
+		r1, err := durable.Recover(ctx, m, store, id, failing...)
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if _, err = r1.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke): %v", err)
+		}
+		// A later Recover, with the actor able to start, reaches what r1 had.
+		r2, err := durable.Recover(ctx, m, store, id, good...)
+		if err != nil {
+			t.Fatalf("second Recover: %v", err)
+		}
+		if got, want := fmt.Sprint(r2.Instance().Entity().Notes), fmt.Sprint(r1.Instance().Entity().Notes); got != want {
+			t.Fatalf("second Recover notes = %s, want r1's %s", got, want)
+		}
+		if found, _ := r2.DeliverToActor(ctx, state.ActorRef{ID: state.ActorID("noting", "spawning", 0)}, "finish"); found {
+			t.Fatal("second Recover spawned the actor r1 had handled as failed")
+		}
+	})
+}

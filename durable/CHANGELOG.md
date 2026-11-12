@@ -160,8 +160,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   without leaving the state, or an explicit stop. Each step now records the declared
   actors that ran and ended, in the new `Record.EndedActors`, and a checkpoint keeps the
   set, so `Recover` spawns the declared actors that aren't in it. An actor whose spawn
-  failed never ran, so `Recover` tries it again, as before. A journal from before this
+  failed with no onError never ran, so `Recover` tries it again, as before; one whose
+  onError applied counts as ended, since the journal holds that onError. A journal from before this
   records no set, and `Recover` spawns every declared actor, as before.
+- **A failed spawn's onError is journaled.** When an actor a `Fire`, `RunService`,
+  `Start` or `Recover` spawned couldn't start and its onError applied, nothing recorded
+  the onError, so `Recover` either applied it again by retrying the spawn, or, once the
+  spawn worked, never applied it. A Fire's or settle's onError is now recorded with its
+  step, and one from `Start`'s or `Recover`'s spawns with the step after, and replay
+  re-fires each where it ran.
 - **A compound state's services and actors start.** `Start` and `Recover` armed only
   those declared on the active leaves, so a service or actor on a compound state didn't
   run while one of its children was active. They come from `state.StartEffects`, which

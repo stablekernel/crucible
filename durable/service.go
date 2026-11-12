@@ -134,7 +134,8 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	// seen this result: journaling it would commit on recovery what live never applied.
 	// The runner has already dropped the service, so this Handle can't run it again;
 	// Recover re-arms it.
-	if err := h.stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(h.actorFires.take())...)...); err != nil {
+	fires := h.actorFires.take()
+	if err := h.stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
 		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
 
@@ -146,8 +147,15 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		*h.svcBuf = append(*h.svcBuf, entry)
 	}
 
+	// The parent Fires the absorb drove, such as a spawned actor's onError, applied
+	// after the settle, so the step journals them, and replay re-fires them after it.
+	driven, err := recordParentFires(fires, false)
+	if err != nil {
+		return res, true, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
+	}
+
 	step := h.nextStep
-	rec := Record{Step: step, Entries: h.drainServices()}
+	rec := Record{Step: step, Entries: append(h.drainServices(), driven...)}
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return res, true, err
 	}

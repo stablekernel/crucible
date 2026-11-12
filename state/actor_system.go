@@ -391,7 +391,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(ParentFire[S]{Result: res})
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -673,7 +673,7 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 	s.mu.Unlock()
 
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(ParentFire[S]{Result: res})
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: senderID})
 	s.Absorb(ctx, res.Effects)
 
 	s.mu.Lock()
@@ -735,7 +735,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		payload = output
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
-	s.noteParentFire(ParentFire[S]{Result: res, Settle: true, Output: output, Err: err})
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: id, Settle: true, Output: output, Err: err})
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }
@@ -801,6 +801,12 @@ func (s *ActorSystem[S, E, C]) LastError() error {
 type ParentFire[S comparable] struct {
 	// Result is the parent Fire's result. A refused Fire carries its error.
 	Result FireResult[S]
+	// ActorID is the actor the Fire came from: the one that settled, sent the message,
+	// or couldn't start.
+	ActorID string
+	// SpawnFailed reports that the Fire routed the onError of a spawn that couldn't
+	// start (an unbound Src, or a behavior that returned an error).
+	SpawnFailed bool
 	// Settle reports that the Fire routed a settled actor's onDone or onError, which
 	// carried the actor's outcome as its event data (WithEventData): Err for an onError,
 	// Output for an onDone. A message the actor sent the parent, or the onError of a

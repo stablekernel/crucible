@@ -93,6 +93,10 @@ type actorMessagePayload struct {
 	// on it. A refusal because a context ended is never recorded: that step fails the
 	// Handle instead.
 	Refused bool `json:"refused,omitempty"`
+	// Before reports a parent Fire that ran before the step's own work: one a spawn at
+	// Start or Recover drove, recorded with the step that followed. Replay re-fires it
+	// first.
+	Before bool `json:"before,omitempty"`
 }
 
 // DeliverToActor routes event into the running actor identified by ref, runs the
@@ -202,34 +206,75 @@ func recordActorTransitions[S comparable](id string, traces []state.Trace, fires
 	}
 	entries := make([]state.JournalEntry, 0, len(traces))
 	for i, tr := range traces {
-		var mp actorMessagePayload
-		mp.Event = append(json.RawMessage(nil), tr.EventPayload...)
-		mp.Refused = fires[i].Result.Err != nil
-		if fires[i].Settle {
-			mp.HasData = true
-			switch {
-			case fires[i].Err != nil:
-				msg := fires[i].Err.Error()
-				mp.Error = &msg
-			case fires[i].Output != nil:
-				raw, err := json.Marshal(fires[i].Output)
-				if err != nil {
-					return nil, fmt.Errorf("marshaling actor output: %w", err)
-				}
-				mp.Data = raw
-			}
-		}
-		payload, err := json.Marshal(mp)
+		entry, err := actorEntry(id, tr.EventPayload, fires[i], false)
 		if err != nil {
-			return nil, fmt.Errorf("marshaling actor transition: %w", err)
+			return nil, err
 		}
-		entries = append(entries, state.JournalEntry{
-			Kind:          state.JournalActorMessage,
-			CorrelationID: id,
-			Payload:       payload,
-		})
+		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// recordParentFires builds the JournalActorMessage entries for parent Fires an actor
+// system drove outside a delivery, such as a failed spawn's onError, each under the
+// actor it came from. before marks Fires that ran before the step's own work.
+func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) ([]state.JournalEntry, error) {
+	entries := make([]state.JournalEntry, 0, len(fires))
+	for _, pf := range fires {
+		entry, err := actorEntry(pf.ActorID, pf.Result.Trace.EventPayload, pf, before)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// actorEntry builds one JournalActorMessage entry: the parent Fire's event payload,
+// whether the live Fire was refused, and, for a Fire that settled an actor, the
+// actor's outcome, which it passed as event data, so replay re-fires the same onDone
+// or onError with it.
+func actorEntry[S comparable](id string, event json.RawMessage, pf state.ParentFire[S], before bool) (state.JournalEntry, error) {
+	var mp actorMessagePayload
+	mp.Event = append(json.RawMessage(nil), event...)
+	mp.Refused = pf.Result.Err != nil
+	mp.Before = before
+	if pf.Settle {
+		mp.HasData = true
+		switch {
+		case pf.Err != nil:
+			msg := pf.Err.Error()
+			mp.Error = &msg
+		case pf.Output != nil:
+			raw, err := json.Marshal(pf.Output)
+			if err != nil {
+				return state.JournalEntry{}, fmt.Errorf("marshaling actor output: %w", err)
+			}
+			mp.Data = raw
+		}
+	}
+	payload, err := json.Marshal(mp)
+	if err != nil {
+		return state.JournalEntry{}, fmt.Errorf("marshaling actor transition: %w", err)
+	}
+	return state.JournalEntry{Kind: state.JournalActorMessage, CorrelationID: id, Payload: payload}, nil
+}
+
+// splitActorEntries returns a Record's actor entries in recorded order, the ones that
+// ran before the step's own work apart from the rest.
+func splitActorEntries(rec *Record) (before, rest []state.JournalEntry, err error) {
+	for _, e := range actorEntries(rec) {
+		var mp actorMessagePayload
+		if err := json.Unmarshal(e.Payload, &mp); err != nil {
+			return nil, nil, fmt.Errorf("durable: decoding recorded actor %q transition: %w", e.CorrelationID, err)
+		}
+		if mp.Before {
+			before = append(before, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	return before, rest, nil
 }
 
 // replayActor re-fires one recorded parent transition directly through the

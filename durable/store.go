@@ -85,9 +85,10 @@ type Record struct {
 	TickSteps int
 
 	// EndedActors, when set, holds the child-machine actors the instance's state
-	// declared once this step ended that ran and have ended, settled or stopped, so
-	// Recover doesn't spawn them again. An actor whose spawn failed never ran, so it
-	// isn't one, and Recover tries it again. The first step after Start records the
+	// declared once this step ended that ran and have ended, settled or stopped, or
+	// whose spawn failed and whose onError applied (the journal holds that onError), so
+	// Recover doesn't spawn them again. An actor whose spawn failed with no onError to
+	// route to isn't one, and Recover tries it again. The first step after Start records the
 	// set, and later steps record it when they change it. It is nil otherwise, for a
 	// machine with no actor palette, and on a Record from before this field. An empty
 	// set is not nil: a Store must keep it, though it treats other empty fields as nil.

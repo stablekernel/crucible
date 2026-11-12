@@ -138,6 +138,7 @@ type Handle[S comparable, E comparable, C any] struct {
 	endedAt    []string                    // the ended actors the journal last recorded
 	endedSet   bool                        // whether endedAt holds a recorded set
 	seen       map[string]bool             // declared actors seen running, so a stopped one counts as ended
+	pending    []state.ParentFire[S]       // parent Fires Start's or Recover's spawns drove, journaled with the next step
 	actorBuf   *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
 	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
 
@@ -542,12 +543,12 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	actorBuf := make([]state.JournalEntry, 0)
 	actors, actorFires := r.newActorSystem(inst)
 	if actors != nil {
+		actorFires.attempt(inst.StartEffects())
 		actors.Absorb(ctx, inst.StartEffects())
-		// A parent Fire a starting actor drove (a failed spawn's onError) belongs to no
-		// recorded step, so it mustn't reach the first step's check.
-		actorFires.take()
-		actorFires.takeLifecycle()
 	}
+	// A parent Fire a starting actor drove (a failed spawn's onError) applied to the
+	// instance after its baseline, so the first step journals it, ahead of its own work.
+	startFires := heldFires(actorFires.take())
 	// The actors that started are seen running, so one later stopped counts as ended.
 	seen := map[string]bool{}
 	if actors != nil {
@@ -570,6 +571,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		actorBuf:   &actorBuf,
 		actorFires: actorFires,
 		seen:       seen,
+		pending:    startFires,
 		lock:       make(chan struct{}, 1),
 		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
@@ -610,6 +612,7 @@ type parentFires[S comparable] struct {
 	fires     []state.ParentFire[S]
 	spawned   map[string]bool // actors whose latest spawn this step started
 	attempted map[string]bool // actors the system was asked to spawn this step
+	failed    map[string]bool // actors whose latest spawn failed and whose onError applied
 }
 
 // attempt notes the actors effects ask the system to spawn.
@@ -627,21 +630,22 @@ func (p *parentFires[S]) attempt(effects []state.Effect) {
 			p.attempted[sp.ID] = true
 			// The latest attempt decides: until it starts, the actor hasn't run again.
 			delete(p.spawned, sp.ID)
+			delete(p.failed, sp.ID)
 		}
 	}
 }
 
 // takeLifecycle returns the actors spawned and the actors asked to spawn since the
 // last call, and forgets them. It's safe on a nil collector, which has none.
-func (p *parentFires[S]) takeLifecycle() (spawned, attempted map[string]bool) {
+func (p *parentFires[S]) takeLifecycle() (spawned, attempted, failed map[string]bool) {
 	if p == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	spawned, attempted = p.spawned, p.attempted
-	p.spawned, p.attempted = nil, nil
-	return spawned, attempted
+	spawned, attempted, failed = p.spawned, p.attempted, p.failed
+	p.spawned, p.attempted, p.failed = nil, nil, nil
+	return spawned, attempted, failed
 }
 
 // inspect notes each actor the system spawned. The system reports a spawn only once
@@ -661,6 +665,14 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
+	// A spawn whose onError applied is handled: the journal holds the onError, so
+	// retrying the spawn would apply it twice.
+	if pf.SpawnFailed && pf.Result.Err == nil {
+		if p.failed == nil {
+			p.failed = map[string]bool{}
+		}
+		p.failed[pf.ActorID] = true
+	}
 	p.mu.Unlock()
 	// The system absorbs a parent Fire's effects next, which spawns what they declare.
 	p.attempt(pf.Result.Effects)
@@ -791,8 +803,15 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// journaling this step would let Recover re-spawn the actor under a live context,
 	// where the onError applies. Record nothing. A Fire that drove no Fire a context refused
 	// applied whole, so it records even when ctx ended afterward.
-	if err := refusedByContext(parentFireErrs(h.actorFires.take())...); err != nil {
+	fires := h.actorFires.take()
+	if err := refusedByContext(parentFireErrs(fires)...); err != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, err))
+	}
+	// The parent Fires the absorb drove, such as a spawned actor's onError, applied
+	// after the event, so the step journals them, and replay re-fires them after it.
+	driven, err := recordParentFires(fires, false)
+	if err != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
 	}
 
 	step := h.nextStep
@@ -804,7 +823,7 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	if err != nil {
 		return res, nil, nil, h.fail(err)
 	}
-	rec := &Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: h.drainClock(), Effects: effEnvs}
+	rec := &Record{Step: step, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: append(h.drainClock(), driven...), Effects: effEnvs}
 	if err := h.appendStep(ctx, step, rec); err != nil {
 		return res, nil, nil, h.fail(err)
 	}
@@ -1011,6 +1030,14 @@ func (h *Handle[S, E, C]) checkpointDue(step int) bool {
 // orphaned behind the compaction.
 func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record) error {
 	now := h.endedActors()
+	held := len(h.pending)
+	if held > 0 {
+		before, err := recordParentFires(h.pending, true)
+		if err != nil {
+			return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
+		}
+		rec.Entries = append(rec.Entries, before...)
+	}
 	if h.checkpointDue(step) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
 		if err != nil {
@@ -1034,7 +1061,21 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 	if now != nil {
 		h.endedAt, h.endedSet = now.IDs, true
 	}
+	h.pending = h.pending[held:]
 	return nil
+}
+
+// heldFires returns the parent Fires a Start's or Recover's spawns drove that applied
+// or were refused for good: one a context's ending refused never applied and isn't
+// replayable, so it isn't journaled, and the spawn is tried again.
+func heldFires[S comparable](fires []state.ParentFire[S]) []state.ParentFire[S] {
+	var out []state.ParentFire[S]
+	for _, pf := range fires {
+		if pf.Result.Err == nil || !isContextErr(pf.Result.Err) {
+			out = append(out, pf)
+		}
+	}
+	return out
 }
 
 // endedActors returns the actors the instance's state declares that ran and have
@@ -1048,7 +1089,7 @@ func (h *Handle[S, E, C]) endedActors() *ActorSet {
 	if h.actors == nil {
 		return nil
 	}
-	spawned, attempted := h.actorFires.takeLifecycle()
+	spawned, attempted, failed := h.actorFires.takeLifecycle()
 	running := h.actors.IDs()
 	ended := []string{}
 	for _, id := range declaredActors(h.inst.StartEffects()) {
@@ -1059,7 +1100,7 @@ func (h *Handle[S, E, C]) endedActors() *ActorSet {
 		switch {
 		case ran:
 		case attempted[id]:
-			ran = spawned[id]
+			ran = spawned[id] || failed[id]
 		default:
 			ran = h.seen[id]
 		}
@@ -1240,12 +1281,13 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the recorded run already settled, which replay reconstructed by re-firing the
 	// parent rather than re-running behavior.
 	if actors != nil {
-		actors.Absorb(ctx, spawnsExcept(inst.StartEffects(), ended))
-		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
-		// recorded step, so it mustn't reach the next step's check.
-		actorFires.take()
-		actorFires.takeLifecycle()
+		spawns := spawnsExcept(inst.StartEffects(), ended)
+		actorFires.attempt(spawns)
+		actors.Absorb(ctx, spawns)
 	}
+	// A parent Fire a re-spawned actor drove (a failed spawn's onError) applied to the
+	// instance past its journal, so the next step journals it, ahead of its own work.
+	recoverFires := heldFires(actorFires.take())
 	// The journal's ended actors stay ended, and seen, so the next step records a set
 	// only when it changes them.
 	seen := map[string]bool{}
@@ -1330,6 +1372,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		endedAt:    endedAt,
 		endedSet:   actors != nil && ended != nil,
 		seen:       seen,
+		pending:    recoverFires,
 		lock:       make(chan struct{}, 1),
 		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
@@ -1580,9 +1623,12 @@ type replayed[S comparable] struct {
 // it, running no service, actor or effect handler. Recover and StateAt both walk the
 // journal with it; Recover adds its deadline table and effect re-dispatch on top.
 //
+//   - Parent Fires a Start's or Recover's spawns drove, recorded with the next step,
+//     re-fire first, before the step's own work.
 //   - An actor delivery re-fires each parent transition the delivery drove, in fire
 //     order, with the recorded done-data or error, so the kernel re-derives the same
-//     onDone / onError (or message) transition.
+//     onDone / onError (or message) transition. A Fire's or settle's absorb-driven
+//     parent Fires, such as a spawned actor's onError, re-fire after its own work.
 //   - A service settlement re-settles each recorded outcome through the same settle
 //     seam, in settle order; the settle absorbs its own follow-on StartService
 //     effects, so a chained invoke arms its successor for the next entry.
@@ -1600,23 +1646,16 @@ func replayRecord[S comparable, E comparable, C any](
 	rec *Record,
 ) (replayed[S], error) {
 	var out replayed[S]
+	before, rest, err := splitActorEntries(rec)
+	if err != nil {
+		return out, fmt.Errorf("at step %d: %w", rec.Step, err)
+	}
+	// Parent Fires a Start's or Recover's spawns drove ran before the step's own work.
+	if err := replayActors(ctx, inst, cfg, rec, before); err != nil {
+		return out, err
+	}
 	switch {
-	case hasActorEntry(rec):
-		for _, entry := range actorEntries(rec) {
-			if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
-				return out, fmt.Errorf("at step %d: %w", rec.Step, err)
-			}
-		}
-	case hasServiceEntry(rec):
-		for _, entry := range serviceEntries(rec) {
-			if err := replayService(ctx, svc, entry); err != nil {
-				return out, fmt.Errorf("at step %d: %w", rec.Step, err)
-			}
-		}
-	case rec.Tick:
-		out.tick = sched.Tick(ctx)
-	case len(rec.Event) == 0:
-	default:
+	case len(rec.Event) > 0:
 		event, err := cfg.eventCodec.Decode(rec.Event)
 		if err != nil {
 			return out, fmt.Errorf("decoding recorded event at step %d: %w", rec.Step, err)
@@ -1636,6 +1675,26 @@ func replayRecord[S comparable, E comparable, C any](
 			svc.Absorb(ctx, res.Effects)
 		}
 		out.fired = &res
+	case hasServiceEntry(rec):
+		for _, entry := range serviceEntries(rec) {
+			if err := replayService(ctx, svc, entry); err != nil {
+				return out, fmt.Errorf("at step %d: %w", rec.Step, err)
+			}
+		}
+	case rec.Tick:
+		out.tick = sched.Tick(ctx)
 	}
-	return out, nil
+	// The rest are a delivery's parent Fires, or the ones a Fire's or settle's absorb
+	// drove after it, such as a spawned actor's onError.
+	return out, replayActors(ctx, inst, cfg, rec, rest)
+}
+
+// replayActors re-fires recorded parent transitions, in order.
+func replayActors[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], cfg *runnerConfig[S, E, C], rec *Record, entries []state.JournalEntry) error {
+	for _, entry := range entries {
+		if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
+			return fmt.Errorf("at step %d: %w", rec.Step, err)
+		}
+	}
+	return nil
 }
