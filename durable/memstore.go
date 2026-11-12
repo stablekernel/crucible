@@ -406,5 +406,8 @@ func cloneRecord(rec Record) Record {
 	if rec.Snapshot != nil {
 		out.Snapshot = append([]byte(nil), rec.Snapshot...)
 	}
+	if rec.Actors != nil {
+		out.Actors = &RunningActors{IDs: append([]string{}, rec.Actors.IDs...)}
+	}
 	return out
 }

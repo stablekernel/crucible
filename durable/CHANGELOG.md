@@ -9,6 +9,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- **`Record.Actors` and `RunningActors`** record the child-machine actors running after
+  a step, when it changed them, so `Recover` spawns only those. A Store persists the field
+  like the others.
+
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
   than the highest it has seen for the instance with `ErrFenced`, writing nothing.
@@ -149,11 +153,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   start, the output was recorded with the last Fire, so replay gave it to the wrong
   transition. It's recorded with the settling Fire, which `state`'s new
   `ActorSystem.WithParentFireObserver` identifies.
-- **A refused settle stays settled after `Recover`.** When the parent refused an actor's
-  onDone or onError, the live actor was settled, but `Recover` spawned it again from the
-  parent's state. It isn't re-spawned now, unless a later step stops or spawns it again.
-  A parent Fire that middleware denied before the kernel saw it is recorded as refused,
-  and replay meets the same refusal instead of failing `Recover`.
+- **`Recover` spawns only the actors the live run had running.** It spawned every actor
+  the recovered state declared, so an actor that had settled or been stopped while its
+  parent stayed in that state ran again: a settle the parent refused, one that applied
+  without leaving the state, or an explicit stop. Each step now records the set of
+  running actors when it changes, in the new `Record.Actors`, and a checkpoint keeps it,
+  so `Recover` spawns the declared actors that set holds. A journal from before this
+  records no set, and `Recover` spawns every declared actor, as before.
+- **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
+  is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,
   such as an actor behavior a Fire's absorb started, left the Handle healthy but ahead of
   its journal, so the next step recorded on top of state the journal never held and

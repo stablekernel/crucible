@@ -239,53 +239,41 @@ func recordActorTransitions[S comparable](id string, traces []state.Trace, fires
 // kernel re-derives the same parent transition with the same data, running no actor
 // behavior. It reports an error only when the recorded entry cannot be decoded or
 // the re-fired transition fails (a corrupt or mis-ordered journal).
-func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], entry state.JournalEntry) (replayedActor[S], error) {
+func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], entry state.JournalEntry) error {
 	var mp actorMessagePayload
 	if err := json.Unmarshal(entry.Payload, &mp); err != nil {
-		return replayedActor[S]{}, fmt.Errorf("durable: decoding recorded actor %q transition: %w", entry.CorrelationID, err)
-	}
-	// A refused settle leaves the actor settled while the parent stays where it was, so
-	// Recover mustn't re-spawn it from the parent's state.
-	out := replayedActor[S]{}
-	if mp.Refused && mp.HasData {
-		out.settled = entry.CorrelationID
+		return fmt.Errorf("durable: decoding recorded actor %q transition: %w", entry.CorrelationID, err)
 	}
 	// A Fire refused before the kernel saw it (middleware that denied it) has no event
 	// to re-fire; replay is refused the same way.
 	if mp.Refused && len(mp.Event) == 0 {
-		return out, nil
+		return nil
 	}
 	event, err := codec.Decode(mp.Event)
 	if err != nil {
-		return out, fmt.Errorf("durable: decoding recorded actor %q event: %w", entry.CorrelationID, err)
+		return fmt.Errorf("durable: decoding recorded actor %q event: %w", entry.CorrelationID, err)
 	}
+	var res state.FireResult[S]
 	if mp.HasData {
 		data, derr := replayActorData(mp)
 		if derr != nil {
-			return out, fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.CorrelationID, derr)
+			return fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.CorrelationID, derr)
 		}
-		out.res = inst.Fire(ctx, event, state.WithEventData(data))
+		res = inst.Fire(ctx, event, state.WithEventData(data))
 	} else {
-		out.res = inst.Fire(ctx, event)
+		res = inst.Fire(ctx, event)
 	}
 	// The kernel reports every refusal with an error, so the error alone says whether
 	// replay was refused, as it said for the live Fire.
 	switch {
-	case out.res.Err != nil && mp.Refused:
-		return out, nil // the live run was refused the same way
-	case out.res.Err != nil:
-		return out, fmt.Errorf("durable: replaying actor %q transition: %w", entry.CorrelationID, out.res.Err)
+	case res.Err != nil && mp.Refused:
+		return nil // the live run was refused the same way
+	case res.Err != nil:
+		return fmt.Errorf("durable: replaying actor %q transition: %w", entry.CorrelationID, res.Err)
 	case mp.Refused:
-		return out, fmt.Errorf("durable: replaying actor %q transition: it applied, but the live run's was refused", entry.CorrelationID)
+		return fmt.Errorf("durable: replaying actor %q transition: it applied, but the live run's was refused", entry.CorrelationID)
 	}
-	return out, nil
-}
-
-// replayedActor is one replayed actor entry: the parent Fire's result, and the id of
-// the actor it settled when the live settle was refused.
-type replayedActor[S comparable] struct {
-	res     state.FireResult[S]
-	settled string
+	return nil
 }
 
 // replayActorData reconstructs the actor outcome a settling fire carried into the

@@ -418,40 +418,98 @@ func TestFire_PanicInHostCode_FailsTheHandle(t *testing.T) {
 	wantTail(t, store, id, before)
 }
 
-// TestDeliverToActor_RefusedSettle_StaysSettledAfterRecover proves an actor whose onDone
-// the parent refused, a deterministic refusal the journal records, isn't running again
-// on a recovered Handle: live it settled, and the parent stays where it was.
-func TestDeliverToActor_RefusedSettle_StaysSettledAfterRecover(t *testing.T) {
-	ctx := context.Background()
-	m := supervisorUsing(nil, true)
-	store := durable.NewMemStore()
-	id := durable.InstanceID("refused-settle")
+// watcherMachine invokes the counter child on supervising; childDone and the other
+// events stay in supervising, so the parent keeps declaring the child after it settles.
+// how decides what childDone does: "refuse" (a guard fails), "stay" (applies without
+// leaving), or "stop" (applies and stops the child explicitly). svcDone, from a service
+// the state also invokes, re-enters supervising.
+func watcherMachine(how string, withService bool) (*state.Machine[string, string, actorCtx], []durable.Option[string, string, actorCtx]) {
 	var runs int64
+	svc := func(context.Context, state.ServiceCtx[actorCtx]) (any, error) { return "ok", nil }
+	b := state.ForgeFor[actorCtx]("watcher").
+		Guard("never", func(state.GuardCtx[actorCtx]) bool { return false }).
+		Service("svc", svc).
+		Actor("spawnChild").
+		State("supervising").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"))
+	if withService {
+		b = b.Invoke("svc", state.WithInvokeOnDone("svcDone"))
+	}
+	b = b.State("complete").Final().Initial("supervising")
+	switch how {
+	case "refuse":
+		b = b.Transition("supervising").On("childDone").GoTo("complete").When("never")
+	case "stay":
+		b = b.Transition("supervising").On("childDone").GoTo("supervising")
+	case "stop":
+		b = b.Transition("supervising").On("childDone").GoTo("supervising").StopActor(state.ActorID("watcher", "supervising", 0))
+	}
+	m := b.Transition("supervising").On("svcDone").GoTo("supervising").Reenter().Quench()
 	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
-	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	if withService {
+		opts = append(opts, durable.WithServiceRegistry[string, string, actorCtx](state.NewRegistry[actorCtx]().Service("svc", svc)))
 	}
-	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
-	if !ok {
-		t.Fatal("no actor ref for the child")
+	return m, opts
+}
+
+// TestRecover_SpawnsTheActorsLiveHadRunning proves Recover spawns only the declared
+// actors the live run still had running, as the journal records them: an actor that
+// settled while its parent stayed in the declaring state, whether its onDone was
+// refused, applied without leaving, or stopped it, isn't spawned again, with or
+// without a checkpoint compacting the step; one a later step spawned again is.
+func TestRecover_SpawnsTheActorsLiveHadRunning(t *testing.T) {
+	ctx := context.Background()
+	childID := state.ActorID("watcher", "supervising", 0)
+	for _, how := range []string{"refuse", "stay", "stop"} {
+		for _, every := range []int{0, 1, 2} {
+			t.Run(fmt.Sprintf("%s/checkpoint every %d", how, every), func(t *testing.T) {
+				m, opts := watcherMachine(how, false)
+				if every > 0 {
+					opts = append(opts, durable.WithCheckpointEvery[string, string, actorCtx](every))
+				}
+				store := durable.NewMemStore()
+				id := durable.InstanceID("watch")
+				h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				ref, ok := h.ActorRef(childID)
+				if !ok {
+					t.Fatal("no actor ref for the child")
+				}
+				if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
+					t.Fatalf("DeliverToActor: %v", err)
+				}
+				recovered, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("Recover: %v", err)
+				}
+				if found, _ := recovered.DeliverToActor(ctx, ref, "finish"); found {
+					t.Fatal("recovered: the actor that settled live is running again")
+				}
+			})
+		}
 	}
-	if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
-		t.Fatalf("DeliverToActor: %v", err)
-	}
-	if found, _ := h.DeliverToActor(ctx, ref, "finish"); found {
-		t.Fatal("live: the settled actor is still running")
-	}
-	recovered, err := durable.Recover(ctx, m, store, id, opts...)
-	if err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	if found, _ := recovered.DeliverToActor(ctx, ref, "finish"); found {
-		t.Fatalf("recovered: the actor whose settle was refused is running again (it ran %d times)", runs)
-	}
-	if got := recovered.Instance().Current(); got != "supervising" {
-		t.Fatalf("recovered state = %q, want supervising", got)
-	}
+	t.Run("a service re-entering spawns it again", func(t *testing.T) {
+		m, opts := watcherMachine("refuse", true)
+		store := durable.NewMemStore()
+		id := durable.InstanceID("watch-svc")
+		h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		ref, _ := h.ActorRef(childID)
+		if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
+			t.Fatalf("DeliverToActor: %v", err)
+		}
+		mustRunService(t, h, state.InvokeID("watcher", "supervising", 1))
+		recovered, err := durable.Recover(ctx, m, store, id, opts...)
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if found, _ := recovered.DeliverToActor(ctx, ref, "finish"); !found {
+			t.Fatal("recovered: the actor the service's re-entry spawned again isn't running")
+		}
+	})
 }
 
 // TestDeliverToActor_MiddlewareDeniedParentFire_Recovers proves a parent Fire that

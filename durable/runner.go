@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -134,6 +135,8 @@ type Handle[S comparable, E comparable, C any] struct {
 	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
 
 	actors     *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
+	actorsAt   []string                    // the running actors the journal last recorded
+	actorsSet  bool                        // whether actorsAt holds a recorded set
 	actorBuf   *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
 	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
 
@@ -510,7 +513,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	}
 	// Wrap the baseline snapshot in a checkpoint envelope (no timers armed yet) so
 	// every checkpoint a recover loads carries the same durable envelope shape.
-	baseEnv, err := marshalCheckpoint(snap, nil, 0)
+	baseEnv, err := marshalCheckpoint(snap, nil, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("durable: marshaling start checkpoint envelope for %q: %w", id, err)
 	}
@@ -952,16 +955,49 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		// Wrap the kernel snapshot with the absolute deadlines of the timers armed at
 		// this checkpoint, so a recovery whose compacted tail no longer carries their
 		// arming ScheduleAfter can re-arm them at their recorded instants.
-		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep())
+		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep(), h.runningActors())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint envelope at step %d for %q: %w", step, h.id, err)
 		}
 		rec.Snapshot = env
 	}
+	now := h.runningActors()
+	if now != nil && (!h.actorsSet || !slices.Equal(now.IDs, h.actorsAt)) {
+		rec.Actors = now
+	}
 	if _, err := h.runner.store.Append(ctx, h.id, *rec, WithFence(h.runner.cfg.fence)); err != nil {
 		return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
 	}
+	if now != nil {
+		h.actorsAt, h.actorsSet = now.IDs, true
+	}
 	return nil
+}
+
+// runningActors returns the set of actors running now, or nil with no actor palette.
+func (h *Handle[S, E, C]) runningActors() *RunningActors {
+	if h.actors == nil {
+		return nil
+	}
+	return &RunningActors{IDs: h.actors.IDs()}
+}
+
+// spawnsRunning returns effects without the actor spawns running doesn't hold, so
+// Recover spawns only the declared actors the live run had running. With no recorded
+// set it returns effects unchanged, spawning every declared actor, as Recover did
+// before the set was recorded.
+func spawnsRunning(effects []state.Effect, running *RunningActors) []state.Effect {
+	if running == nil {
+		return effects
+	}
+	out := make([]state.Effect, 0, len(effects))
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok && !slices.Contains(running.IDs, sp.ID) {
+			continue
+		}
+		out = append(out, eff)
+	}
+	return out
 }
 
 // Recover reconstructs a durable instance purely from the Store: it loads the
@@ -991,7 +1027,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// Unwrap the durable checkpoint envelope: the kernel snapshot bytes, the absolute
 	// deadlines of the timers armed at the checkpoint, and the next step ordinal. A bare
 	// (pre-envelope) checkpoint yields the snapshot with no persisted timers.
-	kernelSnap, persistedTimers, checkpointNext, err := unmarshalCheckpoint(snapBytes)
+	env, err := unmarshalCheckpoint(snapBytes)
+	kernelSnap, persistedTimers, checkpointNext := env.Snapshot, env.Timers, env.NextStep
 	if err != nil {
 		return nil, fmt.Errorf("durable: unmarshaling checkpoint envelope for %q: %w", id, err)
 	}
@@ -1039,9 +1076,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// with every still-pending timer's deadline for the next checkpoint.
 	armed := map[string]pendingTimer{}
 
-	// settled holds the actors the walk found settled under a parent that refused their
-	// settle, so the parent still declares them but the live run has none running.
-	settled := map[string]bool{}
+	// running is the latest recorded set of the actors the live run had running: the
+	// checkpoint's, then each tail Record's that records one. Nil means none was
+	// recorded, so Recover spawns every actor the configuration declares.
+	running := env.Actors
 
 	for i := range tail {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
@@ -1054,7 +1092,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
-		trackSettled(settled, did)
+		if rec.Actors != nil {
+			running = rec.Actors
+		}
 		now, haveNow := tickInstant(rec.Entries)
 		// Mirror the step into the armed table so it tracks the still-pending set, with
 		// deadlines drawn from the step's recorded clock read, not the live wall clock:
@@ -1096,10 +1136,16 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the recorded run already settled, which replay reconstructed by re-firing the
 	// parent rather than re-running behavior.
 	if actors != nil {
-		actors.Absorb(ctx, withoutSettled(inst.StartEffects(), settled))
+		actors.Absorb(ctx, spawnsRunning(inst.StartEffects(), running))
 		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
 		// recorded step, so it mustn't reach the next step's check.
 		actorFires.take()
+	}
+	// The actors now running are the ones the journal records, so the next step records
+	// a set only when it changes them.
+	var recoveredActors []string
+	if actors != nil {
+		recoveredActors = actors.IDs()
 	}
 
 	// Re-arm any timer that was pending at the checkpoint but whose arming
@@ -1167,6 +1213,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		actors:     actors,
 		actorBuf:   &actorBuf,
 		actorFires: actorFires,
+		actorsAt:   recoveredActors,
+		actorsSet:  actors != nil,
 		lock:       make(chan struct{}, 1),
 		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
@@ -1407,51 +1455,10 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 }
 
 // replayed is what replayRecord fired, for a caller that tracks more than the
-// instance: a tick barrier's timer fires, a plain event's Fire, or the parent Fires an
-// actor delivery re-drove, and the actors whose settle the parent refused.
+// instance: a tick barrier's timer fires, or a plain event's Fire.
 type replayed[S comparable] struct {
-	tick    []state.FireResult[S]
-	fired   *state.FireResult[S]
-	driven  []state.FireResult[S]
-	settled []string
-}
-
-// trackSettled keeps settled, the actors replay found settled under a parent that
-// refused their onDone or onError, current after a replayed Record: an actor the
-// parent later stops or spawns again is no longer one to keep from re-spawning.
-func trackSettled[S comparable](settled map[string]bool, did replayed[S]) {
-	results := append(append([]state.FireResult[S](nil), did.tick...), did.driven...)
-	if did.fired != nil {
-		results = append(results, *did.fired)
-	}
-	for _, res := range results {
-		for _, eff := range res.Effects {
-			switch e := eff.(type) {
-			case state.SpawnActor:
-				delete(settled, e.ID)
-			case state.StopActor:
-				delete(settled, e.ID)
-			}
-		}
-	}
-	for _, id := range did.settled {
-		settled[id] = true
-	}
-}
-
-// withoutSettled returns effects without the spawns of the actors in settled.
-func withoutSettled(effects []state.Effect, settled map[string]bool) []state.Effect {
-	if len(settled) == 0 {
-		return effects
-	}
-	out := make([]state.Effect, 0, len(effects))
-	for _, eff := range effects {
-		if sp, ok := eff.(state.SpawnActor); ok && settled[sp.ID] {
-			continue
-		}
-		out = append(out, eff)
-	}
-	return out
+	tick  []state.FireResult[S]
+	fired *state.FireResult[S]
 }
 
 // replayRecord re-applies one journaled Record to inst the way the live step applied
@@ -1481,13 +1488,8 @@ func replayRecord[S comparable, E comparable, C any](
 	switch {
 	case hasActorEntry(rec):
 		for _, entry := range actorEntries(rec) {
-			ra, err := replayActor(ctx, inst, cfg.eventCodec, entry)
-			if err != nil {
+			if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
 				return out, fmt.Errorf("at step %d: %w", rec.Step, err)
-			}
-			out.driven = append(out.driven, ra.res)
-			if ra.settled != "" {
-				out.settled = append(out.settled, ra.settled)
 			}
 		}
 	case hasServiceEntry(rec):

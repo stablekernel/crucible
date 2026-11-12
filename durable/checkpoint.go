@@ -84,14 +84,18 @@ type checkpointEnvelope struct {
 	// Zero means none was recorded: a Start baseline, or a checkpoint from before this
 	// field.
 	NextStep int `json:"nextStep,omitempty"`
+	// Actors is the set of child-machine actors running at the checkpoint, so a
+	// recovery whose compacted tail no longer records it spawns only those. Nil means
+	// none was recorded: no actor palette, a Start baseline, or an older checkpoint.
+	Actors *RunningActors `json:"actors,omitempty"`
 }
 
 // marshalCheckpoint wraps the marshaled kernel snapshot and the armed pending
 // timers into a checkpoint envelope's bytes. Timers are emitted in scheduleID
 // order so the persisted form is deterministic regardless of the map iteration
 // order they were collected in. nextStep is the ordinal that follows the checkpoint.
-func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int) ([]byte, error) {
-	env := checkpointEnvelope{Snapshot: snap, NextStep: nextStep}
+func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int, actors *RunningActors) ([]byte, error) {
+	env := checkpointEnvelope{Snapshot: snap, NextStep: nextStep, Actors: actors}
 	if len(timers) > 0 {
 		ids := make([]string, 0, len(timers))
 		for id := range timers {
@@ -125,14 +129,14 @@ func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int
 // are returned as the snapshot with no timers and a zero ordinal, so an older
 // checkpoint still restores. A checkpoint envelope is distinguished by carrying a
 // non-empty "snapshot" member.
-func unmarshalCheckpoint(b []byte) ([]byte, []pendingTimerWire, int, error) {
+func unmarshalCheckpoint(b []byte) (checkpointEnvelope, error) {
 	var env checkpointEnvelope
 	if err := json.Unmarshal(b, &env); err != nil || len(env.Snapshot) == 0 {
 		// Not an envelope (or an envelope without the wrapped snapshot member): treat
 		// the bytes as a bare kernel snapshot, the pre-timer-survival checkpoint form.
-		return b, nil, 0, nil
+		return checkpointEnvelope{Snapshot: b}, nil
 	}
-	return env.Snapshot, env.Timers, env.NextStep, nil
+	return env, nil
 }
 
 // decodeTimerEvent decodes a persisted timer event wire back into the machine's

@@ -83,7 +83,7 @@ the first time, and replayed verbatim on recovery:
 | --- | --- | --- |
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
 | **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service or its settle, a crash, or a failed `Append` whose write didn't land) runs again when the host calls `RunService` |
-| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run; a running `InvokeActor` actor restarts from its initial state on any `Recover`, and a `Spawn` actor doesn't return |
+| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled or stopped actor doesn't re-run; a running `InvokeActor` actor restarts from its initial state on any `Recover`, and a `Spawn` actor doesn't return |
 | **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written (a

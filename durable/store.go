@@ -83,6 +83,20 @@ type Record struct {
 	// (zero for a tick that found nothing due). It lets replay advance its step
 	// accounting across a re-derived tick without a recorded Event per timer.
 	TickSteps int
+
+	// Actors, when set, holds the child-machine actors running once this step ended,
+	// recorded when the step changed them. Recover spawns the instance's declared
+	// actors that the latest recorded set holds, so an actor that settled or was
+	// stopped live isn't spawned again. It is nil when the step left them unchanged, for
+	// a machine with no actor palette, and on a Record from before this field.
+	Actors *RunningActors `json:",omitempty"`
+}
+
+// RunningActors is the set of child-machine actors running at a point in a durable
+// instance's journal.
+type RunningActors struct {
+	// IDs are the running actors' ids, sorted.
+	IDs []string `json:"ids"`
 }
 
 // followingStep returns the step ordinal after r. A tick barrier consumes one
