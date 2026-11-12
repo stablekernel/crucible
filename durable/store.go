@@ -84,18 +84,20 @@ type Record struct {
 	// accounting across a re-derived tick without a recorded Event per timer.
 	TickSteps int
 
-	// Actors, when set, holds the child-machine actors running once this step ended,
-	// recorded when the step changed them. Recover spawns the instance's declared
-	// actors that the latest recorded set holds, so an actor that settled or was
-	// stopped live isn't spawned again. It is nil when the step left them unchanged, for
-	// a machine with no actor palette, and on a Record from before this field.
-	Actors *RunningActors `json:",omitempty"`
+	// EndedActors, when set, holds the child-machine actors the instance's state
+	// declared once this step ended that ran and have ended, settled or stopped, so
+	// Recover doesn't spawn them again. An actor whose spawn failed never ran, so it
+	// isn't one, and Recover tries it again. The first step after Start records the
+	// set, and later steps record it when they change it. It is nil otherwise, for a
+	// machine with no actor palette, and on a Record from before this field. An empty
+	// set is not nil: a Store must keep it, though it treats other empty fields as nil.
+	EndedActors *ActorSet `json:",omitempty"`
 }
 
-// RunningActors is the set of child-machine actors running at a point in a durable
-// instance's journal.
-type RunningActors struct {
-	// IDs are the running actors' ids, sorted.
+// ActorSet is a set of child-machine actor ids at a point in a durable instance's
+// journal.
+type ActorSet struct {
+	// IDs are the actors' ids, sorted.
 	IDs []string `json:"ids"`
 }
 
@@ -132,7 +134,8 @@ func (r *Record) followingStep() int {
 // already-checkpointed Step is still recognized rather than rejected as out of
 // order, and a different Record there is still a conflict. Two Records are the
 // same when every field matches, with a nil and an empty field counting as equal,
-// except EventDataError, where nil means no error and an empty message is an error.
+// except EventDataError, where nil means no error and an empty message is an error,
+// and EndedActors, where nil means none recorded and an empty set means none ended.
 // An Append carrying WithIdempotencyKey (a backend reads it with
 // AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
 // Record: no comparison is made. Keys starting "step:" are reserved for the Store's

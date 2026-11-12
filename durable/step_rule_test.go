@@ -443,7 +443,9 @@ func watcherMachine(how string, withService bool) (*state.Machine[string, string
 	case "stop":
 		b = b.Transition("supervising").On("childDone").GoTo("supervising").StopActor(state.ActorID("watcher", "supervising", 0))
 	}
-	m := b.Transition("supervising").On("svcDone").GoTo("supervising").Reenter().Quench()
+	m := b.Transition("supervising").On("svcDone").GoTo("supervising").Reenter().
+		Transition("supervising").On("poke").GoTo("supervising").
+		Quench()
 	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
 	if withService {
 		opts = append(opts, durable.WithServiceRegistry[string, string, actorCtx](state.NewRegistry[actorCtx]().Service("svc", svc)))
@@ -485,6 +487,17 @@ func TestRecover_SpawnsTheActorsLiveHadRunning(t *testing.T) {
 				}
 				if found, _ := recovered.DeliverToActor(ctx, ref, "finish"); found {
 					t.Fatal("recovered: the actor that settled live is running again")
+				}
+				// A step on the recovered Handle, then a second Recover, keeps it ended.
+				if _, err = recovered.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke): %v", err)
+				}
+				again, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("second Recover: %v", err)
+				}
+				if found, _ := again.DeliverToActor(ctx, ref, "finish"); found {
+					t.Fatal("second Recover: the actor that settled live is running again")
 				}
 			})
 		}
@@ -580,5 +593,39 @@ func TestTick_FiresNothing_ContextEnded_StaysHealthy(t *testing.T) {
 	}
 	if _, err = h.Fire(ctx, "arm"); errors.Is(err, durable.ErrHandleFailed) {
 		t.Fatalf("the Handle failed: %v", err)
+	}
+}
+
+// TestRecover_RetriesAFailedSpawn proves an actor whose spawn failed live, which never
+// ran, isn't counted as ended: Recover spawns it again, as it did before the journal
+// recorded ended actors.
+func TestRecover_RetriesAFailedSpawn(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[actorCtx]("retry").
+		Actor("spawnChild").
+		State("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).
+		State("done").Final().
+		Initial("working").
+		Transition("working").On("next").GoTo("working").
+		Transition("working").On("childDone").GoTo("done").
+		Quench()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("retry")
+	failing := map[string]state.ActorBehavior{"spawnChild": failingSpawn(nil)}
+	h, err := durable.NewRunner(m, store, durable.WithActorPalette[string, string, actorCtx](failing)).
+		Start(ctx, id, actorCtx{}, state.WithInitialState("working"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "next"); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	var runs int64
+	recovered, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs)))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok := recovered.ActorRef(state.ActorID("retry", "working", 0)); !ok {
+		t.Fatal("Recover didn't spawn the actor whose live spawn failed")
 	}
 }

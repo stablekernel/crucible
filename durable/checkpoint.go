@@ -84,18 +84,19 @@ type checkpointEnvelope struct {
 	// Zero means none was recorded: a Start baseline, or a checkpoint from before this
 	// field.
 	NextStep int `json:"nextStep,omitempty"`
-	// Actors is the set of child-machine actors running at the checkpoint, so a
-	// recovery whose compacted tail no longer records it spawns only those. Nil means
-	// none was recorded: no actor palette, a Start baseline, or an older checkpoint.
-	Actors *RunningActors `json:"actors,omitempty"`
+	// EndedActors is the set of declared actors that had ended at the checkpoint (see
+	// Record.EndedActors), so a recovery whose compacted tail no longer records it still
+	// doesn't spawn them. Nil means none was recorded: no actor palette, a Start
+	// baseline, or an older checkpoint.
+	EndedActors *ActorSet `json:"endedActors,omitempty"`
 }
 
 // marshalCheckpoint wraps the marshaled kernel snapshot and the armed pending
 // timers into a checkpoint envelope's bytes. Timers are emitted in scheduleID
 // order so the persisted form is deterministic regardless of the map iteration
 // order they were collected in. nextStep is the ordinal that follows the checkpoint.
-func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int, actors *RunningActors) ([]byte, error) {
-	env := checkpointEnvelope{Snapshot: snap, NextStep: nextStep, Actors: actors}
+func marshalCheckpoint(snap []byte, timers map[string]pendingTimer, nextStep int, ended *ActorSet) ([]byte, error) {
+	env := checkpointEnvelope{Snapshot: snap, NextStep: nextStep, EndedActors: ended}
 	if len(timers) > 0 {
 		ids := make([]string, 0, len(timers))
 		for id := range timers {

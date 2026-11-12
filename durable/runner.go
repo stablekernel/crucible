@@ -135,8 +135,9 @@ type Handle[S comparable, E comparable, C any] struct {
 	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
 
 	actors     *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
-	actorsAt   []string                    // the running actors the journal last recorded
-	actorsSet  bool                        // whether actorsAt holds a recorded set
+	endedAt    []string                    // the ended actors the journal last recorded
+	endedSet   bool                        // whether endedAt holds a recorded set
+	seen       map[string]bool             // declared actors seen running, so a stopped one counts as ended
 	actorBuf   *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
 	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
 
@@ -545,6 +546,13 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		// recorded step, so it mustn't reach the first step's check.
 		actorFires.take()
 	}
+	// The actors that started are seen running, so one later stopped counts as ended.
+	seen := map[string]bool{}
+	if actors != nil {
+		for _, id := range actors.IDs() {
+			seen[id] = true
+		}
+	}
 
 	return &Handle[S, E, C]{
 		runner:     r,
@@ -559,6 +567,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		actors:     actors,
 		actorBuf:   &actorBuf,
 		actorFires: actorFires,
+		seen:       seen,
 		lock:       make(chan struct{}, 1),
 		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
@@ -955,44 +964,80 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		// Wrap the kernel snapshot with the absolute deadlines of the timers armed at
 		// this checkpoint, so a recovery whose compacted tail no longer carries their
 		// arming ScheduleAfter can re-arm them at their recorded instants.
-		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep(), h.runningActors())
+		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep(), h.endedActors())
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint envelope at step %d for %q: %w", step, h.id, err)
 		}
 		rec.Snapshot = env
 	}
-	now := h.runningActors()
-	if now != nil && (!h.actorsSet || !slices.Equal(now.IDs, h.actorsAt)) {
-		rec.Actors = now
+	now := h.endedActors()
+	if now != nil && (!h.endedSet || !slices.Equal(now.IDs, h.endedAt)) {
+		rec.EndedActors = now
 	}
 	if _, err := h.runner.store.Append(ctx, h.id, *rec, WithFence(h.runner.cfg.fence)); err != nil {
 		return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
 	}
 	if now != nil {
-		h.actorsAt, h.actorsSet = now.IDs, true
+		h.endedAt, h.endedSet = now.IDs, true
 	}
 	return nil
 }
 
-// runningActors returns the set of actors running now, or nil with no actor palette.
-func (h *Handle[S, E, C]) runningActors() *RunningActors {
+// endedActors returns the actors the instance's state declares that ran and have
+// ended: not running now, and either settled (the actor system keeps a settled actor)
+// or seen running at an earlier step (a stopped actor is gone from the system). An
+// actor whose spawn failed was never either, so it isn't one, and Recover spawns it
+// again. It forgets what it saw of actors the state no longer declares. It is nil with
+// no actor palette.
+func (h *Handle[S, E, C]) endedActors() *ActorSet {
 	if h.actors == nil {
 		return nil
 	}
-	return &RunningActors{IDs: h.actors.IDs()}
+	running := h.actors.IDs()
+	declared := declaredActors(h.inst.StartEffects())
+	for _, id := range running {
+		h.seen[id] = true
+	}
+	for id := range h.seen {
+		if !slices.Contains(declared, id) {
+			delete(h.seen, id)
+		}
+	}
+	ended := []string{}
+	for _, id := range declared {
+		if slices.Contains(running, id) {
+			continue
+		}
+		if _, settled := h.actors.Ref(id); settled || h.seen[id] {
+			ended = append(ended, id)
+		}
+	}
+	slices.Sort(ended)
+	return &ActorSet{IDs: ended}
 }
 
-// spawnsRunning returns effects without the actor spawns running doesn't hold, so
-// Recover spawns only the declared actors the live run had running. With no recorded
-// set it returns effects unchanged, spawning every declared actor, as Recover did
-// before the set was recorded.
-func spawnsRunning(effects []state.Effect, running *RunningActors) []state.Effect {
-	if running == nil {
+// declaredActors returns the ids of the actors effects spawn.
+func declaredActors(effects []state.Effect) []string {
+	var ids []string
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok {
+			ids = append(ids, sp.ID)
+		}
+	}
+	return ids
+}
+
+// spawnsExcept returns effects without the spawns of the actors ended holds, so
+// Recover doesn't spawn an actor the live run had ended. With no recorded set it
+// returns effects unchanged, spawning every declared actor, as Recover did before the
+// set was recorded.
+func spawnsExcept(effects []state.Effect, ended *ActorSet) []state.Effect {
+	if ended == nil {
 		return effects
 	}
 	out := make([]state.Effect, 0, len(effects))
 	for _, eff := range effects {
-		if sp, ok := eff.(state.SpawnActor); ok && !slices.Contains(running.IDs, sp.ID) {
+		if sp, ok := eff.(state.SpawnActor); ok && slices.Contains(ended.IDs, sp.ID) {
 			continue
 		}
 		out = append(out, eff)
@@ -1076,10 +1121,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// with every still-pending timer's deadline for the next checkpoint.
 	armed := map[string]pendingTimer{}
 
-	// running is the latest recorded set of the actors the live run had running: the
-	// checkpoint's, then each tail Record's that records one. Nil means none was
+	// ended is the latest recorded set of the declared actors the live run had ended:
+	// the checkpoint's, then each tail Record's that records one. Nil means none was
 	// recorded, so Recover spawns every actor the configuration declares.
-	running := env.Actors
+	ended := env.EndedActors
 
 	for i := range tail {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
@@ -1092,8 +1137,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
-		if rec.Actors != nil {
-			running = rec.Actors
+		if rec.EndedActors != nil {
+			ended = rec.EndedActors
 		}
 		now, haveNow := tickInstant(rec.Entries)
 		// Mirror the step into the armed table so it tracks the still-pending set, with
@@ -1136,16 +1181,25 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the recorded run already settled, which replay reconstructed by re-firing the
 	// parent rather than re-running behavior.
 	if actors != nil {
-		actors.Absorb(ctx, spawnsRunning(inst.StartEffects(), running))
+		actors.Absorb(ctx, spawnsExcept(inst.StartEffects(), ended))
 		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
 		// recorded step, so it mustn't reach the next step's check.
 		actorFires.take()
 	}
-	// The actors now running are the ones the journal records, so the next step records
-	// a set only when it changes them.
-	var recoveredActors []string
+	// The journal's ended actors stay ended, and seen, so the next step records a set
+	// only when it changes them.
+	seen := map[string]bool{}
+	var endedAt []string
 	if actors != nil {
-		recoveredActors = actors.IDs()
+		for _, id := range actors.IDs() {
+			seen[id] = true
+		}
+		if ended != nil {
+			endedAt = ended.IDs
+			for _, id := range ended.IDs {
+				seen[id] = true
+			}
+		}
 	}
 
 	// Re-arm any timer that was pending at the checkpoint but whose arming
@@ -1213,8 +1267,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		actors:     actors,
 		actorBuf:   &actorBuf,
 		actorFires: actorFires,
-		actorsAt:   recoveredActors,
-		actorsSet:  actors != nil,
+		endedAt:    endedAt,
+		endedSet:   actors != nil && ended != nil,
+		seen:       seen,
 		lock:       make(chan struct{}, 1),
 		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil

@@ -9,9 +9,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **`Record.Actors` and `RunningActors`** record the child-machine actors running after
-  a step, when it changed them, so `Recover` spawns only those. A Store persists the field
-  like the others.
+- **`Record.EndedActors` and `ActorSet`** record the declared child-machine actors that
+  ran and have ended, settled or stopped, so `Recover` doesn't spawn them again. A Store
+  must keep an empty set distinct from nil.
 
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
@@ -54,8 +54,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - **A journal this version writes isn't for an older one.** An actor entry can now say
   its parent Fire was refused, which an older `durable` fails `Recover` on, or, for an
-  entry with no event, replays as the zero event. Don't downgrade a Store this version
-  has written to.
+  entry with no event, replays as the zero event. An older `durable` also ignores the
+  recorded ended actors and spawns them again. Don't downgrade a Store this version has
+  written to.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
   recorded with a delivery's last Fire still replays into that transition. Only steps
@@ -153,12 +154,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   start, the output was recorded with the last Fire, so replay gave it to the wrong
   transition. It's recorded with the settling Fire, which `state`'s new
   `ActorSystem.WithParentFireObserver` identifies.
-- **`Recover` spawns only the actors the live run had running.** It spawned every actor
+- **`Recover` doesn't spawn an actor the live run had ended.** It spawned every actor
   the recovered state declared, so an actor that had settled or been stopped while its
   parent stayed in that state ran again: a settle the parent refused, one that applied
-  without leaving the state, or an explicit stop. Each step now records the set of
-  running actors when it changes, in the new `Record.Actors`, and a checkpoint keeps it,
-  so `Recover` spawns the declared actors that set holds. A journal from before this
+  without leaving the state, or an explicit stop. Each step now records the declared
+  actors that ran and ended, in the new `Record.EndedActors`, and a checkpoint keeps the
+  set, so `Recover` spawns the declared actors that aren't in it. An actor whose spawn
+  failed never ran, so `Recover` tries it again, as before. A journal from before this
   records no set, and `Recover` spawns every declared actor, as before.
 - **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
   is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
