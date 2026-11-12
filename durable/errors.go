@@ -62,6 +62,10 @@ var (
 	//   - a Tick, RunService or DeliverToActor ran while its context ended, so a Fire it
 	//     drove may have been refused: it had already consumed the timer, service or
 	//     delivery, so it can't simply refuse the way Fire does;
+	//   - a step, Fire included, drove a Fire that a context's ending refused, such as a
+	//     spawned actor's onError: Recover restores the state from before the step, so a
+	//     Fire's event must be fired again;
+	//   - host code panicked during a step;
 	//   - an effect handler failed.
 	// Call Handle.Drain, then Recover a new Handle with the same options to continue,
 	// unless the cause is ErrFenced: then a newer owner holds the instance, so stop.

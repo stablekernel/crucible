@@ -13,10 +13,11 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
-- **`ActorSystem.TakeParentFireErrors`** returns the errors of the parent Fires the
-  system drove since the last call, and clears them, so a host that records a delivery
-  or spawn can tell a parent transition refused because its context ended from one
-  that applied.
+- **`ActorSystem.WithParentFireObserver`** calls a function with each parent Fire the
+  system drives (a `ParentFire`: its result, refused ones included, and whether it
+  settled an actor, with the actor's outcome), so a host that records a delivery or spawn
+  can tell a parent transition refused because its context ended from one that applied,
+  and which Fire carried the actor's output.
 
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.

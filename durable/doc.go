@@ -109,8 +109,9 @@
 // Child-machine actors (WithActorPalette): an actor's behavior runs on the live path;
 // each parent transition the delivery drives is journaled as a JournalActorMessage. On
 // recovery the recorded transition is re-fired directly through the parent with the
-// recorded done-data, so a settled actor never re-runs. An actor still running at
-// recovery restarts from its initial state, because its own state isn't journaled.
+// recorded done-data, so a settled actor never re-runs. An InvokeActor actor still
+// running at recovery restarts from its initial state, because its own state isn't
+// journaled, and a Spawn actor doesn't return.
 //
 // # Idempotent effect dispatch
 //

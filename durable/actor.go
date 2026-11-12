@@ -23,8 +23,9 @@ import (
 // parent is recorded; on recovery the recorded result is replayed back through the SAME
 // parent transition the live run drove, so a settled actor never re-runs. This is the
 // standard durable-execution guarantee: recovery is a pure replay against the parent
-// kernel rather than a re-execution of the actor tree. An actor still running at recovery
-// restarts from its initial state, because its own state isn't journaled.
+// kernel rather than a re-execution of the actor tree. An InvokeActor actor still running
+// at recovery restarts from its initial state, because its own state isn't journaled, and
+// a Spawn actor doesn't return.
 //
 // The Runner wraps the kernel's reusable host driver, state.ActorSystem, which
 // turns SpawnActor / StopActor effects into running child actors, owns each actor's
@@ -105,11 +106,12 @@ type actorMessagePayload struct {
 // It returns whether the actor was found running: false for a ref that names no live
 // actor (already settled, stopped, or never spawned), or false and an error when no
 // palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
-// actor ran it returns true with any error. A failed Append, a result that won't encode,
-// or a ctx (or one derived from it) that ended during the delivery returns
-// ErrHandleFailed and records nothing: on
-// a recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
-// actor doesn't return. If another goroutine failed the Handle while this step was
+// actor ran it returns true with any error. A result that won't encode, a ctx that ended
+// during the delivery, or a parent Fire refused because a context ended (ctx, or one
+// middleware derived from it) returns ErrHandleFailed and records nothing: on a
+// recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
+// actor doesn't return. A failed Append also returns ErrHandleFailed, but the write may
+// have landed anyway, and Recover finds out which. If another goroutine failed the Handle while this step was
 // recording, it returns true and ErrHandleFailed saying the step was recorded. A failed
 // Checkpoint returns the plain error, and the delivery is recorded. Resending a recorded
 // delivery repeats any message it sends the parent.
@@ -118,6 +120,7 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		return false, err
 	}
 	defer h.release()
+	defer h.failOnPanic()
 	if err := h.refuse(ctx); err != nil {
 		return false, err
 	}
@@ -126,22 +129,20 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	}
 
 	before := len(h.inst.History())
-	h.clearActorFireErrs()
 	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
+	fires := h.actorFires.take()
 	if !delivered {
-		h.clearActorFireErrs()
 		return false, nil
 	}
 	// A context that ended during the delivery can make the kernel refuse a parent
 	// Fire it drove. The refused Fire rolls back, so live never applied it, but
 	// journaling the delivery would replay it under a live context, where it applies.
 	// Record nothing.
-	if err := h.stepCanceled(ctx); err != nil {
+	if err := h.stepCanceled(ctx, parentFireErrs(fires)...); err != nil {
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 
-	output, settled, settleErr := h.actorOutcome()
-	entries, err := recordActorTransitions(ref.ID, h.inst.History(), before, output, settled, settleErr)
+	entries, err := recordActorTransitions(ref.ID, h.inst.History()[before:], fires)
 	if err != nil {
 		return true, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
 	}
@@ -174,23 +175,6 @@ func (h *Handle[S, E, C]) ActorRef(id string) (state.ActorRef, bool) {
 	return h.actors.Ref(id)
 }
 
-// actorOutcome reads the most recently settled actor's output / error from the
-// underlying ActorSystem, the outcome the settling parent fire carried. It reports
-// whether a settlement occurred at all (so a delivery that only sent a message and
-// did not complete the actor records no settle data).
-func (h *Handle[S, E, C]) actorOutcome() (output any, settled bool, settleErr error) {
-	if h.actors == nil {
-		return nil, false, nil
-	}
-	if err := h.actors.LastError(); err != nil {
-		return nil, true, err
-	}
-	if out, ok := h.actors.LastOutput(); ok {
-		return out, true, nil
-	}
-	return nil, false, nil
-}
-
 // drainActors returns and clears the actor transitions recorded since the last
 // drain, so each persisted step carries exactly the transitions that resolved
 // during it, in fire order.
@@ -204,34 +188,30 @@ func (h *Handle[S, E, C]) drainActors() []state.JournalEntry {
 	return out
 }
 
-// recordActorTransitions builds the JournalActorMessage entries for the parent
-// Traces the just-completed delivery appended (those at index before..len). Each
-// new Trace is one parent transition the actor system drove; the entry carries that
-// transition's event payload. When the actor settled (output or error present), the
-// settling onDone / onError fire is the LAST of those Traces — a SendParent message
-// fires the parent before the actor drains and completes — so the outcome is
-// attributed to the last entry, which records HasData; earlier entries are
-// message-driven and carry no separate payload.
-func recordActorTransitions(id string, history []state.Trace, before int, output any, settled bool, settleErr error) ([]state.JournalEntry, error) {
-	if before >= len(history) {
-		return nil, nil
+// recordActorTransitions builds the JournalActorMessage entries for the parent Traces
+// a delivery appended, one per parent transition the actor system drove, in fire
+// order. Each carries its transition's event payload, and whether the live Fire was
+// refused. A Fire that settled an actor also carries the actor's outcome, which it
+// passed as event data, so replay re-fires the same onDone or onError with it. fires
+// are the actor system's own record of those Fires, matching the traces one for one.
+func recordActorTransitions[S comparable](id string, traces []state.Trace, fires []state.ParentFire[S]) ([]state.JournalEntry, error) {
+	if len(fires) != len(traces) {
+		return nil, fmt.Errorf("the actor system drove %d parent Fires, but the parent recorded %d", len(fires), len(traces))
 	}
-	traces := history[before:]
 	entries := make([]state.JournalEntry, 0, len(traces))
 	for i, tr := range traces {
 		var mp actorMessagePayload
 		mp.Event = append(json.RawMessage(nil), tr.EventPayload...)
 		mp.Refused = tr.Outcome != state.OutcomeSuccess
-		// Attribute the actor outcome to the settling fire — the last parent Trace —
-		// so the onDone / onError transition replays with the recorded done-data /
-		// error, while a message-driven fire that preceded it replays plainly.
-		if settled && i == len(traces)-1 {
+		if fires[i].Settle {
 			mp.HasData = true
-			if settleErr != nil {
-				msg := settleErr.Error()
+			switch out := fires[i].Outcome.(type) {
+			case error:
+				msg := out.Error()
 				mp.Error = &msg
-			} else if output != nil {
-				raw, err := json.Marshal(output)
+			case nil:
+			default:
+				raw, err := json.Marshal(out)
 				if err != nil {
 					return nil, fmt.Errorf("marshaling actor output: %w", err)
 				}
@@ -277,14 +257,13 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 	} else {
 		res = inst.Fire(ctx, event)
 	}
-	refused := res.Err != nil || res.Trace.Outcome != state.OutcomeSuccess
+	// The kernel reports every refusal with an error, so the error alone says whether
+	// replay was refused.
 	switch {
-	case refused && mp.Refused:
+	case res.Err != nil && mp.Refused:
 		return nil // the live run was refused the same way
-	case refused && res.Err != nil:
+	case res.Err != nil:
 		return fmt.Errorf("durable: replaying actor %q transition: %w", entry.CorrelationID, res.Err)
-	case refused:
-		return fmt.Errorf("durable: replaying actor %q transition: %s, but the live run's applied", entry.CorrelationID, res.Trace.Outcome)
 	case mp.Refused:
 		return fmt.Errorf("durable: replaying actor %q transition: it applied, but the live run's was refused", entry.CorrelationID)
 	}

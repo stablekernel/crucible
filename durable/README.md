@@ -82,8 +82,8 @@ the first time, and replayed verbatim on recovery:
 | Seam | Wire with | Recorded as |
 | --- | --- | --- |
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
-| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service or its settle, a failed `Append`, a crash) runs again when the host calls `RunService` |
-| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run, and a running one restarts from its initial state on any `Recover` |
+| **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service or its settle, a crash, or a failed `Append` whose write didn't land) runs again when the host calls `RunService` |
+| **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled actor doesn't re-run; a running `InvokeActor` actor restarts from its initial state on any `Recover`, and a `Spawn` actor doesn't return |
 | **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written (a
@@ -151,9 +151,10 @@ context not derived from the step's. A step waiting for the lock stops when its 
 ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
-A step that may not have been recorded, or a `Tick`, `RunService` or `DeliverToActor` whose
-context, or one derived from it, ended during the step, fails the Handle with
-`ErrHandleFailed`. So does an effect handler
+A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does a
+`Tick`, `RunService` or `DeliverToActor` whose context ended during the step, and any of
+the four, `Fire` included, that drove a Fire refused because a context ended, the caller's
+or one middleware derived from it. So does an effect handler
 that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no
 step of the failed Handle is still recording and no effect is still being sent, so the
 recovered Handle loads every recorded step and can't send an effect twice. Give `Drain` a

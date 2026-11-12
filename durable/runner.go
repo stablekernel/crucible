@@ -102,9 +102,10 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // lock; Instance returns it outside the lock. A stateless Runner.Fire builds its own
 // Handle, so it isn't serialized with this one.
 //
-// A step that applied to the kernel but may not have been recorded, or a Tick, RunService
-// or DeliverToActor whose context, or one derived from it, ended during the step,
-// leaves the Handle out of step with the journal. That call and every later one return ErrHandleFailed, wrapping the cause,
+// A step that applied to the kernel but may not have been recorded leaves the Handle out
+// of step with the journal. So does a Tick, RunService or DeliverToActor whose context
+// ended during the step, and any step, Fire included, that drove a Fire refused because
+// a context ended, the caller's or one middleware derived from it. That call and every later one return ErrHandleFailed, wrapping the cause,
 // which can be a context that ended during the Store write. Before recovering, call
 // Drain: a step on another goroutine may still be recording, which a recovered Handle
 // wouldn't load, or sending an effect, which it would send again. Recovering a healthy
@@ -131,8 +132,9 @@ type Handle[S comparable, E comparable, C any] struct {
 	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
 	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
 
-	actors   *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
-	actorBuf *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
+	actors     *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
+	actorBuf   *[]state.JournalEntry       // recording actor-transition accumulator, flushed per step
+	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
 
 	out outbox // what a step leaves behind once it releases the step lock
 }
@@ -532,25 +534,29 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// transition a delivery drives for replay. A machine with no actor palette wired
 	// spawns no actor and records no actor entries.
 	actorBuf := make([]state.JournalEntry, 0)
-	actors := r.newActorSystem(inst)
+	actors, actorFires := r.newActorSystem(inst)
 	if actors != nil {
 		actors.Absorb(ctx, inst.StartEffects())
+		// A parent Fire a starting actor drove (a failed spawn's onError) belongs to no
+		// recorded step, so it mustn't reach the first step's check.
+		actorFires.take()
 	}
 
 	return &Handle[S, E, C]{
-		runner:   r,
-		id:       id,
-		inst:     inst,
-		nextStep: 0,
-		sched:    state.NewScheduler(inst),
-		recClock: recClock,
-		timers:   map[string]pendingTimer{},
-		svc:      svc,
-		svcBuf:   &svcBuf,
-		actors:   actors,
-		actorBuf: &actorBuf,
-		lock:     make(chan struct{}, 1),
-		out:      outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
+		runner:     r,
+		id:         id,
+		inst:       inst,
+		nextStep:   0,
+		sched:      state.NewScheduler(inst),
+		recClock:   recClock,
+		timers:     map[string]pendingTimer{},
+		svc:        svc,
+		svcBuf:     &svcBuf,
+		actors:     actors,
+		actorBuf:   &actorBuf,
+		actorFires: actorFires,
+		lock:       make(chan struct{}, 1),
+		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
 }
 
@@ -565,17 +571,54 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) *state
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to
-// inst, registering each behavior in the configured palette, or nil when no actor
-// palette was wired (a machine that spawns no actor needs none).
-func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) *state.ActorSystem[S, E, C] {
+// inst, registering each behavior in the configured palette, and the collector of the
+// parent Fires it drives. Both are nil when no actor palette was wired (a machine
+// that spawns no actor needs none).
+func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.ActorSystem[S, E, C], *parentFires[S]) {
 	if len(r.cfg.actorPalette) == 0 {
-		return nil
+		return nil, nil
 	}
-	sys := state.NewActorSystem(inst)
+	fires := &parentFires[S]{}
+	sys := state.NewActorSystem(inst).WithParentFireObserver(fires.note)
 	for src, behavior := range r.cfg.actorPalette {
 		sys.Register(src, behavior)
 	}
-	return sys
+	return sys, fires
+}
+
+// parentFires collects the parent Fires an actor system drives, so the step that drove
+// them can check and record them.
+type parentFires[S comparable] struct {
+	mu    sync.Mutex
+	fires []state.ParentFire[S]
+}
+
+func (p *parentFires[S]) note(pf state.ParentFire[S]) {
+	p.mu.Lock()
+	p.fires = append(p.fires, pf)
+	p.mu.Unlock()
+}
+
+// take returns the Fires noted since the last take, in fire order, and forgets them.
+// It's safe on a nil collector, which has none.
+func (p *parentFires[S]) take() []state.ParentFire[S] {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fires := p.fires
+	p.fires = nil
+	return fires
+}
+
+// parentFireErrs returns each parent Fire's error, nil ones included.
+func parentFireErrs[S comparable](fires []state.ParentFire[S]) []error {
+	errs := make([]error, len(fires))
+	for i := range fires {
+		errs[i] = fires[i].Result.Err
+	}
+	return errs
 }
 
 // Fire drives one event through a durable instance identified by id, loading and
@@ -605,6 +648,14 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // goroutine failed the Handle while this step was recording, Fire returns
 // ErrHandleFailed saying the step was recorded; Recover sends its effects.
 //
+// A Fire the kernel refuses, because ctx ended or for any other reason, returns that
+// error, records nothing and leaves the Handle usable. When the event applies, an actor
+// the step spawned can fail and route its onError through the instance; if a context
+// ending, ctx or one derived from it, refuses that onError, Fire fails the Handle with
+// ErrHandleFailed and records nothing, though the event applied. Recover restores the
+// state from before the event, so fire it again on the recovered Handle. A Fire that
+// drove nothing refused records even if ctx ends once the kernel has applied it.
+//
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
 // both see the same value. Decode it as the type the caller passed: a payload that
@@ -632,10 +683,11 @@ func (h *Handle[S, E, C]) Fire(ctx context.Context, event E, opts ...state.FireO
 	return res, h.finishStep(ctx, rec, des)
 }
 
-// lockedFireStep runs fireStep and releases the step lock however it returns, a panic
-// in host code included.
+// lockedFireStep runs fireStep and releases the step lock however it returns. A panic
+// in host code fails the Handle first, since the kernel may have applied the event.
 func (h *Handle[S, E, C]) lockedFireStep(ctx context.Context, event E, opts []state.FireOption) (state.FireResult[S], *Record, []dispatchableEffect, error) {
 	defer h.release()
+	defer h.failOnPanic()
 	return h.fireStep(h.stepContext(ctx), event, opts)
 }
 
@@ -663,6 +715,15 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// may enter a state that both invokes a service and spawns an actor and arms a
 	// timer, and each driver must see its effects.
 	h.absorbDrivers(ctx, res.Effects)
+
+	// An actor the absorb spawned can fail and route its onError through the parent.
+	// A context that ended can refuse that Fire, so live never applied it, and
+	// journaling this step would let Recover re-spawn the actor under a live context,
+	// where the onError applies. Record nothing. A Fire that drove nothing refused
+	// applied whole, so it records even when ctx ended afterward.
+	if err := refusedByContext(parentFireErrs(h.actorFires.take())...); err != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, err))
+	}
 
 	step := h.nextStep
 	// Stamp this step's domain effects with their deterministic ids and carry them
@@ -752,15 +813,15 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 		return nil, err
 	}
 	defer h.release()
+	defer h.failOnPanic()
 	if err := h.refuse(ctx); err != nil {
 		return nil, err
 	}
-	h.clearActorFireErrs()
 	results := h.sched.Tick(h.stepContext(ctx))
 	// A context that ended partway can make the kernel refuse a due timer's Fire after
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
 	// applied, so record nothing: Recover re-arms the timers.
-	if err := h.stepCanceled(ctx, resultErrs(results)...); err != nil {
+	if err := h.stepCanceled(ctx, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
 		return results, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
 
@@ -964,7 +1025,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// settled. The live actors at the resume point are armed once, after replay,
 	// from the final configuration's StartEffects.
 	actorBuf := make([]state.JournalEntry, 0)
-	actors := r.newActorSystem(inst)
+	actors, actorFires := r.newActorSystem(inst)
 
 	// armed mirrors the scheduler's pending timers re-established by tail replay,
 	// with their recorded deadlines, so a persisted-but-compacted timer is re-armed
@@ -1025,6 +1086,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// parent rather than re-running behavior.
 	if actors != nil {
 		actors.Absorb(ctx, inst.StartEffects())
+		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
+		// recorded step, so it mustn't reach the next step's check.
+		actorFires.take()
 	}
 
 	// Re-arm any timer that was pending at the checkpoint but whose arming
@@ -1080,19 +1144,20 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 	}
 	return &Handle[S, E, C]{
-		runner:   r,
-		id:       id,
-		inst:     inst,
-		nextStep: next,
-		sched:    sched,
-		recClock: recClock,
-		timers:   armed,
-		svc:      svc,
-		svcBuf:   &svcBuf,
-		actors:   actors,
-		actorBuf: &actorBuf,
-		lock:     make(chan struct{}, 1),
-		out:      outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
+		runner:     r,
+		id:         id,
+		inst:       inst,
+		nextStep:   next,
+		sched:      sched,
+		recClock:   recClock,
+		timers:     armed,
+		svc:        svc,
+		svcBuf:     &svcBuf,
+		actors:     actors,
+		actorBuf:   &actorBuf,
+		actorFires: actorFires,
+		lock:       make(chan struct{}, 1),
+		out:        outbox{dispatching: map[int]struct{}{}, checkpointed: baselineStep},
 	}, nil
 }
 
@@ -1277,18 +1342,22 @@ func isContextErr(err error) bool {
 // stepCanceled reports why a Tick, RunService or DeliverToActor must record nothing:
 // a context ended, so a Fire the step drove may have been refused, and live may not
 // have applied what the step would journal. That's the caller's ctx having ended, or
-// a Fire refused with a context's error (one middleware derived from ctx included),
-// among errs or among the parent Fires the actor system drove. A refusal with any
-// other cause, such as a failing guard, is deterministic: the step is journaled, and
-// replay meets the same refusal. It drains the actor system's record of parent Fire
-// errors either way.
+// a Fire refused with a context's error (one middleware derived from ctx included)
+// among errs, which hold the errors of the Fires the step drove, the parent Fires its
+// actors drove among them. These steps check ctx itself because a service or timer
+// they consumed can end on it without any Fire reporting it. A refusal with any other
+// cause, such as a failing guard, is deterministic: the step is journaled, and replay
+// meets the same refusal.
 func (h *Handle[S, E, C]) stepCanceled(ctx context.Context, errs ...error) error {
-	if h.actors != nil {
-		errs = append(errs, h.actors.TakeParentFireErrors()...)
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	return refusedByContext(errs...)
+}
+
+// refusedByContext returns the first of errs that is a context's error: a Fire refused
+// because the context it ran under ended.
+func refusedByContext(errs ...error) error {
 	for _, err := range errs {
 		if err != nil && isContextErr(err) {
 			return err
@@ -1297,11 +1366,13 @@ func (h *Handle[S, E, C]) stepCanceled(ctx context.Context, errs ...error) error
 	return nil
 }
 
-// clearActorFireErrs drops parent Fire errors recorded before a step began, so
-// stepCanceled sees only the step's own.
-func (h *Handle[S, E, C]) clearActorFireErrs() {
-	if h.actors != nil {
-		h.actors.TakeParentFireErrors()
+// failOnPanic fails the Handle when host code panicked during a step, since the kernel
+// may have applied what the step never recorded, then lets the panic go on. A step
+// defers it after release, so it runs first, under the step lock.
+func (h *Handle[S, E, C]) failOnPanic() {
+	if p := recover(); p != nil {
+		_ = h.fail(fmt.Errorf("durable: a step of %q panicked: %v", h.id, p))
+		panic(p)
 	}
 }
 

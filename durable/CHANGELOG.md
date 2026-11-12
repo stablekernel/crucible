@@ -48,6 +48,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **A journal this version writes isn't for an older one.** An actor entry can now say
+  its parent Fire was refused, which an older `durable` fails `Recover` on. Don't
+  downgrade a Store this version has written to.
 - Requires Go 1.27.4.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
@@ -119,15 +122,32 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A step whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
   or `DeliverToActor` used to record a result the live instance never applied, which
   recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`
-  wrapping the error and records nothing. One rule covers all three: a step records
-  nothing once its context ended by the end of the step, or a Fire it drove was refused
-  with a context's error, which catches a context middleware derived from the caller's.
+  wrapping the error and records nothing. One rule covers them: a step records nothing
+  once its context ended by the end of the step, or a Fire it drove was refused with a
+  context's error, which catches a context middleware derived from the caller's. A
+  callback that returns its own context error, such as an HTTP client's timeout, counts
+  as a context ending too.
   A Fire refused for another reason, such as a failing guard, is still recorded, and
   replay now meets the same refusal instead of failing Recover on it. After `Recover`
-  the service stays in flight and
-  must tolerate running again, the timer is re-armed, and the actor restarts. `Recover`
-  and `StateAt` now fail on a canceled context, rather than returning state short of the
-  journal.
+  the service stays in flight and must tolerate running again, the timer is re-armed, an
+  `InvokeActor` actor restarts from its initial state, and a `Spawn` actor doesn't
+  return. `Recover` and `StateAt` now fail on a canceled context, rather than returning
+  state short of the journal.
+- **`Fire` follows the same rule for the actors it spawns.** When an actor a Fire's
+  state spawned failed to start and a context's ending refused its onError, the Fire was
+  recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns
+  `ErrHandleFailed` and records nothing, though its event applied: fire it again on the
+  recovered Handle. A Fire that drove nothing refused still records, even when its
+  context ends once the kernel has applied the event.
+- **An actor's output replays with the Fire that carried it.** When one delivery drove
+  several parent Fires, such as an onDone entering a state whose actor then failed to
+  start, the output was recorded with the last Fire, so replay gave it to the wrong
+  transition. It's recorded with the settling Fire, which `state`'s new
+  `ActorSystem.WithParentFireObserver` identifies.
+- **A panic during a step fails the Handle.** A panic in host code under the step lock,
+  such as an actor behavior a Fire's absorb started, left the Handle healthy but ahead of
+  its journal, so the next step recorded on top of state the journal never held and
+  `Recover` failed. The Handle now fails first, and the panic goes on to the caller.
 - **The next step survives a checkpoint that compacts tick barriers.** A checkpoint
   now records the step that follows it, in a `nextStep` field of its envelope. Recovery
   used the Trace count, which runs low past a tick barrier, so the next Fire could reuse a
@@ -136,7 +156,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   with `ErrStepConflict`, and an identical one is acknowledged without a new Record.
 - **`WithEventData` survives recovery.** `Handle.Fire` records the payload in the new
   `Record.EventData` and `Record.EventDataError`, and `Recover` and `StateAt` supply it
-  on replay. This needs `state.FireEventData`, so `durable` requires `state` v1.1.0 or
+  on replay. This needs `state.FireEventData` (and the observer above needs
+  `state.ActorSystem.WithParentFireObserver`), so `durable` requires `state` v1.1.0 or
   later, and its `require` must move there before a `durable` tag.
 - **Recording-clock buffer race.** Closing a step's `Record` (draining the
   recording clock) and the clock-read index reads used to mirror timer deadlines

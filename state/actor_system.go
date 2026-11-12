@@ -155,10 +155,9 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// never silently swallowed. Read through LastEscalation.
 	lastEscalation *ActorEscalation
 
-	// parentFireErrs holds the errors of the parent Fires the system drove since the
-	// last TakeParentFireErrors, so a host can tell a parent transition refused
-	// because its context ended from one that applied. Guarded by mu.
-	parentFireErrs []error
+	// parentFireObserver, when set, is called with each parent Fire the system
+	// drives. Set with WithParentFireObserver; guarded by mu.
+	parentFireObserver func(ParentFire[S])
 
 	// escalationHandler is the optional host policy invoked for each escalation. It
 	// is nil by default — the default escalation behavior (record + inspect) needs no
@@ -392,7 +391,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(res)
+	s.noteParentFire(ParentFire[S]{Result: res})
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -674,7 +673,7 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 	s.mu.Unlock()
 
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(res)
+	s.noteParentFire(ParentFire[S]{Result: res})
 	s.Absorb(ctx, res.Effects)
 
 	s.mu.Lock()
@@ -736,7 +735,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		payload = output
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
-	s.noteParentFire(res)
+	s.noteParentFire(ParentFire[S]{Result: res, Settle: true, Outcome: payload})
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }
@@ -797,24 +796,42 @@ func (s *ActorSystem[S, E, C]) LastError() error {
 	return s.lastOutcome.err
 }
 
-// noteParentFire records a parent Fire's error for TakeParentFireErrors.
-func (s *ActorSystem[S, E, C]) noteParentFire(res FireResult[S]) {
-	if res.Err == nil {
-		return
-	}
-	s.mu.Lock()
-	s.parentFireErrs = append(s.parentFireErrs, res.Err)
-	s.mu.Unlock()
+// ParentFire is one parent Fire an ActorSystem drove, as WithParentFireObserver
+// reports it.
+type ParentFire[S comparable] struct {
+	// Result is the parent Fire's result. A refused Fire carries its error.
+	Result FireResult[S]
+	// Settle reports that the Fire routed a settled actor's onDone or onError, which
+	// carried Outcome as its event data (WithEventData). A message the actor sent the
+	// parent, or a failed spawn's onError, carries none.
+	Settle bool
+	// Outcome is the settled actor's output, or its error, when Settle is set.
+	Outcome any
 }
 
-// TakeParentFireErrors returns the errors of the parent Fires the system has driven
-// since the last call, in order, and clears them. A parent Fire refused because the
-// context it ran under ended reports that context's error, so a host that records
-// what a delivery or spawn drove can tell a refusal it can't replay from one it can.
-func (s *ActorSystem[S, E, C]) TakeParentFireErrors() []error {
+// WithParentFireObserver calls observe with each parent Fire the system drives (an
+// actor's onDone or onError, a message it sends the parent, a failed spawn's
+// onError), in fire order, refused ones included, after the Fire returns and before
+// its effects are absorbed. A host that records what a delivery or spawn drove uses
+// it: a parent Fire refused because the context it ran under ended reports that
+// context's error, so the host can tell a refusal it can't replay from one it can,
+// and Settle and Outcome say which Fire carried an actor's outcome, and what it was.
+// observe runs on the goroutine that drove the Fire, with no lock of the system's
+// held, so it may read the system but must not drive it. Setting it returns the
+// system for chaining.
+func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S])) *ActorSystem[S, E, C] {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	errs := s.parentFireErrs
-	s.parentFireErrs = nil
-	return errs
+	s.parentFireObserver = observe
+	s.mu.Unlock()
+	return s
+}
+
+// noteParentFire hands a parent Fire to the observer, if one is set.
+func (s *ActorSystem[S, E, C]) noteParentFire(pf ParentFire[S]) {
+	s.mu.Lock()
+	observe := s.parentFireObserver
+	s.mu.Unlock()
+	if observe != nil {
+		observe(pf)
+	}
 }
