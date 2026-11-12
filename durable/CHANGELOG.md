@@ -49,8 +49,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Changed
 
 - **A journal this version writes isn't for an older one.** An actor entry can now say
-  its parent Fire was refused, which an older `durable` fails `Recover` on. Don't
-  downgrade a Store this version has written to.
+  its parent Fire was refused, which an older `durable` fails `Recover` on, or, for an
+  entry with no event, replays as the zero event. Don't downgrade a Store this version
+  has written to.
+- **A journal an older version wrote replays as it did.** Its actor entries carry no
+  refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
+  recorded with a delivery's last Fire still replays into that transition. Only steps
+  this version records get the fixes below.
 - Requires Go 1.27.4.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
@@ -119,7 +124,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
-- **A step whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
+- **A Tick, RunService or DeliverToActor whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
   or `DeliverToActor` used to record a result the live instance never applied, which
   recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`
   wrapping the error and records nothing. One rule covers them: a step records nothing
@@ -137,13 +142,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state spawned failed to start and a context's ending refused its onError, the Fire was
   recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns
   `ErrHandleFailed` and records nothing, though its event applied: fire it again on the
-  recovered Handle. A Fire that drove nothing refused still records, even when its
+  recovered Handle. A Fire that drove no Fire a context refused still records, even when its
   context ends once the kernel has applied the event.
 - **An actor's output replays with the Fire that carried it.** When one delivery drove
   several parent Fires, such as an onDone entering a state whose actor then failed to
   start, the output was recorded with the last Fire, so replay gave it to the wrong
   transition. It's recorded with the settling Fire, which `state`'s new
   `ActorSystem.WithParentFireObserver` identifies.
+- **A refused settle stays settled after `Recover`.** When the parent refused an actor's
+  onDone or onError, the live actor was settled, but `Recover` spawned it again from the
+  parent's state. It isn't re-spawned now, unless a later step stops or spawns it again.
+  A parent Fire that middleware denied before the kernel saw it is recorded as refused,
+  and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,
   such as an actor behavior a Fire's absorb started, left the Handle healthy but ahead of
   its journal, so the next step recorded on top of state the journal never held and

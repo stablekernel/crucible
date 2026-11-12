@@ -95,11 +95,12 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // or one middleware derived from it) returns ErrHandleFailed and records nothing: a
 // recovered Handle has the service in flight again, and RunService runs it a second time.
 // A failed Append also returns ErrHandleFailed, but the write may have landed anyway:
-// Recover finds out, and the service runs again only if the result isn't in the journal. If another goroutine failed the Handle while this step was
-// recording, it returns the result, true and ErrHandleFailed saying the step was
-// recorded. That error also matches the cause, so test ErrHandleFailed first: it alone
-// means Recover is needed. A failed Checkpoint returns the plain error, and the result
-// is recorded.
+// Recover finds out, and the service runs again only if the result isn't in the
+// journal. If another goroutine failed the Handle while this step was recording, it
+// returns the result, true and ErrHandleFailed saying the step was recorded. Every
+// ErrHandleFailed also matches its cause, so test for ErrHandleFailed first, then
+// ErrFenced, as the Handle doc says. A failed Checkpoint returns the plain error, and
+// the result is recorded.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err

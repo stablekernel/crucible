@@ -15,10 +15,9 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 - **`ActorSystem.WithParentFireObserver`** calls a function with each parent Fire the
   system drives (a `ParentFire`: its result, refused ones included, and whether it
-  settled an actor, with the actor's outcome), so a host that records a delivery or spawn
+  settled an actor, with the actor's output or error), so a host that records a delivery or spawn
   can tell a parent transition refused because its context ended from one that applied,
-  and which Fire carried the actor's output.
-
+  and which Fire carried the actor's output. It's additive, within v1.1.0.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new

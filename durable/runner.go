@@ -103,7 +103,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // Handle, so it isn't serialized with this one.
 //
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
-// of step with the journal. So does a Tick, RunService or DeliverToActor whose context
+// of step with the journal, and so does one that panicked in host code; the panic
+// reaches the caller after the Handle fails. So does a Tick, RunService or DeliverToActor whose context
 // ended during the step, and any step, Fire included, that drove a Fire refused because
 // a context ended, the caller's or one middleware derived from it. That call and every later one return ErrHandleFailed, wrapping the cause,
 // which can be a context that ended during the Store write. Before recovering, call
@@ -653,8 +654,11 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // the step spawned can fail and route its onError through the instance; if a context
 // ending, ctx or one derived from it, refuses that onError, Fire fails the Handle with
 // ErrHandleFailed and records nothing, though the event applied. Recover restores the
-// state from before the event, so fire it again on the recovered Handle. A Fire that
-// drove nothing refused records even if ctx ends once the kernel has applied it.
+// state from before the event, so fire it again on the recovered Handle, and don't act
+// on the result Fire returned with that error. A Fire that drove no Fire a context
+// refused records, even if ctx ends after the kernel applied it. A panic in host code
+// during the step fails the Handle, then reaches the caller: recover it, then Drain
+// and Recover as for ErrHandleFailed.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -719,7 +723,7 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// An actor the absorb spawned can fail and route its onError through the parent.
 	// A context that ended can refuse that Fire, so live never applied it, and
 	// journaling this step would let Recover re-spawn the actor under a live context,
-	// where the onError applies. Record nothing. A Fire that drove nothing refused
+	// where the onError applies. Record nothing. A Fire that drove no Fire a context refused
 	// applied whole, so it records even when ctx ended afterward.
 	if err := refusedByContext(parentFireErrs(h.actorFires.take())...); err != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, err))
@@ -821,7 +825,9 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	// A context that ended partway can make the kernel refuse a due timer's Fire after
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
 	// applied, so record nothing: Recover re-arms the timers.
-	if err := h.stepCanceled(ctx, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
+	// A tick that fired no timer consumed nothing, so an ended ctx can't have cost it
+	// anything: it records as usual.
+	if err := h.consumedCanceled(ctx, len(results) > 0, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
 		return results, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
 
@@ -1033,6 +1039,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// with every still-pending timer's deadline for the next checkpoint.
 	armed := map[string]pendingTimer{}
 
+	// settled holds the actors the walk found settled under a parent that refused their
+	// settle, so the parent still declares them but the live run has none running.
+	settled := map[string]bool{}
+
 	for i := range tail {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
 		// state short of the journal, so check it before each Record.
@@ -1044,6 +1054,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
+		trackSettled(settled, did)
 		now, haveNow := tickInstant(rec.Entries)
 		// Mirror the step into the armed table so it tracks the still-pending set, with
 		// deadlines drawn from the step's recorded clock read, not the live wall clock:
@@ -1085,7 +1096,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the recorded run already settled, which replay reconstructed by re-firing the
 	// parent rather than re-running behavior.
 	if actors != nil {
-		actors.Absorb(ctx, inst.StartEffects())
+		actors.Absorb(ctx, withoutSettled(inst.StartEffects(), settled))
 		// A parent Fire a re-spawned actor drove (a failed spawn's onError) belongs to no
 		// recorded step, so it mustn't reach the next step's check.
 		actorFires.take()
@@ -1355,6 +1366,16 @@ func (h *Handle[S, E, C]) stepCanceled(ctx context.Context, errs ...error) error
 	return refusedByContext(errs...)
 }
 
+// consumedCanceled is stepCanceled for a step that consumed something (a timer it
+// fired, a delivery that drove the parent), and refusedByContext for one that didn't,
+// which has nothing an ended ctx could have cost it.
+func (h *Handle[S, E, C]) consumedCanceled(ctx context.Context, consumed bool, errs ...error) error {
+	if consumed {
+		return h.stepCanceled(ctx, errs...)
+	}
+	return refusedByContext(errs...)
+}
+
 // refusedByContext returns the first of errs that is a context's error: a Fire refused
 // because the context it ran under ended.
 func refusedByContext(errs ...error) error {
@@ -1386,10 +1407,51 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 }
 
 // replayed is what replayRecord fired, for a caller that tracks more than the
-// instance: a tick barrier's timer fires, or a plain event's Fire.
+// instance: a tick barrier's timer fires, a plain event's Fire, or the parent Fires an
+// actor delivery re-drove, and the actors whose settle the parent refused.
 type replayed[S comparable] struct {
-	tick  []state.FireResult[S]
-	fired *state.FireResult[S]
+	tick    []state.FireResult[S]
+	fired   *state.FireResult[S]
+	driven  []state.FireResult[S]
+	settled []string
+}
+
+// trackSettled keeps settled, the actors replay found settled under a parent that
+// refused their onDone or onError, current after a replayed Record: an actor the
+// parent later stops or spawns again is no longer one to keep from re-spawning.
+func trackSettled[S comparable](settled map[string]bool, did replayed[S]) {
+	results := append(append([]state.FireResult[S](nil), did.tick...), did.driven...)
+	if did.fired != nil {
+		results = append(results, *did.fired)
+	}
+	for _, res := range results {
+		for _, eff := range res.Effects {
+			switch e := eff.(type) {
+			case state.SpawnActor:
+				delete(settled, e.ID)
+			case state.StopActor:
+				delete(settled, e.ID)
+			}
+		}
+	}
+	for _, id := range did.settled {
+		settled[id] = true
+	}
+}
+
+// withoutSettled returns effects without the spawns of the actors in settled.
+func withoutSettled(effects []state.Effect, settled map[string]bool) []state.Effect {
+	if len(settled) == 0 {
+		return effects
+	}
+	out := make([]state.Effect, 0, len(effects))
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok && settled[sp.ID] {
+			continue
+		}
+		out = append(out, eff)
+	}
+	return out
 }
 
 // replayRecord re-applies one journaled Record to inst the way the live step applied
@@ -1419,8 +1481,13 @@ func replayRecord[S comparable, E comparable, C any](
 	switch {
 	case hasActorEntry(rec):
 		for _, entry := range actorEntries(rec) {
-			if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
+			ra, err := replayActor(ctx, inst, cfg.eventCodec, entry)
+			if err != nil {
 				return out, fmt.Errorf("at step %d: %w", rec.Step, err)
+			}
+			out.driven = append(out.driven, ra.res)
+			if ra.settled != "" {
+				out.settled = append(out.settled, ra.settled)
 			}
 		}
 	case hasServiceEntry(rec):

@@ -417,3 +417,110 @@ func TestFire_PanicInHostCode_FailsTheHandle(t *testing.T) {
 	}
 	wantTail(t, store, id, before)
 }
+
+// TestDeliverToActor_RefusedSettle_StaysSettledAfterRecover proves an actor whose onDone
+// the parent refused, a deterministic refusal the journal records, isn't running again
+// on a recovered Handle: live it settled, and the parent stays where it was.
+func TestDeliverToActor_RefusedSettle_StaysSettledAfterRecover(t *testing.T) {
+	ctx := context.Background()
+	m := supervisorUsing(nil, true)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("refused-settle")
+	var runs int64
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for the child")
+	}
+	if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
+		t.Fatalf("DeliverToActor: %v", err)
+	}
+	if found, _ := h.DeliverToActor(ctx, ref, "finish"); found {
+		t.Fatal("live: the settled actor is still running")
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if found, _ := recovered.DeliverToActor(ctx, ref, "finish"); found {
+		t.Fatalf("recovered: the actor whose settle was refused is running again (it ran %d times)", runs)
+	}
+	if got := recovered.Instance().Current(); got != "supervising" {
+		t.Fatalf("recovered state = %q, want supervising", got)
+	}
+}
+
+// TestDeliverToActor_MiddlewareDeniedParentFire_Recovers proves a parent Fire that
+// middleware denied before the kernel saw it is journaled as refused, and Recover
+// meets the same refusal instead of failing on the event it has none of.
+func TestDeliverToActor_MiddlewareDeniedParentFire_Recovers(t *testing.T) {
+	ctx := context.Background()
+	deny := func(next state.FireFunc[string, string, actorCtx]) state.FireFunc[string, string, actorCtx] {
+		return func(ctx context.Context, event string) state.FireResult[string] {
+			if event == "childDone" {
+				return state.FireResult[string]{Err: errors.New("denied by policy")}
+			}
+			return next(ctx, event)
+		}
+	}
+	m := supervisorUsing(deny, false)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("denied")
+	var runs int64
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for the child")
+	}
+	if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
+		t.Fatalf("DeliverToActor: %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != h.Instance().Current() {
+		t.Fatalf("recovered state = %q, want the live %q", got, h.Instance().Current())
+	}
+}
+
+// TestTick_FiresNothing_ContextEnded_StaysHealthy proves a Tick that fired no timer
+// keeps the Handle healthy even when its context ends during the call, since it
+// consumed nothing an ended context could have cost it.
+func TestTick_FiresNothing_ContextEnded_StaysHealthy(t *testing.T) {
+	ctx := context.Background()
+	m := expiringMachine(nil, doneNext)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("idle-tick")
+	clk := &countingClock{Clock: state.NewFakeClock(epoch)}
+	h, err := durable.NewRunner(m, store, durable.WithRunnerClock[string, string, stepCtx](clk)).
+		Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	clk.onRead = func(int) { cancel() } // the timer isn't due yet
+	results, err := h.Tick(turn)
+	clk.onRead = nil
+	if turn.Err() == nil {
+		t.Fatal("the test didn't end the context")
+	}
+	if err != nil || len(results) != 0 {
+		t.Fatalf("Tick = %d results, %v; want none and no error", len(results), err)
+	}
+	if _, err = h.Fire(ctx, "arm"); errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("the Handle failed: %v", err)
+	}
+}

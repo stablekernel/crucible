@@ -735,7 +735,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		payload = output
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
-	s.noteParentFire(ParentFire[S]{Result: res, Settle: true, Outcome: payload})
+	s.noteParentFire(ParentFire[S]{Result: res, Settle: true, Output: output, Err: err})
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }
@@ -802,11 +802,14 @@ type ParentFire[S comparable] struct {
 	// Result is the parent Fire's result. A refused Fire carries its error.
 	Result FireResult[S]
 	// Settle reports that the Fire routed a settled actor's onDone or onError, which
-	// carried Outcome as its event data (WithEventData). A message the actor sent the
-	// parent, or a failed spawn's onError, carries none.
+	// carried the actor's outcome as its event data (WithEventData): Err for an onError,
+	// Output for an onDone. A message the actor sent the parent, or the onError of a
+	// spawn that couldn't start, carries none.
 	Settle bool
-	// Outcome is the settled actor's output, or its error, when Settle is set.
-	Outcome any
+	// Output is the settled actor's output, when Settle is set and Err is nil.
+	Output any
+	// Err is the settled actor's failure, when Settle is set and it failed.
+	Err error
 }
 
 // WithParentFireObserver calls observe with each parent Fire the system drives (an
@@ -815,10 +818,11 @@ type ParentFire[S comparable] struct {
 // its effects are absorbed. A host that records what a delivery or spawn drove uses
 // it: a parent Fire refused because the context it ran under ended reports that
 // context's error, so the host can tell a refusal it can't replay from one it can,
-// and Settle and Outcome say which Fire carried an actor's outcome, and what it was.
-// observe runs on the goroutine that drove the Fire, with no lock of the system's
-// held, so it may read the system but must not drive it. Setting it returns the
-// system for chaining.
+// and Settle, Output and Err say which Fire carried an actor's outcome, and what it
+// was. observe runs on the goroutine that drove the Fire, with no lock of the system's
+// held, so it may read the system but must not drive it. Calls from Fires driven on
+// different goroutines can overlap, so observe must be safe for concurrent use.
+// Setting it returns the system for chaining.
 func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S])) *ActorSystem[S, E, C] {
 	s.mu.Lock()
 	s.parentFireObserver = observe
