@@ -55,7 +55,10 @@ import (
 // the actor's onDone / onError, or a message it sends — is journaled as a
 // JournalActorMessage; on recovery the recorded transition is replayed by re-firing
 // the parent directly with the recorded done-data, so the actor behavior is never
-// re-instantiated. A purely event-driven machine records no Entries.
+// re-instantiated. A Fire's or RunService's Record also journals the settles and
+// failed spawns' onErrors its absorb drove, replayed after its own work, and the step
+// after Start or Recover journals the ones their spawns drove, replayed first. A
+// purely event-driven machine records no Entries.
 type Runner[S comparable, E comparable, C any] struct {
 	machine *state.Machine[S, E, C]
 	store   Store
@@ -548,6 +551,8 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	}
 	// A parent Fire a starting actor drove (a failed spawn's onError) applied to the
 	// instance after its baseline, so the first step journals it, ahead of its own work.
+	// One a context's ending refused never applied and isn't journaled; the spawn is
+	// retried at Recover.
 	startFires := heldFires(actorFires.take())
 	// The actors that started are seen running, so one later stopped counts as ended.
 	seen := map[string]bool{}
@@ -807,9 +812,10 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	if err := refusedByContext(parentFireErrs(fires)...); err != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, err))
 	}
-	// The parent Fires the absorb drove, such as a spawned actor's onError, applied
-	// after the event, so the step journals them, and replay re-fires them after it.
-	driven, err := recordParentFires(fires, false)
+	// The parent Fires the absorb drove that settled an actor or routed a failed spawn's
+	// onError applied after the event, so the step journals them, and replay re-fires
+	// them after it.
+	driven, err := recordParentFires(journaledFires(fires), false)
 	if err != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
 	}
@@ -1036,7 +1042,8 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		if err != nil {
 			return fmt.Errorf("durable: recording step %d for %q: %w", step, h.id, err)
 		}
-		rec.Entries = append(rec.Entries, before...)
+		// They ran before the step's own work, so they come first.
+		rec.Entries = append(before, rec.Entries...)
 	}
 	if h.checkpointDue(step) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
@@ -1070,8 +1077,22 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 // replayable, so it isn't journaled, and the spawn is tried again.
 func heldFires[S comparable](fires []state.ParentFire[S]) []state.ParentFire[S] {
 	var out []state.ParentFire[S]
-	for _, pf := range fires {
+	for _, pf := range journaledFires(fires) {
 		if pf.Result.Err == nil || !isContextErr(pf.Result.Err) {
+			out = append(out, pf)
+		}
+	}
+	return out
+}
+
+// journaledFires returns the parent Fires an absorb drove that the journal must hold:
+// a settle, after which the actor has ended, and the onError of a spawn that couldn't
+// start. A message an actor sends as it spawns isn't one: Recover spawns a running
+// actor again, which sends it again.
+func journaledFires[S comparable](fires []state.ParentFire[S]) []state.ParentFire[S] {
+	var out []state.ParentFire[S]
+	for _, pf := range fires {
+		if pf.Settle || pf.SpawnFailed {
 			out = append(out, pf)
 		}
 	}
@@ -1083,8 +1104,10 @@ func heldFires[S comparable](fires []state.ParentFire[S]) []state.ParentFire[S] 
 // has ended when it settled (the actor system keeps a settled actor), or when this
 // step asked the system to spawn it and the latest of those spawns started it (then
 // something stopped it), or, when this step didn't try to spawn it, when it was
-// running or ended at the previous step. So an actor whose spawn failed, at entry or on a re-entry,
-// hasn't ended, and Recover tries it again. It is nil with no actor palette.
+// running or ended at the previous step. A spawn whose onError applied also counts as
+// ended, since the journal holds that onError. So an actor whose spawn failed with no
+// onError, at entry or on a re-entry, hasn't ended, and Recover tries it again. It is nil
+// with no actor palette.
 func (h *Handle[S, E, C]) endedActors() *ActorSet {
 	if h.actors == nil {
 		return nil

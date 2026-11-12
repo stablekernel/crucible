@@ -437,3 +437,74 @@ func TestRecover_SpawnsASuperstatesActor(t *testing.T) {
 		t.Fatalf("state = %q, want done after the actor finished", got)
 	}
 }
+
+// greeter is an actor that sends its parent "hello" as it spawns, then keeps running.
+type greeter struct{ sent bool }
+
+func (g *greeter) DeliverFire(context.Context, any) (bool, any) { return false, nil }
+func (g *greeter) ChildEffects() []state.Effect {
+	if g.sent {
+		return nil
+	}
+	g.sent = true
+	return []state.Effect{state.SendParent{Event: "hello"}}
+}
+func (g *greeter) Output() any { return nil }
+
+// TestRecover_AppliesASpawnMessageOnce proves a message a running actor sends its parent
+// as it spawns isn't journaled with the step that spawned it: Recover spawns the actor
+// again, which sends it again, so journaling it too would apply it twice.
+func TestRecover_AppliesASpawnMessageOnce(t *testing.T) {
+	ctx := context.Background()
+	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {
+		return func(in state.AssignCtx[actorCtx]) actorCtx {
+			c := in.Entity
+			c.Notes = append(c.Notes, s)
+			return c
+		}
+	}
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+		"greeter": func(map[string]any) (state.ActorInstance, error) { return &greeter{}, nil },
+	})}
+	for _, initial := range []string{"idle", "greeting"} {
+		t.Run("from "+initial, func(t *testing.T) {
+			m := state.ForgeFor[actorCtx]("greet").
+				Reducer("noteHello", note("hello")).
+				Reducer("notePoke", note("poke")).
+				Actor("greeter").
+				State("idle").
+				State("greeting").InvokeActor("greeter").
+				Initial(initial).
+				Transition("idle").On("go").GoTo("greeting").
+				Transition("greeting").On("hello").GoTo("greeting").Assign("noteHello").
+				Transition("greeting").On("poke").GoTo("greeting").Assign("notePoke").
+				Quench()
+			store, id := durable.NewMemStore(), durable.InstanceID("greet")
+			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState(initial))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if initial == "idle" {
+				if _, err = h.Fire(ctx, "go"); err != nil {
+					t.Fatalf("Fire(go): %v", err)
+				}
+			}
+			if _, err = h.Fire(ctx, "poke"); err != nil {
+				t.Fatalf("Fire(poke): %v", err)
+			}
+			recovered, err := durable.Recover(ctx, m, store, id, opts...)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			hellos := 0
+			for _, n := range recovered.Instance().Entity().Notes {
+				if n == "hello" {
+					hellos++
+				}
+			}
+			if hellos != 1 {
+				t.Fatalf("recovered notes = %v, want the spawn's hello once", recovered.Instance().Entity().Notes)
+			}
+		})
+	}
+}

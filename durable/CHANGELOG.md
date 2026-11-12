@@ -55,7 +55,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A journal this version writes isn't for an older one.** An actor entry can now say
   its parent Fire was refused, which an older `durable` fails `Recover` on, or, for an
   entry with no event, replays as the zero event. An older `durable` also ignores the
-  recorded ended actors and spawns them again. Don't downgrade a Store this version has
+  recorded ended actors and spawns them again, and replays a step that records actor
+  entries as a delivery, skipping its event, settle or tick. Don't downgrade a Store this version has
   written to.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
@@ -163,16 +164,25 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   failed with no onError never ran, so `Recover` tries it again, as before; one whose
   onError applied counts as ended, since the journal holds that onError. A journal from before this
   records no set, and `Recover` spawns every declared actor, as before.
-- **A failed spawn's onError is journaled.** When an actor a `Fire`, `RunService`,
-  `Start` or `Recover` spawned couldn't start and its onError applied, nothing recorded
-  the onError, so `Recover` either applied it again by retrying the spawn, or, once the
-  spawn worked, never applied it. A Fire's or settle's onError is now recorded with its
-  step, and one from `Start`'s or `Recover`'s spawns with the step after, and replay
-  re-fires each where it ran.
+- **A failed spawn's onError, and a settle an absorb drove, are journaled.** When an
+  actor a `Fire`, `RunService`, `Start` or `Recover` spawned couldn't start and its
+  onError applied, nothing recorded the onError, so `Recover` either applied it again
+  by retrying the spawn, or, once the spawn worked, never applied it. Likewise a settle
+  a Fire's effects drove, such as one from a `SendTo` to a running actor, wasn't
+  recorded, so `Recover` lost it. These are now recorded with their step, or, for
+  `Start`'s and `Recover`'s spawns, with the step after, and replay re-fires each where
+  it ran. An actor output that has no JSON form now fails the Handle here too, as it
+  does for a delivery. A message a running actor sends as it spawns isn't journaled:
+  `Recover` spawns the actor again, which sends it again, so it can land after the
+  steps that followed it live.
 - **A compound state's services and actors start.** `Start` and `Recover` armed only
   those declared on the active leaves, so a service or actor on a compound state didn't
   run while one of its children was active. They come from `state.StartEffects`, which
-  now covers every active state.
+  now covers every active state. A journal from before this records no ended actors,
+  so `Recover` from it also spawns a compound state's actor that had settled, as it
+  already did for a leaf's. A settled service is re-armed by a `Recover` from a
+  checkpoint taken after its settle, on a compound or a leaf state; that, and restoring
+  a checkpoint's timers before the replay walk, is left to a follow-up.
 - **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
   is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,

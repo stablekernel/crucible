@@ -415,10 +415,10 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // post-1.0 ADDITIVE item, not a v1.0 contract.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
-	cfg := i.Configuration()
-	out := i.afterEffectsOnEntry(cfg, &tr)
-	out = append(out, i.invokeEffectsOnEntry(cfg, &tr)...)
-	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	active := i.activeStates()
+	out := i.afterEffectsOnEntry(active, &tr)
+	out = append(out, i.invokeEffectsOnEntry(active, &tr)...)
+	out = append(out, i.actorEffectsOnEntry(active, &tr)...)
 	return out
 }
 

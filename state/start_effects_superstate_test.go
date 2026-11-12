@@ -7,9 +7,9 @@ import (
 	"github.com/stablekernel/crucible/state"
 )
 
-// TestStartEffects_IncludesTheSuperstatesInvokes proves StartEffects reports the
-// services and actors a compound state declares while one of its children is active,
-// the compound state's before its child's.
+// TestStartEffects_IncludesTheSuperstatesInvokes proves StartEffects and ResumeEffects
+// report the services and actors a compound state declares while one of its children
+// is active, the compound state's before its child's.
 func TestStartEffects_IncludesTheSuperstatesInvokes(t *testing.T) {
 	svc := func(context.Context, state.ServiceCtx[*trec]) (any, error) { return nil, nil }
 	m := state.ForgeFor[*trec]("nest").
@@ -37,5 +37,14 @@ func TestStartEffects_IncludesTheSuperstatesInvokes(t *testing.T) {
 	}
 	if len(actors) != 1 || actors[0] != "outerActor" {
 		t.Fatalf("actors = %v, want [outerActor]", actors)
+	}
+	var resumed []string
+	for _, eff := range inst.ResumeEffects() {
+		if e, ok := eff.(state.SpawnActor); ok {
+			resumed = append(resumed, e.Src.Name)
+		}
+	}
+	if len(resumed) != 1 || resumed[0] != "outerActor" {
+		t.Fatalf("ResumeEffects actors = %v, want [outerActor]", resumed)
 	}
 }

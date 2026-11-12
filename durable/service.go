@@ -147,9 +147,10 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		*h.svcBuf = append(*h.svcBuf, entry)
 	}
 
-	// The parent Fires the absorb drove, such as a spawned actor's onError, applied
-	// after the settle, so the step journals them, and replay re-fires them after it.
-	driven, err := recordParentFires(fires, false)
+	// The parent Fires the absorb drove that settled an actor or routed a failed spawn's
+	// onError applied after the settle, so the step journals them, and replay re-fires
+	// them after it.
+	driven, err := recordParentFires(journaledFires(fires), false)
 	if err != nil {
 		return res, true, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
 	}

@@ -778,3 +778,78 @@ func TestRecover_ReplaysASpawnsOnErrorOnce(t *testing.T) {
 		}
 	})
 }
+
+// TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused proves the latest spawn attempt
+// decides: a failed spawn's onError applies and re-enters the state, the spawn there
+// fails too, and the parent refuses that onError, so the actor isn't handled and
+// Recover tries it again.
+func TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused(t *testing.T) {
+	ctx := context.Background()
+	fail := func(in state.AssignCtx[stepCtx]) stepCtx {
+		c := in.Entity
+		c.Notes = append(c.Notes, "fail")
+		return c
+	}
+	m := state.ForgeFor[stepCtx]("again").
+		Guard("firstFailure", func(in state.GuardCtx[stepCtx]) bool { return len(in.Entity.Notes) == 0 }).
+		Reducer("noteFail", fail).
+		Actor("spawnChild").
+		State("idle").
+		State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+		Initial("idle").
+		Transition("idle").On("start").GoTo("spawning").
+		Transition("spawning").On("spawnFailed").GoTo("spawning").Reenter().When("firstFailure").Assign("noteFail").
+		Quench()
+	store, id := durable.NewMemStore(), durable.InstanceID("again")
+	failing := durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": failingSpawn(nil)})
+	h, err := durable.NewRunner(m, store, failing).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": finishingChild()}))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok := recovered.ActorRef(state.ActorID("again", "spawning", 0)); !ok {
+		t.Fatal("Recover didn't retry the spawn whose latest onError the parent refused")
+	}
+}
+
+// TestRecover_AfterAStartSpawnRefusedByAContext proves a parent Fire a Start's spawn
+// drove that a context's ending refused isn't journaled with the next step: it never
+// applied, and replay under a live context would apply it.
+func TestRecover_AfterAStartSpawnRefusedByAContext(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[stepCtx]("held").
+		Actor("spawnFail").
+		State("spawning").InvokeActor("spawnFail", state.WithInvokeOnError("spawnFailed")).
+		State("failed").
+		Initial("spawning").
+		Transition("spawning").On("spawnFailed").GoTo("failed").
+		Transition("spawning").On("poke").GoTo("spawning").
+		Quench()
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The spawn ends Start's own context, so the parent refuses its onError.
+	ending := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnFail": failingSpawn(cancel)})}
+	opts := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnFail": failingSpawn(nil)})}
+	store, id := durable.NewMemStore(), durable.InstanceID("held")
+	h, err := durable.NewRunner(m, store, ending...).Start(turn, id, stepCtx{}, state.WithInitialState("spawning"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	// Recover retried the spawn, and with a live context its onError applied.
+	if got := recovered.Instance().Current(); got != "failed" {
+		t.Fatalf("recovered state = %q, want failed", got)
+	}
+}
