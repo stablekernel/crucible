@@ -155,6 +155,11 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// never silently swallowed. Read through LastEscalation.
 	lastEscalation *ActorEscalation
 
+	// parentFireErrs holds the errors of the parent Fires the system drove since the
+	// last TakeParentFireErrors, so a host can tell a parent transition refused
+	// because its context ended from one that applied. Guarded by mu.
+	parentFireErrs []error
+
 	// escalationHandler is the optional host policy invoked for each escalation. It
 	// is nil by default — the default escalation behavior (record + inspect) needs no
 	// handler — and wired with WithEscalationHandler.
@@ -387,6 +392,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	res := s.parent.Fire(ctx, ev)
+	s.noteParentFire(res)
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -668,6 +674,7 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 	s.mu.Unlock()
 
 	res := s.parent.Fire(ctx, ev)
+	s.noteParentFire(res)
 	s.Absorb(ctx, res.Effects)
 
 	s.mu.Lock()
@@ -729,6 +736,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		payload = output
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
+	s.noteParentFire(res)
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }
@@ -787,4 +795,26 @@ func (s *ActorSystem[S, E, C]) LastError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastOutcome.err
+}
+
+// noteParentFire records a parent Fire's error for TakeParentFireErrors.
+func (s *ActorSystem[S, E, C]) noteParentFire(res FireResult[S]) {
+	if res.Err == nil {
+		return
+	}
+	s.mu.Lock()
+	s.parentFireErrs = append(s.parentFireErrs, res.Err)
+	s.mu.Unlock()
+}
+
+// TakeParentFireErrors returns the errors of the parent Fires the system has driven
+// since the last call, in order, and clears them. A parent Fire refused because the
+// context it ran under ended reports that context's error, so a host that records
+// what a delivery or spawn drove can tell a refusal it can't replay from one it can.
+func (s *ActorSystem[S, E, C]) TakeParentFireErrors() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	errs := s.parentFireErrs
+	s.parentFireErrs = nil
+	return errs
 }

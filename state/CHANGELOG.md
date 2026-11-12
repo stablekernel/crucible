@@ -13,6 +13,11 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- **`ActorSystem.TakeParentFireErrors`** returns the errors of the parent Fires the
+  system drove since the last call, and clears them, so a host that records a delivery
+  or spawn can tell a parent transition refused because its context ended from one
+  that applied.
+
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
