@@ -162,6 +162,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   set, so `Recover` spawns the declared actors that aren't in it. An actor whose spawn
   failed never ran, so `Recover` tries it again, as before. A journal from before this
   records no set, and `Recover` spawns every declared actor, as before.
+- **A compound state's services and actors start.** `Start` and `Recover` armed only
+  those declared on the active leaves, so a service or actor on a compound state didn't
+  run while one of its children was active. They come from `state.StartEffects`, which
+  now covers every active state.
 - **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
   is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,

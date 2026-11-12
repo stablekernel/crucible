@@ -397,3 +397,47 @@ func TestRecover_RetriesAnActorWhoseLatestSpawnInAStepFailed(t *testing.T) {
 		t.Fatal("Recover didn't retry the actor whose latest spawn failed")
 	}
 }
+
+// TestRecover_SpawnsASuperstatesActor proves an actor a compound state declares runs
+// while one of its children is active: Start spawns it, and so does Recover after a
+// step moved between the children.
+func TestRecover_SpawnsASuperstatesActor(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[actorCtx]("nest").
+		Actor("spawnChild").
+		SuperState("working").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone")).
+		SubState("a").
+		SubState("b").
+		Initial("a").
+		EndSuperState().
+		State("done").Final().
+		Initial("working").
+		Transition("a").On("next").GoTo("b").
+		Transition("working").On("childDone").GoTo("done").
+		Quench()
+	var runs int64
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
+	store := durable.NewMemStore()
+	id := durable.InstanceID("nest")
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("working"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	childID := state.ActorID("nest", "working", 0)
+	if _, ok := h.ActorRef(childID); !ok {
+		t.Fatal("Start didn't spawn the superstate's actor")
+	}
+	if _, err = h.Fire(ctx, "next"); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if found, _ := recovered.DeliverToActor(ctx, state.ActorRef{ID: childID}, "finish"); !found {
+		t.Fatal("Recover didn't spawn the superstate's actor")
+	}
+	if got := recovered.Instance().Current(); got != "done" {
+		t.Fatalf("state = %q, want done after the actor finished", got)
+	}
+}

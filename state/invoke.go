@@ -224,14 +224,15 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 	return out
 }
 
-// StartEffects returns the StartService effects for the invoked services declared
-// on the instance's initial active configuration, so a host can arm the services
-// of the state(s) entered at Cast — the entry that Fire never observes because no
-// event drove it. Call it once, right after Cast, and route the effects through
-// the same ServiceRunner used for Fire's effects. It is a pure read of the
+// StartEffects returns the StartService and SpawnActor effects for the invoked
+// services and actors declared on every active state, so a host can arm the services
+// and actors of the state(s) entered at Cast, the entry that Fire never observes
+// because no event drove it. Call it once, right after Cast, and route the effects
+// through the same drivers used for Fire's effects. It is a pure read of the
 // configuration and emits no IO, consistent with the kernel's effects-as-data
-// contract. A flat or single-spine instance reports its single starting state's
-// services; a parallel initial configuration reports every active region's.
+// contract. The active states are each active leaf and its ancestors, outermost
+// first, so a compound state's invokes come before its children's; a parallel
+// configuration reports every active region's.
 //
 // StartEffects recomputes over the live configuration on every call, so it is
 // correct on both Cast (configuration is the initial leaves) and Restore
@@ -240,9 +241,26 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 // the invoke/actor starts of the resumed state(s).
 func (i *Instance[S, E, C]) StartEffects() []Effect {
 	var tr Trace
-	cfg := i.Configuration()
-	out := i.invokeEffectsOnEntry(cfg, &tr)
-	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	active := i.activeStates()
+	out := i.invokeEffectsOnEntry(active, &tr)
+	out = append(out, i.actorEffectsOnEntry(active, &tr)...)
+	return out
+}
+
+// activeStates returns every active state: each active leaf's ancestors, outermost
+// first, then the leaf, each state once, in the configuration's order.
+func (i *Instance[S, E, C]) activeStates() []S {
+	var out []S
+	seen := map[S]bool{}
+	for _, leaf := range i.Configuration() {
+		chain := i.machine.ancestors(leaf)
+		for k := len(chain) - 1; k >= 0; k-- {
+			if s := chain[k]; !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
 	return out
 }
 

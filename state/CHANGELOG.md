@@ -48,6 +48,13 @@ counts as an additive (minor) versus breaking (major) change. Use the
   transitions' guards ran now fails, whether or not one was chosen, where it could
   succeed before.
 
+### Fixed
+
+- **`StartEffects` includes a compound state's invokes.** It looked only at the active
+  leaves, so a service or actor declared on a compound state wasn't started while one of
+  its children was active: not at a durable `Start` or `Recover`, and not for a child
+  actor's own nested actors. It now reports every active state's, ancestors first.
+
 ## [1.0.0] — 2026-06-13
 
 The first stable release. It freezes the data model, the serialized IR, the
