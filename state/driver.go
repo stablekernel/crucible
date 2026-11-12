@@ -156,9 +156,26 @@ func (s *Scheduler[S, E, C]) dueLocked(now time.Time) (string, pending[E], bool)
 // FakeClock is a deterministic Clock for tests: time advances only when Advance
 // is called. It implements Clock; pair it with a Scheduler (via WithClock at
 // Cast) to drive `after` transitions with no real waiting. It is concurrency-safe.
+//
+// After behaves like time.After on the fake timeline: its channel stays empty
+// until Advance moves the clock to or past the deadline. A host that selects on
+// After (a silence timeout, a reconnect grace) sees it fire only when the test
+// advances far enough. An unfired waiter stays registered on the clock until
+// an Advance reaches it; there is no Stop to cancel it.
 type FakeClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu      sync.Mutex
+	now     time.Time
+	seq     uint64
+	waiters []fakeWaiter
+}
+
+// fakeWaiter is one channel handed out by FakeClock.After that hasn't fired yet.
+// seq records the order the waiters were armed in, to break ties between equal
+// deadlines.
+type fakeWaiter struct {
+	due time.Time
+	seq uint64
+	ch  chan time.Time
 }
 
 // NewFakeClock returns a FakeClock starting at the given instant. The zero
@@ -174,24 +191,56 @@ func (c *FakeClock) Now() time.Time {
 	return c.now
 }
 
-// After returns a channel that fires once the fake clock has advanced by at
-// least d from the call. It is provided for Clock conformance; the Scheduler
-// drives elapses through Now + Tick rather than this channel, so a test never
-// blocks on it.
+// After returns a channel that receives once the fake clock reaches the
+// instant of the call plus d. The value sent is that deadline. A d of zero or
+// less fires at once with the current instant, as time.After does. With no
+// Advance far enough, a receive on the channel blocks forever. The Scheduler
+// doesn't use After: it drives elapses through Now and Tick.
 func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
 	c.mu.Lock()
-	ch <- c.now.Add(d)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if d <= 0 {
+		ch <- c.now
+		return ch
+	}
+	c.seq++
+	c.waiters = append(c.waiters, fakeWaiter{due: c.now.Add(d), seq: c.seq, ch: ch})
 	return ch
 }
 
-// Advance moves the fake clock forward by d. After advancing, call Scheduler.Tick
-// to fire any now-due timers.
+// Advance moves the fake clock forward by d, then fires every After channel
+// whose deadline the clock has now reached, earliest deadline first, and in
+// the order they were armed when deadlines tie. A goroutine already blocked
+// selecting on several of them receives from the earliest; a receiver that
+// arrives after Advance returns finds them all ready, and select picks at
+// random. After advancing, call Scheduler.Tick to fire any now-due timers.
 func (c *FakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
-	c.mu.Unlock()
+	var due []fakeWaiter
+	kept := c.waiters[:0]
+	for _, w := range c.waiters {
+		if w.due.After(c.now) {
+			kept = append(kept, w)
+			continue
+		}
+		due = append(due, w)
+	}
+	clear(c.waiters[len(kept):])
+	c.waiters = kept
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].due.Equal(due[j].due) {
+			return due[i].due.Before(due[j].due)
+		}
+		return due[i].seq < due[j].seq
+	})
+	// Each channel is buffered and receives exactly once, so these sends never
+	// block while the lock is held.
+	for _, w := range due {
+		w.ch <- w.due
+	}
 }
 
 // keep context imported for the driver contract's Fire symmetry.

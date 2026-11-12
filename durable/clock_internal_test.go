@@ -39,13 +39,20 @@ func TestRecordingClock_AfterDelegates(t *testing.T) {
 	real := state.NewFakeClock(clockEpoch)
 	c := newRecordingClock(real, &buf)
 
+	ch := c.After(time.Second)
 	select {
-	case got := <-c.After(time.Second):
+	case <-ch:
+		t.Fatal("After fired before the wrapped clock advanced")
+	default:
+	}
+	real.Advance(time.Second)
+	select {
+	case got := <-ch:
 		if !got.Equal(clockEpoch.Add(time.Second)) {
 			t.Fatalf("After: want %v, got %v", clockEpoch.Add(time.Second), got)
 		}
 	default:
-		t.Fatal("After channel did not deliver (FakeClock.After fires immediately)")
+		t.Fatal("After channel did not deliver once the wrapped clock advanced")
 	}
 	if len(buf) != 0 {
 		t.Fatalf("After must record nothing, recorded %d", len(buf))
@@ -78,14 +85,22 @@ func TestReplayClock_ReturnsRecordedThenFallsThrough(t *testing.T) {
 // TestReplayClock_AfterDelegatesToFallback confirms After delegates to the
 // fallback clock.
 func TestReplayClock_AfterDelegatesToFallback(t *testing.T) {
-	c := newReplayClock(nil, state.NewFakeClock(clockEpoch))
+	fallback := state.NewFakeClock(clockEpoch)
+	c := newReplayClock(nil, fallback)
+	ch := c.After(time.Second)
 	select {
-	case got := <-c.After(time.Second):
+	case <-ch:
+		t.Fatal("After fired before the fallback clock advanced")
+	default:
+	}
+	fallback.Advance(time.Second)
+	select {
+	case got := <-ch:
 		if !got.Equal(clockEpoch.Add(time.Second)) {
 			t.Fatalf("After: want %v, got %v", clockEpoch.Add(time.Second), got)
 		}
 	default:
-		t.Fatal("After channel did not deliver")
+		t.Fatal("After channel did not deliver once the fallback clock advanced")
 	}
 }
 
