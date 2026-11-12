@@ -608,8 +608,8 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.
 type parentFires[S comparable] struct {
 	mu        sync.Mutex
 	fires     []state.ParentFire[S]
-	spawned   []string        // actors that started
-	attempted map[string]bool // actors the system was asked to spawn
+	spawned   map[string]bool // actors whose latest spawn this step started
+	attempted map[string]bool // actors the system was asked to spawn this step
 }
 
 // attempt notes the actors effects ask the system to spawn.
@@ -625,13 +625,15 @@ func (p *parentFires[S]) attempt(effects []state.Effect) {
 				p.attempted = map[string]bool{}
 			}
 			p.attempted[sp.ID] = true
+			// The latest attempt decides: until it starts, the actor hasn't run again.
+			delete(p.spawned, sp.ID)
 		}
 	}
 }
 
 // takeLifecycle returns the actors spawned and the actors asked to spawn since the
 // last call, and forgets them. It's safe on a nil collector, which has none.
-func (p *parentFires[S]) takeLifecycle() (spawned []string, attempted map[string]bool) {
+func (p *parentFires[S]) takeLifecycle() (spawned, attempted map[string]bool) {
 	if p == nil {
 		return nil, nil
 	}
@@ -649,7 +651,10 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 		return
 	}
 	p.mu.Lock()
-	p.spawned = append(p.spawned, ev.ActorID)
+	if p.spawned == nil {
+		p.spawned = map[string]bool{}
+	}
+	p.spawned[ev.ActorID] = true
 	p.mu.Unlock()
 }
 
@@ -1005,6 +1010,7 @@ func (h *Handle[S, E, C]) checkpointDue(step int) bool {
 // dispatch leaves the effect recoverable from the still-present tail rather than
 // orphaned behind the compaction.
 func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record) error {
+	now := h.endedActors()
 	if h.checkpointDue(step) {
 		snap, err := state.MarshalSnapshot(h.inst.Snapshot())
 		if err != nil {
@@ -1013,13 +1019,12 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		// Wrap the kernel snapshot with the absolute deadlines of the timers armed at
 		// this checkpoint, so a recovery whose compacted tail no longer carries their
 		// arming ScheduleAfter can re-arm them at their recorded instants.
-		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep(), h.endedActors())
+		env, err := marshalCheckpoint(snap, h.timers, rec.followingStep(), now)
 		if err != nil {
 			return fmt.Errorf("durable: marshaling checkpoint envelope at step %d for %q: %w", step, h.id, err)
 		}
 		rec.Snapshot = env
 	}
-	now := h.endedActors()
 	if now != nil && (!h.endedSet || !slices.Equal(now.IDs, h.endedAt)) {
 		rec.EndedActors = now
 	}
@@ -1035,9 +1040,9 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 // endedActors returns the actors the instance's state declares that ran and have
 // ended, and remembers them for the next step. A declared actor that isn't running
 // has ended when it settled (the actor system keeps a settled actor), or when this
-// step asked the system to spawn it and a spawn this step started it (then something
-// stopped it), or, when this step didn't try to spawn it, when it was running or ended
-// at the previous step. So an actor whose spawn failed, at entry or on a re-entry,
+// step asked the system to spawn it and the latest of those spawns started it (then
+// something stopped it), or, when this step didn't try to spawn it, when it was
+// running or ended at the previous step. So an actor whose spawn failed, at entry or on a re-entry,
 // hasn't ended, and Recover tries it again. It is nil with no actor palette.
 func (h *Handle[S, E, C]) endedActors() *ActorSet {
 	if h.actors == nil {
@@ -1054,7 +1059,7 @@ func (h *Handle[S, E, C]) endedActors() *ActorSet {
 		switch {
 		case ran:
 		case attempted[id]:
-			ran = slices.Contains(spawned, id)
+			ran = spawned[id]
 		default:
 			ran = h.seen[id]
 		}

@@ -271,3 +271,129 @@ func TestRecover_RetriesASpawnThatFailedWhenASettleReentered(t *testing.T) {
 		t.Fatal("Recover didn't retry the actor whose re-entry spawn (via settle) failed live")
 	}
 }
+
+type rsCtx struct {
+	N int `json:"n"`
+}
+
+func rsChild() state.ActorBehavior {
+	return func(map[string]any) (state.ActorInstance, error) {
+		c := state.ForgeFor[rsCtx]("rschild").
+			State("w").Initial("w").
+			Transition("w").On("go").GoTo("w").SendParent("re").SendParent("re").
+			Quench()
+		return state.NewActor(c.Cast(rsCtx{}, state.WithInitialState[string]("w")), nil), nil
+	}
+}
+
+func rsMachine() *state.Machine[string, string, rsCtx] {
+	return state.ForgeFor[rsCtx]("rs").
+		Actor("spawnChild").
+		State("working").InvokeActor("spawnChild", state.WithInvokeOnError("childErr")).
+		Initial("working").
+		Transition("working").On("re").GoTo("working").Reenter().
+		Transition("working").On("childErr").GoTo("working").
+		Transition("working").On("poke").GoTo("working").
+		Quench()
+}
+
+// In one delivery the state is re-entered twice: the first respawn starts, the
+// second fails. Live ends with no actor; Recover should retry it.
+func TestRecover_RetriesAnActorWhoseSecondReentrySpawnFailed(t *testing.T) {
+	for _, poke := range []bool{false, true} {
+		ctx := context.Background()
+		m := rsMachine()
+		store := durable.NewMemStore()
+		id := durable.InstanceID("rs")
+		var n int64
+		pal := map[string]state.ActorBehavior{"spawnChild": func(in map[string]any) (state.ActorInstance, error) {
+			if atomic.AddInt64(&n, 1) > 2 {
+				return nil, errors.New("can't start")
+			}
+			return rsChild()(in)
+		}}
+		h, err := durable.NewRunner(m, store, durable.WithActorPalette[string, string, rsCtx](pal)).
+			Start(ctx, id, rsCtx{}, state.WithInitialState("working"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		aid := state.ActorID("rs", "working", 0)
+		ref, ok := h.ActorRef(aid)
+		if !ok {
+			t.Fatal("no child")
+		}
+		if _, err := h.DeliverToActor(ctx, ref, "go"); err != nil {
+			t.Fatal(err)
+		}
+		if got := atomic.LoadInt64(&n); got != 3 {
+			t.Fatalf("setup: spawns %d, want 3", got)
+		}
+		if _, ok := h.ActorRef(aid); ok {
+			t.Fatal("setup: last respawn should have failed")
+		}
+		if poke {
+			if _, err := h.Fire(ctx, "poke"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		good := map[string]state.ActorBehavior{"spawnChild": rsChild()}
+		rec, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, rsCtx](good))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := rec.ActorRef(aid); !ok {
+			t.Errorf("poke=%v: Recover didn't retry the actor whose last respawn failed", poke)
+		}
+	}
+}
+
+func driver3() state.ActorBehavior {
+	return func(map[string]any) (state.ActorInstance, error) {
+		child := state.ForgeFor[actorCtx]("driver").State("ready").Initial("ready").
+			Transition("ready").On("go").GoTo("ready").SendParent("toZ").SendParent("kill").SendParent("re").
+			Quench()
+		return state.NewActor(child.Cast(actorCtx{}, state.WithInitialState[string]("ready")), nil), nil
+	}
+}
+
+// Non-blocker probe: in one delivery the z child spawns, is stopped, and its re-entry
+// spawn fails. Live: not running. Is it retried by Recover (the stated rule for a failed
+// spawn), or recorded as ended?
+func TestRecover_RetriesAnActorWhoseLatestSpawnInAStepFailed(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[actorCtx]("flip").
+		Actor("spawnDriver").Actor("spawnChild").
+		State("y").InvokeActor("spawnDriver").
+		State("z").InvokeActor("spawnChild", state.WithInvokeOnError("childErr")).
+		Initial("y").
+		Transition("y").On("toZ").GoTo("z").
+		Transition("z").On("kill").GoTo("z").StopActor(state.ActorID("flip", "z", 0)).
+		Transition("z").On("re").GoTo("z").Reenter().
+		Transition("z").On("childErr").GoTo("z").
+		Quench()
+	var n, runs int64
+	pal := map[string]state.ActorBehavior{"spawnDriver": driver3(), "spawnChild": func(in map[string]any) (state.ActorInstance, error) {
+		if atomic.AddInt64(&n, 1) > 1 {
+			return nil, errors.New("no")
+		}
+		return counterChild(&runs)(in)
+	}}
+	store := durable.NewMemStore()
+	h, err := durable.NewRunner(m, store, durable.WithActorPalette[string, string, actorCtx](pal)).Start(ctx, "x", actorCtx{}, state.WithInitialState("y"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := h.ActorRef(state.ActorID("flip", "y", 0))
+	if _, err := h.DeliverToActor(ctx, ref, "go"); err != nil {
+		t.Fatal(err)
+	}
+	cid := state.ActorID("flip", "z", 0)
+	good := map[string]state.ActorBehavior{"spawnDriver": driver3(), "spawnChild": counterChild(&runs)}
+	rec, err := durable.Recover(ctx, m, store, "x", durable.WithActorPalette[string, string, actorCtx](good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, rr := rec.ActorRef(cid); !rr {
+		t.Fatal("Recover didn't retry the actor whose latest spawn failed")
+	}
+}
