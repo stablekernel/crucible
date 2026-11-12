@@ -535,8 +535,12 @@ func TestService_CanceledTurn_RecoverRerunsTheService(t *testing.T) {
 		t.Fatalf("Fire(start): %v", err)
 	}
 	invoke := state.InvokeID("fetch", "loading", 0)
-	if _, _, err = h.RunService(turnCtx, invoke); !errors.Is(err, context.Canceled) {
-		t.Fatalf("RunService = %v, want context.Canceled", err)
+	before := tailLen(t, store, id)
+	if _, _, err = h.RunService(turnCtx, invoke); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunService = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want the canceled result unrecorded", before, after)
 	}
 	if _, err = h.Fire(ctx, "start"); !errors.Is(err, durable.ErrHandleFailed) {
 		t.Fatalf("Fire after the cancel = %v, want ErrHandleFailed", err)
@@ -714,6 +718,117 @@ func TestService_ContextEndedDuringAbsorb_RecordsNothing(t *testing.T) {
 		t.Fatalf("RunService = %v, %v; want true, ErrHandleFailed", ran, err)
 	}
 	if after := tailLen(t, store, "absorb-1"); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+}
+
+// countingClock counts clock reads and runs onRead on each.
+type countingClock struct {
+	state.Clock
+	n      int
+	onRead func(n int)
+}
+
+func (c *countingClock) Now() time.Time {
+	c.n++
+	if c.onRead != nil {
+		c.onRead(c.n)
+	}
+	return c.Clock.Now()
+}
+
+// TestTick_ContextEndedAfterTheTimersApplied_RecordsNothing proves a Tick whose context
+// ends after its due timer's Fire applied still fails the Handle and records nothing,
+// as RunService and DeliverToActor do, and Recover fires the timer again.
+func TestTick_ContextEndedAfterTheTimersApplied_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := chainedTimerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("chain-1")
+	fc := state.NewFakeClock(epoch)
+	clk := &countingClock{Clock: fc}
+	opts := []durable.Option[string, string, *timerCtx]{durable.WithRunnerClock[string, string, *timerCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	before := tailLen(t, store, id)
+	fc.Advance(4 * time.Second)
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	base := clk.n
+	clk.onRead = func(n int) {
+		if n == base+3 { // the scheduler's last read, after the first timer applied
+			cancel()
+		}
+	}
+	results, err := h.Tick(turn)
+	clk.onRead = nil
+	if turn.Err() == nil {
+		t.Fatal("the test didn't end the context")
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("Tick results %v, want one applied timer", results)
+	}
+	if !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "first" {
+		t.Fatalf("recovered state %q, want first: the unrecorded tick must fire again", got)
+	}
+}
+
+// TestService_RefusedByADerivedContext_RecordsNothing proves a settle refused because a
+// context middleware derived from the caller's ended, while the caller's is still live,
+// fails the Handle and records nothing.
+func TestService_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	fn := counterService(new(int64))
+	cancelOnOK := func(next state.FireFunc[string, string, svcCtx]) state.FireFunc[string, string, svcCtx] {
+		return func(ctx context.Context, event string) state.FireResult[string] {
+			if event == "ok" {
+				derived, cancel := context.WithCancel(ctx)
+				cancel()
+				return next(derived, event)
+			}
+			return next(ctx, event)
+		}
+	}
+	m := state.ForgeFor[svcCtx]("derived").
+		Use(cancelOnOK).
+		Service("fetch", fn).
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("ready").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("ready").
+		Quench()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("derived-1")
+	h, err := durable.NewRunner(m, store, durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))).
+		Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	before := tailLen(t, store, id)
+	if _, _, err = h.RunService(ctx, state.InvokeID("derived", "loading", 0)); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunService = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
 		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
 	}
 }

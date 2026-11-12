@@ -90,9 +90,9 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // before the service started.
 //
 // Once the service has run, it returns true with any error. A failed Append, a result
-// that won't encode, or a ctx that ended during the service or while its settle's
-// effects were absorbed (even after a clean settle) returns ErrHandleFailed and
-// records nothing: a recovered Handle has the service in flight again, and RunService
+// that won't encode, or a ctx (or one derived from it) that ended during the service or
+// while its settle's effects were absorbed (even after a clean settle) returns
+// ErrHandleFailed and records nothing: a recovered Handle has the service in flight again, and RunService
 // runs it a second time. If another goroutine failed the Handle while this step was
 // recording, it returns the result, true and ErrHandleFailed saying the step was
 // recorded. That error also matches the cause, so test ErrHandleFailed first: it alone
@@ -113,6 +113,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 
+	h.clearActorFireErrs()
 	results := h.svc.Tick(h.stepContext(ctx), id)
 	if len(results) == 0 {
 		return state.FireResult[S]{}, false, nil
@@ -130,7 +131,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	// seen this result: journaling it would commit on recovery what live never applied.
 	// The runner has already dropped the service, so this Handle can't run it again;
 	// Recover re-arms it.
-	if err := ctx.Err(); err != nil {
+	if err := h.stepCanceled(ctx, res.Err); err != nil {
 		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
 

@@ -87,6 +87,11 @@ type actorMessagePayload struct {
 	// it; a message-driven fire (SendParent) leaves it false so replay re-fires the
 	// parent plainly, letting the event itself supply the assign's data.
 	HasData bool `json:"hasData,omitempty"`
+	// Refused reports that the live parent Fire was refused (a guard failed, no
+	// transition matched, ...), so replay expects the same refusal instead of failing
+	// on it. A refusal because a context ended is never recorded: that step fails the
+	// Handle instead.
+	Refused bool `json:"refused,omitempty"`
 }
 
 // DeliverToActor routes event into the running actor identified by ref, runs the
@@ -101,7 +106,8 @@ type actorMessagePayload struct {
 // actor (already settled, stopped, or never spawned), or false and an error when no
 // palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
 // actor ran it returns true with any error. A failed Append, a result that won't encode,
-// or a ctx that ended during the delivery returns ErrHandleFailed and records nothing: on
+// or a ctx (or one derived from it) that ended during the delivery returns
+// ErrHandleFailed and records nothing: on
 // a recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
 // actor doesn't return. If another goroutine failed the Handle while this step was
 // recording, it returns true and ErrHandleFailed saying the step was recorded. A failed
@@ -120,13 +126,17 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	}
 
 	before := len(h.inst.History())
+	h.clearActorFireErrs()
 	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
 	if !delivered {
+		h.clearActorFireErrs()
 		return false, nil
 	}
-	// A context that ended during the delivery can stop a parent Fire partway, and a
-	// refused Fire leaves a Trace replay can't re-fire. Record nothing.
-	if err := ctx.Err(); err != nil {
+	// A context that ended during the delivery can make the kernel refuse a parent
+	// Fire it drove. The refused Fire rolls back, so live never applied it, but
+	// journaling the delivery would replay it under a live context, where it applies.
+	// Record nothing.
+	if err := h.stepCanceled(ctx); err != nil {
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 
@@ -211,6 +221,7 @@ func recordActorTransitions(id string, history []state.Trace, before int, output
 	for i, tr := range traces {
 		var mp actorMessagePayload
 		mp.Event = append(json.RawMessage(nil), tr.EventPayload...)
+		mp.Refused = tr.Outcome != state.OutcomeSuccess
 		// Attribute the actor outcome to the settling fire — the last parent Trace —
 		// so the onDone / onError transition replays with the recorded done-data /
 		// error, while a message-driven fire that preceded it replays plainly.
@@ -266,8 +277,16 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 	} else {
 		res = inst.Fire(ctx, event)
 	}
-	if res.Err != nil {
+	refused := res.Err != nil || res.Trace.Outcome != state.OutcomeSuccess
+	switch {
+	case refused && mp.Refused:
+		return nil // the live run was refused the same way
+	case refused && res.Err != nil:
 		return fmt.Errorf("durable: replaying actor %q transition: %w", entry.CorrelationID, res.Err)
+	case refused:
+		return fmt.Errorf("durable: replaying actor %q transition: %s, but the live run's applied", entry.CorrelationID, res.Trace.Outcome)
+	case mp.Refused:
+		return fmt.Errorf("durable: replaying actor %q transition: it applied, but the live run's was refused", entry.CorrelationID)
 	}
 	return nil
 }

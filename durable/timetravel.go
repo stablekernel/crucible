@@ -247,45 +247,10 @@ func replayThrough[S comparable, E comparable, C any](
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rec := &bounded[i]
-		switch {
-		case hasActorEntry(rec):
-			for _, entry := range actorEntries(rec) {
-				if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
-					return fmt.Errorf("at step %d: %w", rec.Step, err)
-				}
-			}
-		case hasServiceEntry(rec):
-			for _, entry := range serviceEntries(rec) {
-				if err := replayService(ctx, svc, entry); err != nil {
-					return fmt.Errorf("at step %d: %w", rec.Step, err)
-				}
-			}
-		case rec.Tick:
-			sched.Tick(ctx)
-		case len(rec.Event) == 0:
-			continue // a checkpoint-only Record drives no event
-		default:
-			event, err := cfg.eventCodec.Decode(rec.Event)
-			if err != nil {
-				return fmt.Errorf("decoding recorded event at step %d: %w", rec.Step, err)
-			}
-			fireOpts, err := replayFireOptions(rec, event, cfg.eventDataDecoder)
-			if err != nil {
-				return fmt.Errorf("decoding recorded event data at step %d: %w", rec.Step, err)
-			}
-			res := inst.Fire(ctx, event, fireOpts...)
-			if res.Err != nil {
-				return fmt.Errorf("replaying step %d: %w", rec.Step, res.Err)
-			}
-			if hasTimerEffect(res.Effects) {
-				sched.Absorb(ctx, res.Effects)
-			}
-			if svc != nil {
-				svc.Absorb(ctx, res.Effects)
-			}
-			// A domain effect is intentionally NOT dispatched here: a time-travel read
-			// applies no side effect.
+		// A domain effect is never dispatched here: a time-travel read applies no
+		// side effect.
+		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i]); err != nil {
+			return err
 		}
 	}
 	// A canceled context can stop a replayed settle or tick without an error reaching

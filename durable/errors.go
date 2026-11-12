@@ -56,11 +56,15 @@ var (
 	ErrRecordTooLarge = errors.New(errorPrefix + errorRecordTooLarge)
 
 	// ErrHandleFailed is reported by a Handle's Fire, Tick, RunService, DeliverToActor
-	// and View once a step applied to the live instance but may not have been recorded,
-	// a Tick, RunService or DeliverToActor's context ended partway, or an effect handler
-	// failed, on that call and every later one. It wraps the cause. Call Handle.Drain,
-	// then Recover a new Handle with the same options to continue, unless the cause is
-	// ErrFenced: then a newer owner holds the instance, so stop.
+	// and View, on the call that failed the Handle and every later one. It wraps the
+	// cause, which is one of:
+	//   - a step applied to the live instance but may not have been recorded;
+	//   - a Tick, RunService or DeliverToActor ran while its context ended, so a Fire it
+	//     drove may have been refused: it had already consumed the timer, service or
+	//     delivery, so it can't simply refuse the way Fire does;
+	//   - an effect handler failed.
+	// Call Handle.Drain, then Recover a new Handle with the same options to continue,
+	// unless the cause is ErrFenced: then a newer owner holds the instance, so stop.
 	ErrHandleFailed = errors.New(errorPrefix + errorHandleFailed)
 
 	// ErrReentrantStep is reported by a Handle's Fire, Tick, RunService, DeliverToActor

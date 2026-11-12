@@ -141,7 +141,8 @@ ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded, or a `Tick`, `RunService` or `DeliverToActor` whose
-context ended partway, fails the Handle with `ErrHandleFailed`. So does an effect handler
+context, or one derived from it, ended during the step, fails the Handle with
+`ErrHandleFailed`. So does an effect handler
 that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no
 step of the failed Handle is still recording and no effect is still being sent, so the
 recovered Handle loads every recorded step and can't send an effect twice. Give `Drain` a
