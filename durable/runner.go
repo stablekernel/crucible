@@ -1174,6 +1174,7 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 		}
 	}
 	slices.Sort(endedIDs)
+	endedIDs = slices.Compact(endedIDs)
 	slices.Sort(unstartedIDs)
 	unstartedIDs = slices.Compact(unstartedIDs)
 	h.seen = map[string]bool{}
@@ -1247,16 +1248,23 @@ func servicesExcept(effects []state.Effect, ended []string) []state.Effect {
 	return out
 }
 
-// respawn spawns the actors effects declare, in order. With a recorded unstarted set,
-// an actor it leaves out was running, and the journal holds every parent Fire its start
-// drove, so it spawns without letting its start reach the parent. An unstarted actor,
-// or any actor when the journal recorded no set, spawns as new.
+// respawn spawns the actors effects declare. With a recorded unstarted set, an actor it
+// leaves out was running, and the journal holds every parent Fire its start drove, so it
+// spawns without letting its start reach the parent. An unstarted actor, or any actor
+// when the journal recorded no set, spawns as new. The running actors spawn first, in
+// order, then the rest: a message a new actor sends the parent can enter a state that
+// spawns a running actor, which must already be running, or its start would reach the
+// parent a second time.
 func respawn[S comparable, E comparable, C any](ctx context.Context, actors *state.ActorSystem[S, E, C], effects []state.Effect, unstarted *ActorSet) {
+	var fresh []state.Effect
 	for _, eff := range effects {
 		if sp, ok := eff.(state.SpawnActor); ok && unstarted != nil && !slices.Contains(unstarted.IDs, sp.ID) {
 			actors.AbsorbRespawn(ctx, []state.Effect{eff})
 			continue
 		}
+		fresh = append(fresh, eff)
+	}
+	for _, eff := range fresh {
 		actors.Absorb(ctx, []state.Effect{eff})
 	}
 }

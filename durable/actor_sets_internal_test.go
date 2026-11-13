@@ -56,3 +56,48 @@ func TestActorSets_SkipsAStepThatTouchedNoActor(t *testing.T) {
 		t.Fatal("a step that left the actor's state reused the old actor sets")
 	}
 }
+
+// TestActorSets_ListsAnEndedActorOnce proves an actor id two active states declare is
+// listed once when the actor has ended.
+func TestActorSets_ListsAnEndedActorOnce(t *testing.T) {
+	ctx := context.Background()
+	child := state.ForgeFor[setsCtx]("child").
+		State("working").
+		State("done").Final().
+		Initial("working").
+		Transition("working").On("finish").GoTo("done").
+		Quench()
+	m := state.ForgeFor[setsCtx]("twice").
+		Actor("child").
+		State("off").
+		SuperState("par").
+		Region("left").
+		Initial("p").
+		SubState("p").InvokeActor("child", state.WithInvokeID("v")).
+		EndRegion().
+		Region("right").
+		Initial("q").
+		SubState("q").InvokeActor("child", state.WithInvokeID("v")).
+		EndRegion().
+		EndSuperState().
+		Initial("off").
+		Transition("off").On("go").GoTo("par").
+		Quench()
+	palette := map[string]state.ActorBehavior{"child": func(map[string]any) (state.ActorInstance, error) {
+		return state.NewActor(child.Cast(setsCtx{}, state.WithInitialState("working")), nil), nil
+	}}
+	h, err := NewRunner(m, NewMemStore(), WithActorPalette[string, string, setsCtx](palette)).
+		Start(ctx, "twice", setsCtx{}, state.WithInitialState("off"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
+	}
+	if found, deliverErr := h.DeliverToActorByID(ctx, "v", "finish"); !found || deliverErr != nil {
+		t.Fatalf("DeliverToActorByID = %v, %v", found, deliverErr)
+	}
+	if ended, _ := h.actorSets(); len(ended.IDs) != 1 || ended.IDs[0] != "v" {
+		t.Fatalf("ended = %v, want [v]", ended.IDs)
+	}
+}

@@ -210,3 +210,92 @@ func TestDeliverToActor_JournalsEachFireUnderItsActor(t *testing.T) {
 		t.Fatalf("journaled actor entries under %v, want %s", got, want)
 	}
 }
+
+// sender is an actor that sends its parent ev from its initial entry, then keeps
+// running.
+type sender struct {
+	ev   string
+	sent bool
+}
+
+func (s *sender) DeliverFire(context.Context, any) (bool, any) { return false, nil }
+func (s *sender) ChildEffects() []state.Effect {
+	if s.sent {
+		return nil
+	}
+	s.sent = true
+	return []state.Effect{state.SendParent{Event: s.ev}}
+}
+func (s *sender) Output() any { return nil }
+
+// TestRecover_ARetriedSpawnsMessageDoesNotRestartARunningActor proves Recover spawns the
+// actors that were running before it retries an unstarted one. The parallel state
+// declares the hopper, which can't start live, ahead of the greeter that one region
+// declares as "v". When Recover's retry starts the hopper, its hop enters the other
+// region's state, which declares "v" too. The greeter must already be running there,
+// so that spawn is a no-op and its journaled hello applies once, across two Recovers.
+func TestRecover_ARetriedSpawnsMessageDoesNotRestartARunningActor(t *testing.T) {
+	ctx := context.Background()
+	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {
+		return func(in state.AssignCtx[actorCtx]) actorCtx {
+			c := in.Entity
+			c.Notes = append(c.Notes, s)
+			return c
+		}
+	}
+	m := state.ForgeFor[actorCtx]("cascade").
+		Reducer("noteHello", note("hello")).
+		Reducer("notePoke", note("poke")).
+		Actor("hopper").
+		Actor("greeter").
+		State("off").
+		SuperState("par").InvokeActor("hopper").
+		Region("left").
+		Initial("p1").
+		SubState("p1").InvokeActor("greeter", state.WithInvokeID("v")).
+		EndRegion().
+		Region("right").
+		Initial("q1").
+		SubState("q1").
+		SubState("q2").InvokeActor("greeter", state.WithInvokeID("v")).
+		EndRegion().
+		EndSuperState().
+		Initial("off").
+		Transition("off").On("go").GoTo("par").
+		Transition("p1").On("hello").GoTo("p1").Assign("noteHello").
+		Transition("p1").On("poke").GoTo("p1").Assign("notePoke").
+		Transition("q1").On("hop").GoTo("q2").
+		Quench()
+	palette := func(hopperStarts bool) greetOption {
+		hopper := failingSpawn(nil)
+		if hopperStarts {
+			hopper = func(map[string]any) (state.ActorInstance, error) { return &sender{ev: "hop"}, nil }
+		}
+		return durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+			"hopper":  hopper,
+			"greeter": func(map[string]any) (state.ActorInstance, error) { return &sender{ev: "hello"}, nil },
+		})
+	}
+	store, id := durable.NewMemStore(), durable.InstanceID("cascade")
+	h, err := durable.NewRunner(m, store, palette(false)).Start(ctx, id, actorCtx{}, state.WithInitialState("off"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
+	}
+	wantHellos(t, "live", h)
+	for round := 1; round <= 2; round++ {
+		recovered, err := durable.Recover(ctx, m, store, id, palette(true))
+		if err != nil {
+			t.Fatalf("Recover %d: %v", round, err)
+		}
+		wantHellos(t, fmt.Sprintf("Recover %d", round), recovered)
+		if got := fmt.Sprint(recovered.Instance().Configuration()); got != "[p1 q2]" {
+			t.Fatalf("Recover %d configuration = %s, want [p1 q2] after the hopper's hop", round, got)
+		}
+		if _, err = recovered.Fire(ctx, "poke"); err != nil {
+			t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+		}
+	}
+}

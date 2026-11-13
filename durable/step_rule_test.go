@@ -837,3 +837,40 @@ func TestStart_FailsWhenItsContextEndsDuringASpawn(t *testing.T) {
 		t.Fatalf("recovered state = %q, want failed", got)
 	}
 }
+
+// TestRecover_FailsWhenItsContextEndsAfterReplay proves Recover returns no Handle when
+// its context ends after the journal is replayed, here while it spawns the resume
+// point's actor, though no parent Fire was refused.
+func TestRecover_FailsWhenItsContextEndsAfterReplay(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[stepCtx]("late").
+		Actor("quiet").
+		State("working").InvokeActor("quiet").
+		Initial("working").
+		Transition("working").On("poke").GoTo("working").
+		Quench()
+	quiet := func(hook func()) []stepOption {
+		return []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+			"quiet": func(map[string]any) (state.ActorInstance, error) {
+				if hook != nil {
+					hook()
+				}
+				return &sender{sent: true}, nil
+			},
+		})}
+	}
+	store, id := durable.NewMemStore(), durable.InstanceID("late")
+	h, err := durable.NewRunner(m, store, quiet(nil)...).Start(ctx, id, stepCtx{}, state.WithInitialState("working"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	recovered, err := durable.Recover(turn, m, store, id, quiet(cancel)...)
+	if recovered != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = Handle %v, %v, want no Handle and context.Canceled", recovered != nil, err)
+	}
+}
