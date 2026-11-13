@@ -262,36 +262,22 @@ func spawnAtStartMachine() stepMachine {
 		Quench()
 }
 
-// TestStartAndRecover_SpawnRefusal_DoesNotFailTheNextStep proves a parent Fire
-// refused while Start or Recover spawned the resume point's actors isn't charged to
-// the next step, which records normally.
-func TestStartAndRecover_SpawnRefusal_DoesNotFailTheNextStep(t *testing.T) {
+// TestStartAndRecover_SpawnRefusal_Fails proves a parent Fire a context refused while
+// Start or Recover spawned the resume point's actors fails the call: it never applied,
+// so the Handle would hold state the journal can't reach.
+func TestStartAndRecover_SpawnRefusal_Fails(t *testing.T) {
 	ctx := context.Background()
 	m := spawnAtStartMachine()
 	opts := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnFail": failingSpawn(nil)})}
-	t.Run("after Start", func(t *testing.T) {
-		store := durable.NewMemStore()
-		h, err := durable.NewRunner(m, store, opts...).Start(ctx, "started", stepCtx{}, state.WithInitialState("spawning"))
-		if err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		if _, err = h.Fire(ctx, "poke"); err != nil {
-			t.Fatalf("Fire(poke): %v", err)
-		}
-	})
-	t.Run("after Recover", func(t *testing.T) {
-		store := durable.NewMemStore()
-		if _, err := durable.NewRunner(m, store, opts...).Start(ctx, "recovered", stepCtx{}, state.WithInitialState("spawning")); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		h, err := durable.Recover(ctx, m, store, "recovered", opts...)
-		if err != nil {
-			t.Fatalf("Recover: %v", err)
-		}
-		if _, err = h.Fire(ctx, "poke"); err != nil {
-			t.Fatalf("Fire(poke): %v", err)
-		}
-	})
+	store := durable.NewMemStore()
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, "refused", stepCtx{}, state.WithInitialState("spawning"))
+	if h != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start = Handle %v, %v, want no Handle and context.Canceled", h != nil, err)
+	}
+	h, err = durable.Recover(ctx, m, store, "refused", opts...)
+	if h != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = Handle %v, %v, want no Handle and context.Canceled", h != nil, err)
+	}
 }
 
 // TestFire_ContextEndedAfterACleanApply_Records proves a Fire that drove nothing
@@ -818,10 +804,11 @@ func TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused(t *testing.T) {
 	}
 }
 
-// TestRecover_AfterAStartSpawnRefusedByAContext proves a parent Fire a Start's spawn
-// drove that a context's ending refused isn't journaled with the next step: it never
-// applied, and replay under a live context would apply it.
-func TestRecover_AfterAStartSpawnRefusedByAContext(t *testing.T) {
+// TestStart_FailsWhenItsContextEndsDuringASpawn proves Start returns no Handle when its
+// context ends while an initial actor's spawn fails, so the parent refuses its onError:
+// live never applied it. Recover starts from the baseline, retries the spawn, and with
+// a live context the onError applies.
+func TestStart_FailsWhenItsContextEndsDuringASpawn(t *testing.T) {
 	ctx := context.Background()
 	m := state.ForgeFor[stepCtx]("held").
 		Actor("spawnFail").
@@ -838,11 +825,8 @@ func TestRecover_AfterAStartSpawnRefusedByAContext(t *testing.T) {
 	opts := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnFail": failingSpawn(nil)})}
 	store, id := durable.NewMemStore(), durable.InstanceID("held")
 	h, err := durable.NewRunner(m, store, ending...).Start(turn, id, stepCtx{}, state.WithInitialState("spawning"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if _, err = h.Fire(ctx, "poke"); err != nil {
-		t.Fatalf("Fire(poke): %v", err)
+	if h != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start = Handle %v, %v, want no Handle and context.Canceled", h != nil, err)
 	}
 	recovered, err := durable.Recover(ctx, m, store, id, opts...)
 	if err != nil {

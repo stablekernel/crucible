@@ -832,3 +832,63 @@ func TestService_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
 		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
 	}
 }
+
+// TestRecover_DoesNotRearmASuperstatesSettledService proves a service a compound state
+// declares, which settled into one of the compound's children, isn't in flight after
+// Recover, so RunService doesn't run it again: not from the journal, and not from a
+// checkpoint taken after the settle, where the compound is still active.
+func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
+	ctx := context.Background()
+	for _, every := range []int{0, 1} {
+		t.Run(fmt.Sprintf("every=%d", every), func(t *testing.T) {
+			var runs int64
+			fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) {
+				atomic.AddInt64(&runs, 1)
+				return "ok", nil
+			}
+			m := state.ForgeFor[stepCtx]("nestSvc").
+				Service("fetch", fetch).
+				SuperState("outer").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+				SubState("a").
+				SubState("b").
+				Initial("a").
+				EndSuperState().
+				Initial("outer").
+				Transition("a").On("fetched").GoTo("b").
+				Transition("b").On("poke").GoTo("b").
+				Quench()
+			opts := []stepOption{durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch))}
+			if every > 0 {
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("nest-svc")
+			svcID := state.InvokeID("nestSvc", "outer", 0)
+			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("a"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, ran, err := h.RunService(ctx, svcID); err != nil || !ran {
+				t.Fatalf("RunService = %v, %v", ran, err)
+			}
+			if got := h.Instance().Current(); got != "b" {
+				t.Fatalf("state = %q, want b after the settle", got)
+			}
+			for round := 1; round <= 2; round++ {
+				recovered, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("Recover %d: %v", round, err)
+				}
+				if _, ran, runErr := recovered.RunService(ctx, svcID); runErr != nil || ran {
+					t.Fatalf("RunService after Recover %d = %v, %v, want the settled service not in flight", round, ran, runErr)
+				}
+				if n := atomic.LoadInt64(&runs); n != 1 {
+					t.Fatalf("the service ran %d times, want once", n)
+				}
+				// A step on the recovered Handle checkpoints again, from its own view.
+				if _, err = recovered.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+				}
+			}
+		})
+	}
+}

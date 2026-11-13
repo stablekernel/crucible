@@ -388,9 +388,11 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 
 // ResumeEffects returns the re-arm effects a host absorbs after Restore to
 // re-establish the instance's pending timers, invoked services, and spawned
-// actors for its restored configuration: a ScheduleAfter per pending delayed
-// transition, a StartService per invoked service, and a SpawnActor per
-// child-machine actor invocation active in the configuration. It is the restore
+// actors for its restored configuration: a ScheduleAfter per delayed transition of
+// an active leaf state, and a StartService per invoked service and a SpawnActor per
+// child-machine actor invocation of every active state, a compound state's included.
+// A compound state's own `after` timers aren't re-armed, since the snapshot can't say
+// whether one already fired. It is the restore
 // twin of StartEffects (which arms an initial Cast configuration) extended with
 // the delayed-timer effects, so a restored instance
 // re-establishes its invoked/spawned children. Like StartEffects it is a pure
@@ -415,8 +417,10 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // post-1.0 ADDITIVE item, not a v1.0 contract.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
+	// Timers come from the active leaves only: a compound state's `after` timer may
+	// already have fired into one of its children, and re-arming it would fire it again.
+	out := i.afterEffectsOnEntry(i.Configuration(), &tr)
 	active := i.activeStates()
-	out := i.afterEffectsOnEntry(active, &tr)
 	out = append(out, i.invokeEffectsOnEntry(active, &tr)...)
 	out = append(out, i.actorEffectsOnEntry(active, &tr)...)
 	return out

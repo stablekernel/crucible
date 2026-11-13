@@ -17,14 +17,11 @@ func TestMarshalCheckpoint_RoundTrip(t *testing.T) {
 	timers := map[string]pendingTimer{
 		"m:a:after:0": {id: "m:a:after:0", due: due, event: "elapsed"},
 	}
-	b, err := marshalCheckpoint(snap, timers, 0, nil)
+	b, err := marshalCheckpoint(checkpointEnvelope{Snapshot: snap}, timers)
 	if err != nil {
 		t.Fatalf("marshalCheckpoint: %v", err)
 	}
-	gotSnap, gotWires, _, err := unmarshalCheckpointParts(b)
-	if err != nil {
-		t.Fatalf("unmarshalCheckpoint: %v", err)
-	}
+	gotSnap, gotWires, _ := unmarshalCheckpointParts(b)
 	if string(gotSnap) != string(snap) {
 		t.Fatalf("snapshot round-trip: want %s, got %s", snap, gotSnap)
 	}
@@ -45,7 +42,7 @@ func TestMarshalCheckpoint_RoundTrip(t *testing.T) {
 // armed, so an event-driven checkpoint's envelope stays minimal.
 func TestMarshalCheckpoint_NoTimers(t *testing.T) {
 	snap := []byte(`{"machine":"m"}`)
-	b, err := marshalCheckpoint(snap, nil, 0, nil)
+	b, err := marshalCheckpoint(checkpointEnvelope{Snapshot: snap}, nil)
 	if err != nil {
 		t.Fatalf("marshalCheckpoint: %v", err)
 	}
@@ -64,10 +61,7 @@ func TestMarshalCheckpoint_NoTimers(t *testing.T) {
 // checkpoint still restores.
 func TestUnmarshalCheckpoint_BareSnapshotFallback(t *testing.T) {
 	bare := []byte(`{"machine":"m","current":"a","configuration":["a"]}`)
-	snap, wires, _, err := unmarshalCheckpointParts(bare)
-	if err != nil {
-		t.Fatalf("unmarshalCheckpoint: %v", err)
-	}
+	snap, wires, _ := unmarshalCheckpointParts(bare)
 	if string(snap) != string(bare) {
 		t.Fatalf("bare snapshot not passed through: want %s, got %s", bare, snap)
 	}
@@ -81,10 +75,7 @@ func TestUnmarshalCheckpoint_BareSnapshotFallback(t *testing.T) {
 // any real decode failure when it unmarshals the kernel snapshot).
 func TestUnmarshalCheckpoint_Garbage(t *testing.T) {
 	garbage := []byte(`not json`)
-	snap, wires, _, err := unmarshalCheckpointParts(garbage)
-	if err != nil {
-		t.Fatalf("unmarshalCheckpoint should tolerate garbage: %v", err)
-	}
+	snap, wires, _ := unmarshalCheckpointParts(garbage)
 	if string(snap) != string(garbage) || wires != nil {
 		t.Fatalf("garbage not passed through: snap=%s wires=%+v", snap, wires)
 	}
@@ -155,7 +146,7 @@ func TestMarshalCheckpoint_BadEventErrors(t *testing.T) {
 	timers := map[string]pendingTimer{
 		"bad": {id: "bad", due: time.Unix(0, 1), event: make(chan int)},
 	}
-	if _, err := marshalCheckpoint([]byte(`{}`), timers, 0, nil); err == nil {
+	if _, err := marshalCheckpoint(checkpointEnvelope{Snapshot: []byte(`{}`)}, timers); err == nil {
 		t.Fatal("want encode error for unmarshalable timer event, got nil")
 	}
 }
@@ -178,20 +169,20 @@ func TestTickInstant(t *testing.T) {
 // TestCheckpoint_NextStepRoundTrips proves the envelope carries the ordinal after
 // the checkpoint, and that a checkpoint without one reports zero, the old form.
 func TestCheckpoint_NextStepRoundTrips(t *testing.T) {
-	b, err := marshalCheckpoint([]byte(`{"v":1}`), nil, 9, nil)
+	b, err := marshalCheckpoint(checkpointEnvelope{Snapshot: []byte(`{"v":1}`), NextStep: 9}, nil)
 	if err != nil {
 		t.Fatalf("marshalCheckpoint: %v", err)
 	}
-	if _, _, next, err := unmarshalCheckpointParts(b); err != nil || next != 9 {
-		t.Fatalf("unmarshalCheckpoint = (%d, %v), want (9, nil)", next, err)
+	if _, _, next := unmarshalCheckpointParts(b); next != 9 {
+		t.Fatalf("unmarshalCheckpoint next = %d, want 9", next)
 	}
-	if _, _, next, err := unmarshalCheckpointParts([]byte(`{"snapshot":{"v":1}}`)); err != nil || next != 0 {
-		t.Fatalf("old envelope = (%d, %v), want (0, nil)", next, err)
+	if _, _, next := unmarshalCheckpointParts([]byte(`{"snapshot":{"v":1}}`)); next != 0 {
+		t.Fatalf("old envelope next = %d, want 0", next)
 	}
 }
 
 // unmarshalCheckpointParts is unmarshalCheckpoint split into the parts these tests check.
-func unmarshalCheckpointParts(b []byte) ([]byte, []pendingTimerWire, int, error) {
-	env, err := unmarshalCheckpoint(b)
-	return env.Snapshot, env.Timers, env.NextStep, err
+func unmarshalCheckpointParts(b []byte) ([]byte, []pendingTimerWire, int) {
+	env := unmarshalCheckpoint(b)
+	return env.Snapshot, env.Timers, env.NextStep
 }

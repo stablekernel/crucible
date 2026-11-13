@@ -132,7 +132,6 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		return false, fmt.Errorf("durable: no actor palette wired for %q (supply WithActorPalette)", h.id)
 	}
 
-	before := len(h.inst.History())
 	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
 	fires := h.actorFires.take()
 	if !delivered {
@@ -148,7 +147,7 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 
-	entries, err := recordActorTransitions(ref.ID, h.inst.History()[before:], fires)
+	entries, err := recordParentFires(fires, false)
 	if err != nil {
 		return true, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
 	}
@@ -194,30 +193,9 @@ func (h *Handle[S, E, C]) drainActors() []state.JournalEntry {
 	return out
 }
 
-// recordActorTransitions builds the JournalActorMessage entries for the parent Traces
-// a delivery appended, one per parent transition the actor system drove, in fire
-// order. Each carries its transition's event payload, and whether the live Fire was
-// refused. A Fire that settled an actor also carries the actor's outcome, which it
-// passed as event data, so replay re-fires the same onDone or onError with it. fires
-// are the actor system's own record of those Fires, matching the traces one for one.
-func recordActorTransitions[S comparable](id string, traces []state.Trace, fires []state.ParentFire[S]) ([]state.JournalEntry, error) {
-	if len(fires) != len(traces) {
-		return nil, fmt.Errorf("the actor system drove %d parent Fires, but the parent recorded %d", len(fires), len(traces))
-	}
-	entries := make([]state.JournalEntry, 0, len(traces))
-	for i, tr := range traces {
-		entry, err := actorEntry(id, tr.EventPayload, fires[i], false)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
-}
-
-// recordParentFires builds the JournalActorMessage entries for parent Fires an actor
-// system drove outside a delivery, such as a failed spawn's onError, each under the
-// actor it came from. before marks Fires that ran before the step's own work.
+// recordParentFires builds the JournalActorMessage entries for the parent Fires an
+// actor system drove, in fire order, each under the actor it came from. before marks
+// Fires that ran before the step's own work.
 func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) ([]state.JournalEntry, error) {
 	entries := make([]state.JournalEntry, 0, len(fires))
 	for _, pf := range fires {

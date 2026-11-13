@@ -409,5 +409,8 @@ func cloneRecord(rec Record) Record {
 	if rec.EndedActors != nil {
 		out.EndedActors = &ActorSet{IDs: append([]string{}, rec.EndedActors.IDs...)}
 	}
+	if rec.UnstartedActors != nil {
+		out.UnstartedActors = &ActorSet{IDs: append([]string{}, rec.UnstartedActors.IDs...)}
+	}
 	return out
 }

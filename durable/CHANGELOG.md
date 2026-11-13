@@ -12,6 +12,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **`Record.EndedActors` and `ActorSet`** record the declared child-machine actors that
   ran and have ended, settled or stopped, so `Recover` doesn't spawn them again. A Store
   must keep an empty set distinct from nil.
+- **`Record.UnstartedActors`** records the declared actors that aren't running and
+  haven't ended, because their spawn failed with no onError, so `Recover` can tell them
+  from the actors that were running. A Store must keep an empty set distinct from nil.
 
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
@@ -56,13 +59,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   its parent Fire was refused, which an older `durable` fails `Recover` on, or, for an
   entry with no event, replays as the zero event. An older `durable` also ignores the
   recorded ended actors and spawns them again, and replays a step that records actor
-  entries as a delivery, skipping its event, settle or tick. Don't downgrade a Store this version has
+  entries as a delivery, skipping its event, settle or tick. It also spawns a running
+  actor as new, so a message the actor sent its parent as it started applies twice. Don't downgrade a Store this version has
   written to.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
   recorded with a delivery's last Fire still replays into that transition. Only steps
   this version records get the fixes below.
 - Requires Go 1.27.4.
+- **`Start` fails when a context ends during it.** If ctx ends, or a context's ending
+  (ctx's, or one middleware derived from it) refuses a parent Fire an initial actor
+  drove, such as a failed spawn's onError, `Start` returns an error wrapping the
+  context's error and no Handle. It used to return a Handle whose state lacked that
+  Fire, while `Recover` would apply it. The baseline is recorded, so `Recover` the
+  instance. `Recover` likewise fails when a context's ending refuses a parent Fire its
+  own spawns drove, rather than returning a Handle the journal can't reach.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
   host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock
@@ -172,17 +183,34 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   recorded, so `Recover` lost it. These are now recorded with their step, or, for
   `Start`'s and `Recover`'s spawns, with the step after, and replay re-fires each where
   it ran. An actor output that has no JSON form now fails the Handle here too, as it
-  does for a delivery. A message a running actor sends as it spawns isn't journaled:
-  `Recover` spawns the actor again, which sends it again, so it can land after the
-  steps that followed it live.
+  does for a delivery.
+- **A message an actor sends its parent as it spawns applies once.** A `Fire`,
+  `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor
+  again to send it again: it landed after the steps that followed it live, or never, if
+  it had ended the actor. A delivery did journal it, for an actor its onDone or onError
+  spawned, so `Recover` applied it twice. Every step now journals every parent Fire it
+  drove, and `Start`'s and `Recover`'s go with the step after, so replay re-fires each
+  where it ran. `Recover` spawns an actor that was running with `state`'s new
+  `ActorSystem.AbsorbRespawn`, which keeps such messages from the parent. An actor whose
+  spawn failed with no onError never ran, so its messages are new: they reach the parent
+  and are journaled with the next step. A journal from before this records no unstarted
+  actors, and `Recover` spawns every actor as new, as before.
+- **A delivery journals each parent Fire under the actor that drove it,** where it used to
+  record every one under the actor delivered to. It no longer copies the instance's
+  history twice per delivery to do it.
 - **A compound state's services and actors start.** `Start` and `Recover` armed only
   those declared on the active leaves, so a service or actor on a compound state didn't
   run while one of its children was active. They come from `state.StartEffects`, which
   now covers every active state. A journal from before this records no ended actors,
   so `Recover` from it also spawns a compound state's actor that had settled, as it
-  already did for a leaf's. A settled service is re-armed by a `Recover` from a
-  checkpoint taken after its settle, on a compound or a leaf state; that, and restoring
-  a checkpoint's timers before the replay walk, is left to a follow-up.
+  already did for a leaf's. Restoring a checkpoint's timers before the replay walk is
+  left to a follow-up.
+- **`Recover` doesn't start a service that settled while its state stayed active.** A
+  checkpoint taken after such a settle, on a compound state whose onDone went to a child,
+  or on a leaf state that stayed put, left the service in flight again on recovery, so
+  `RunService` ran it a second time. A checkpoint now records the declared services that
+  weren't in flight, and `Recover` doesn't start them. A checkpoint from before this
+  records none, and `Recover` starts every declared service, as before.
 - **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
   is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,

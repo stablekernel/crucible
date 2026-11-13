@@ -93,6 +93,17 @@ type Record struct {
 	// machine with no actor palette, and on a Record from before this field. An empty
 	// set is not nil: a Store must keep it, though it treats other empty fields as nil.
 	EndedActors *ActorSet `json:",omitempty"`
+
+	// UnstartedActors, when set, holds the child-machine actors the instance's state
+	// declared once this step ended that aren't running and haven't ended: their latest
+	// spawn failed with no onError to route to. Recover spawns them as new, so the
+	// messages they send the parent as they start apply and are journaled. A declared
+	// actor in neither set was running, and the journal holds every parent Fire its start
+	// drove, so Recover spawns it again without letting those reach the parent. It's
+	// recorded as EndedActors is: with the first step after Start, then when a step
+	// changes it, and an empty set is not nil. When the journal holds none, as on a
+	// Record from before this field, Recover lets every spawn reach the parent.
+	UnstartedActors *ActorSet `json:",omitempty"`
 }
 
 // ActorSet is a set of child-machine actor ids at a point in a durable instance's
@@ -136,7 +147,8 @@ func (r *Record) followingStep() int {
 // order, and a different Record there is still a conflict. Two Records are the
 // same when every field matches, with a nil and an empty field counting as equal,
 // except EventDataError, where nil means no error and an empty message is an error,
-// and EndedActors, where nil means none recorded and an empty set means none ended.
+// and EndedActors and UnstartedActors, where nil means none recorded and an empty set
+// means none.
 // An Append carrying WithIdempotencyKey (a backend reads it with
 // AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
 // Record: no comparison is made. Keys starting "step:" are reserved for the Store's

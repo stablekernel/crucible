@@ -452,8 +452,8 @@ func (g *greeter) ChildEffects() []state.Effect {
 func (g *greeter) Output() any { return nil }
 
 // TestRecover_AppliesASpawnMessageOnce proves a message a running actor sends its parent
-// as it spawns isn't journaled with the step that spawned it: Recover spawns the actor
-// again, which sends it again, so journaling it too would apply it twice.
+// as it spawns is journaled with the step that spawned it, or the step after Start, and
+// Recover spawns the actor again without sending it again, so it applies once.
 func TestRecover_AppliesASpawnMessageOnce(t *testing.T) {
 	ctx := context.Background()
 	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {

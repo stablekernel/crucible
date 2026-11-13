@@ -294,6 +294,37 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 	s.absorb(ctx, effects, event)
 }
 
+// AbsorbRespawn is Absorb for actors a host spawns again after rebuilding the parent
+// from a record that already holds the messages their earlier start sent it, as the
+// durable runner's Recover does for the actors that were running. Each actor it spawns
+// starts as under Absorb, but no message reaches the parent while it starts: not one it
+// sends the parent from its initial entry, nor one another actor sends the parent then,
+// on receiving a message from it. Such a message is dropped without a parent Fire, so
+// WithParentFireObserver doesn't see it. A spawn that can't start still routes its
+// onError, and a settle its onDone or onError, since those aren't messages the earlier
+// start sent. Its other effects absorb as under Absorb.
+func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
+	quiet := context.WithValue(ctx, respawnKey{}, true)
+	for _, eff := range effects {
+		if e, ok := eff.(SpawnActor); ok {
+			s.spawn(quiet, e)
+			continue
+		}
+		s.absorb(ctx, []Effect{eff}, nil)
+	}
+}
+
+// respawnKey marks the context of an AbsorbRespawn spawn, under which no message
+// reaches the parent.
+type respawnKey struct{}
+
+// respawning reports whether ctx is an AbsorbRespawn spawn's, so a message to the
+// parent is dropped.
+func respawning(ctx context.Context) bool {
+	quiet, _ := ctx.Value(respawnKey{}).(bool)
+	return quiet
+}
+
 // absorb scans effects emitted by the parent instance while handling curEvent,
 // spawning/stopping actors and routing the parent's outbound messages (the parent
 // is the sender). curEvent is nil for the plain Absorb path (a parent ForwardEvent
@@ -647,6 +678,9 @@ func (s *ActorSystem[S, E, C]) resolveTarget(targetID, systemID string) (string,
 // drains it. This is the single path every routed message flows through, so parent
 // and child delivery share their sender bookkeeping.
 func (s *ActorSystem[S, E, C]) dispatch(ctx context.Context, targetID string, event any, senderID string) {
+	if targetID == parentActorID && respawning(ctx) {
+		return
+	}
 	s.inspectMessage(senderID, targetID, MessageSent, event)
 	if targetID == parentActorID {
 		s.fireParentFrom(ctx, event, senderID)
