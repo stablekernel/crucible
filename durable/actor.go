@@ -353,15 +353,3 @@ func actorEntries(rec *Record) []state.JournalEntry {
 	}
 	return out
 }
-
-// hasActorEntry reports whether a Record carries any recorded actor transition, so
-// replay can route it to the actor re-fire path rather than re-firing an external
-// event.
-func hasActorEntry(rec *Record) bool {
-	for _, e := range rec.Entries {
-		if e.Kind == state.JournalActorMessage {
-			return true
-		}
-	}
-	return false
-}

@@ -809,8 +809,8 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// where the onError applies. Record nothing. A Fire that drove no Fire a context refused
 	// applied whole, so it records even when ctx ended afterward.
 	fires := h.actorFires.take()
-	if err := refusedByContext(parentFireErrs(fires)...); err != nil {
-		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, err))
+	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, refused))
 	}
 	// The parent Fires the absorb drove that settled an actor or routed a failed spawn's
 	// onError applied after the event, so the step journals them, and replay re-fires

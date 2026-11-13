@@ -65,7 +65,7 @@ func TestRecover_ActorSpawnedAndStoppedInOneStep_StaysEnded(t *testing.T) {
 			if !ok {
 				t.Fatal("no driver")
 			}
-			if _, err := h.DeliverToActor(ctx, ref, "go"); err != nil {
+			if _, err = h.DeliverToActor(ctx, ref, "go"); err != nil {
 				t.Fatal(err)
 			}
 			if got := h.Instance().Current(); got != "z" {
@@ -82,7 +82,7 @@ func TestRecover_ActorSpawnedAndStoppedInOneStep_StaysEnded(t *testing.T) {
 				t.Error("Recover: child is running, live had it stopped")
 			}
 			// A step on the recovered Handle, then a second Recover.
-			if _, err := rec.Fire(ctx, "poke"); err != nil {
+			if _, err = rec.Fire(ctx, "poke"); err != nil {
 				t.Fatal(err)
 			}
 			again, err := durable.Recover(ctx, m, store, id, opts...)
@@ -140,10 +140,10 @@ func TestRecover_RetriesAFailedReentrySpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Fire(ctx, "poke"); err != nil {
+	if _, err = h.Fire(ctx, "poke"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Fire(ctx, "re"); err != nil {
+	if _, err = h.Fire(ctx, "re"); err != nil {
 		t.Fatal(err)
 	}
 	aid := state.ActorID("probe", "working", 0)
@@ -173,14 +173,14 @@ func TestRecover_RetriesASpawnThatFailedAtRecover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Fire(ctx, "poke"); err != nil {
+	if _, err = h.Fire(ctx, "poke"); err != nil {
 		t.Fatal(err)
 	}
 	r1, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, probeCtx](bad))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r1.Fire(ctx, "poke"); err != nil {
+	if _, err = r1.Fire(ctx, "poke"); err != nil {
 		t.Fatal(err)
 	}
 	r2, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, probeCtx](good))
@@ -211,14 +211,14 @@ func TestRecover_RetriesAFailedReentrySpawnOnARecoveredHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Fire(ctx, "poke"); err != nil {
+	if _, err = h.Fire(ctx, "poke"); err != nil {
 		t.Fatal(err)
 	}
 	r1, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, probeCtx](once))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r1.Fire(ctx, "re"); err != nil {
+	if _, err = r1.Fire(ctx, "re"); err != nil {
 		t.Fatal(err)
 	}
 	r2, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, probeCtx](good))
@@ -254,8 +254,8 @@ func TestRecover_RetriesASpawnThatFailedWhenASettleReentered(t *testing.T) {
 	}
 	aid := state.ActorID("probe2", "working", 0)
 	ref, _ := h.ActorRef(aid)
-	if found, err := h.DeliverToActor(ctx, ref, "finish"); !found || err != nil {
-		t.Fatalf("deliver: %v %v", found, err)
+	if found, derr := h.DeliverToActor(ctx, ref, "finish"); !found || derr != nil {
+		t.Fatalf("deliver: %v %v", found, derr)
 	}
 	if _, ok := h.ActorRef(aid); ok {
 		t.Fatal("setup: respawn should have failed")
@@ -319,7 +319,7 @@ func TestRecover_RetriesAnActorWhoseSecondReentrySpawnFailed(t *testing.T) {
 		if !ok {
 			t.Fatal("no child")
 		}
-		if _, err := h.DeliverToActor(ctx, ref, "go"); err != nil {
+		if _, err = h.DeliverToActor(ctx, ref, "go"); err != nil {
 			t.Fatal(err)
 		}
 		if got := atomic.LoadInt64(&n); got != 3 {
@@ -329,7 +329,7 @@ func TestRecover_RetriesAnActorWhoseSecondReentrySpawnFailed(t *testing.T) {
 			t.Fatal("setup: last respawn should have failed")
 		}
 		if poke {
-			if _, err := h.Fire(ctx, "poke"); err != nil {
+			if _, err = h.Fire(ctx, "poke"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -380,7 +380,7 @@ func TestRecover_RetriesAnActorWhoseLatestSpawnInAStepFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref, _ := h.ActorRef(state.ActorID("flip", "y", 0))
-	if _, err := h.DeliverToActor(ctx, ref, "go"); err != nil {
+	if _, err = h.DeliverToActor(ctx, ref, "go"); err != nil {
 		t.Fatal(err)
 	}
 	cid := state.ActorID("flip", "z", 0)
