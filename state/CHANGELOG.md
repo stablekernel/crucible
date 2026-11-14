@@ -25,8 +25,10 @@ counts as an additive (minor) versus breaking (major) change. Use the
   doesn't reach the parent, neither a message sent to the parent nor the onDone or
   onError of a nested actor it spawns. The onError of a respawn that can't start, and
   the onDone or onError of a respawned actor that settles as the others start, still
-  fire the parent, since that actor was running. The durable runner's `Recover` uses it
-  for the actors that were running. It's additive, within v1.1.0.
+  fire the parent, since that actor was running. A nested actor's failure with no
+  onError doesn't escalate again, since its start already escalated it; a respawned
+  actor's own failure with no onError does. The durable runner's `Recover` uses it for
+  the actors that were running. It's additive, within v1.1.0.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new

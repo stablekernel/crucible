@@ -311,10 +311,11 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 // so WithParentFireObserver doesn't see it. What the earlier start can't have driven
 // still fires the parent, since each actor in effects was running: the onError of one
 // whose spawn fails now, and the onDone or onError of one that settles as the others
-// start. A nested actor's failure with no onError still escalates. The effects such a Fire drives absorb as under Absorb: an actor
-// its state spawns, or one it sends to, reaches the parent. Its other effects absorb as
-// under Absorb. Don't drive the system from another goroutine while AbsorbRespawn runs:
-// a parent Fire that one drives would be dropped too.
+// start. A nested actor's failure with no onError doesn't escalate again either, while
+// one in effects that fails now does. The effects such a Fire drives absorb as under
+// Absorb: an actor its state spawns, or one it sends to, reaches the parent. Its other
+// effects absorb as under Absorb. Don't drive the system from another goroutine while
+// AbsorbRespawn runs: a parent Fire that one drives would be dropped too.
 func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
 	respawned := map[string]bool{}
 	for _, eff := range effects {
@@ -471,15 +472,17 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 // failure escalates to the parent as a typed ActorEscalation rather than being
 // silently swallowed (the G3 default), so a spawn that cannot start is never lost.
 func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
-	ev, ok := e.OnError.(E)
-	if !ok {
-		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
-		return
-	}
 	s.mu.Lock()
 	drop, lift := s.hearingLocked(e.ID)
 	s.mu.Unlock()
+	// A failure the start AbsorbRespawn is repeating was routed or escalated when it
+	// first happened.
 	if drop {
+		return
+	}
+	ev, ok := e.OnError.(E)
+	if !ok {
+		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}
 	if lift {
@@ -818,8 +821,9 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		// G3 default: an unhandled child FAILURE (no onError wired) escalates to the
 		// parent as a typed, observable ActorEscalation rather than being silently
 		// swallowed. A clean completion with no onDone is still a fire-and-forget
-		// no-op — only a failure escalates.
-		if err != nil {
+		// no-op — only a failure escalates. A failure the start AbsorbRespawn is
+		// repeating escalated when it first happened.
+		if err != nil && !drop {
 			s.escalate(ctx, ra, parentID, err)
 		}
 		return FireResult[S]{}, false

@@ -259,3 +259,75 @@ func TestActorSystem_AbsorbRespawn_QuietEndsWithIt(t *testing.T) {
 		t.Fatalf("a delivery after AbsorbRespawn left the parent in %q, want hellod: its hello should reach the parent", got)
 	}
 }
+
+// crasher is an actor that panics when it's delivered "crash".
+type crasher struct{}
+
+func (crasher) DeliverFire(_ context.Context, ev any) (bool, any) {
+	if ev == "crash" {
+		panic("crash")
+	}
+	return false, nil
+}
+func (crasher) ChildEffects() []state.Effect { return nil }
+func (crasher) Output() any                  { return nil }
+
+// TestActorSystem_AbsorbRespawn_DoesNotEscalateANestedStartFailureAgain proves a nested
+// actor's failure with no onError, one whose spawn can't start or one that crashes as
+// the respawned actor starts, escalates under Absorb but not again under AbsorbRespawn:
+// it's part of the respawned actor's start, which escalated it when it first happened.
+// A respawned actor whose own spawn fails now, with no onError, still escalates.
+func TestActorSystem_AbsorbRespawn_DoesNotEscalateANestedStartFailureAgain(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[*trec]("escalate").
+		Actor("host").
+		State("hosting").InvokeActor("host").
+		Initial("hosting").
+		Quench()
+	starts := map[string][]state.Effect{
+		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}}},
+		"crashes": {
+			state.SpawnActor{ID: "child", Src: state.Ref{Name: "crasher"}},
+			state.SendTo{TargetID: "child", Event: "crash"},
+		},
+	}
+	build := func(how string, hostStarts bool, escalations *int) (*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec]) {
+		inst := m.Cast(&trec{}, state.WithInitialState("hosting"))
+		sys := state.NewActorSystem(inst).
+			WithEscalationHandler(func(context.Context, *state.ActorEscalation) { *escalations++ })
+		sys.Register("host", func(map[string]any) (state.ActorInstance, error) {
+			if !hostStarts {
+				return nil, errors.New("can't start")
+			}
+			return &starter{start: starts[how]}, nil
+		})
+		sys.Register("broken", func(map[string]any) (state.ActorInstance, error) { return nil, errors.New("can't start") })
+		sys.Register("crasher", func(map[string]any) (state.ActorInstance, error) { return crasher{}, nil })
+		return inst, sys
+	}
+	for _, how := range []string{"fails", "crashes"} {
+		t.Run(how, func(t *testing.T) {
+			var live int
+			inst, sys := build(how, true, &live)
+			sys.Absorb(ctx, inst.StartEffects())
+			if live != 1 {
+				t.Fatalf("Absorb escalated %d times, want once", live)
+			}
+			var respawned int
+			inst, sys = build(how, true, &respawned)
+			sys.AbsorbRespawn(ctx, inst.StartEffects())
+			if respawned != 0 {
+				t.Fatalf("AbsorbRespawn escalated %d times, want none: the nested failure is part of the host's start", respawned)
+			}
+		})
+	}
+	t.Run("respawned actor fails", func(t *testing.T) {
+		var n int
+		_, sys := build("fails", false, &n)
+		// A spawn with no onError, as an actor's own spawns are.
+		sys.AbsorbRespawn(ctx, []state.Effect{state.SpawnActor{ID: "host", Src: state.Ref{Name: "host"}}})
+		if n != 1 {
+			t.Fatalf("AbsorbRespawn escalated %d times, want once: the respawned actor's own failure is new", n)
+		}
+	})
+}
