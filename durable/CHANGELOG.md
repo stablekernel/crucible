@@ -192,7 +192,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   spawned, so `Recover` applied it twice. Every step now journals every parent Fire it
   drove, and `Start`'s and `Recover`'s go with the step after, so replay re-fires each
   where it ran. `Recover` spawns an actor that was running with `state`'s new
-  `ActorSystem.AbsorbRespawn`, which keeps such messages from the parent. An actor whose
+  `ActorSystem.AbsorbRespawn`, which keeps such messages from the parent, and the onDone
+  or onError of a nested actor its start spawns, which the journal holds too. An actor whose
   spawn failed with no onError never ran, so its messages are new: they reach the parent
   and are journaled with the next step. A journal from before this records no unstarted
   actors, and `Recover` spawns every actor as new, as before.

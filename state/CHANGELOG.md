@@ -20,10 +20,13 @@ counts as an additive (minor) versus breaking (major) change. Use the
   can tell a parent transition refused because its context ended from one that applied,
   and which Fire carried the actor's output. It's additive, within v1.1.0.
 - **`ActorSystem.AbsorbRespawn`** is `Absorb` for actors a host spawns again after
-  rebuilding the parent from a record that already holds the messages their earlier
-  start sent it: an actor it spawns starts as under `Absorb`, but no message reaches the
-  parent while it starts. The durable runner's `Recover` uses it for the actors that were
-  running. It's additive, within v1.1.0.
+  rebuilding the parent from a record that already holds every parent Fire their
+  earlier start drove: an actor it spawns starts as under `Absorb`, but its start
+  doesn't reach the parent, neither a message sent to the parent nor the onDone or
+  onError of a nested actor it spawns. The onError of a respawn that can't start, and
+  the onDone or onError of a respawned actor that settles as the others start, still
+  fire the parent, since that actor was running. The durable runner's `Recover` uses it
+  for the actors that were running. It's additive, within v1.1.0.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new

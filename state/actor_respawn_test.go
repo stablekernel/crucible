@@ -131,3 +131,131 @@ func TestActorSystem_AbsorbRespawn_ParentFiresItDrivesAreAudible(t *testing.T) {
 		})
 	}
 }
+
+// TestActorSystem_AbsorbRespawn_NestedStartFiresStayQuiet proves the quiet of an
+// AbsorbRespawn spawn covers a nested actor the respawned one spawns as it starts: the
+// onError of a nested spawn that can't start, and the onDone of a nested actor the
+// respawned one ends as it starts, are parent Fires its earlier start drove, so neither
+// fires the parent again, though each does under Absorb.
+func TestActorSystem_AbsorbRespawn_NestedStartFiresStayQuiet(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[*trec]("nested").
+		Actor("host").
+		State("hosting").InvokeActor("host").
+		State("heard").
+		Initial("hosting").
+		Transition("hosting").On("nestedFailed").GoTo("heard").
+		Transition("hosting").On("nestedDone").GoTo("heard").
+		Quench()
+	starts := map[string][]state.Effect{
+		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}, OnError: "nestedFailed"}},
+		"settles": {
+			state.SpawnActor{ID: "child", Src: state.Ref{Name: "finisher"}, OnDone: "nestedDone"},
+			state.SendTo{TargetID: "child", Event: "finish"},
+		},
+	}
+	for _, how := range []string{"fails", "settles"} {
+		t.Run(how, func(t *testing.T) {
+			build := func() (*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec]) {
+				inst := m.Cast(&trec{}, state.WithInitialState("hosting"))
+				sys := state.NewActorSystem(inst)
+				sys.Register("host", func(map[string]any) (state.ActorInstance, error) { return &starter{start: starts[how]}, nil })
+				sys.Register("broken", func(map[string]any) (state.ActorInstance, error) { return nil, errors.New("can't start") })
+				sys.Register("finisher", func(map[string]any) (state.ActorInstance, error) { return &starter{}, nil })
+				return inst, sys
+			}
+			live, liveSys := build()
+			liveSys.Absorb(ctx, live.StartEffects())
+			if got := live.Current(); got != "heard" {
+				t.Fatalf("Absorb left the parent in %q, want heard: the nested child's Fire should reach it", got)
+			}
+			resumed, sys := build()
+			var seen []state.ParentFire[string]
+			sys.WithParentFireObserver(func(pf state.ParentFire[string]) { seen = append(seen, pf) })
+			sys.AbsorbRespawn(ctx, resumed.StartEffects())
+			if got := resumed.Current(); got != "hosting" {
+				t.Fatalf("AbsorbRespawn left the parent in %q, want hosting: the nested child's Fire is part of the host's start", got)
+			}
+			if len(seen) != 0 {
+				t.Fatalf("observed %d parent Fires, want none", len(seen))
+			}
+		})
+	}
+}
+
+// TestActorSystem_AbsorbRespawn_QuietResumesAfterANewFire proves a parent Fire
+// AbsorbRespawn lets through, the onDone of a respawned actor another one's start ends,
+// hears the parent only while it and its effects run: the hello the second actor's start
+// sends next is still part of that start, and is dropped.
+func TestActorSystem_AbsorbRespawn_QuietResumesAfterANewFire(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[*trec]("resume").
+		Actor("finisher").
+		Actor("poker").
+		State("pair").InvokeActor("finisher", state.WithInvokeOnDone("finished")).InvokeActor("poker").
+		State("finishedState").
+		State("hellod").
+		Initial("pair").
+		Transition("pair").On("finished").GoTo("finishedState").
+		Transition("finishedState").On("hello").GoTo("hellod").
+		Quench()
+	finisher := state.ActorID("resume", "pair", 0)
+	inst := m.Cast(&trec{}, state.WithInitialState("pair"))
+	sys := state.NewActorSystem(inst)
+	sys.Register("finisher", func(map[string]any) (state.ActorInstance, error) { return &starter{}, nil })
+	sys.Register("poker", func(map[string]any) (state.ActorInstance, error) {
+		return &starter{start: []state.Effect{
+			state.SendTo{TargetID: finisher, Event: "finish"},
+			state.SendParent{Event: "hello"},
+		}}, nil
+	})
+	sys.AbsorbRespawn(ctx, inst.StartEffects())
+	if got := inst.Current(); got != "finishedState" {
+		t.Fatalf("AbsorbRespawn left the parent in %q, want finishedState: the finisher's onDone is new, but the poker's hello is part of its start", got)
+	}
+}
+
+// pinger is an actor that sends its parent "hello" each time it's delivered "ping".
+type pinger struct{ out []state.Effect }
+
+func (p *pinger) DeliverFire(_ context.Context, ev any) (bool, any) {
+	if ev == "ping" {
+		p.out = []state.Effect{state.SendParent{Event: "hello"}}
+	}
+	return false, nil
+}
+
+func (p *pinger) ChildEffects() []state.Effect {
+	out := p.out
+	p.out = nil
+	return out
+}
+
+func (p *pinger) Output() any { return nil }
+
+// TestActorSystem_AbsorbRespawn_QuietEndsWithIt proves the quiet of an AbsorbRespawn
+// spawn ends when it returns, even for the context the actor's behavior got: a delivery
+// made later with that context reaches the parent with the message it drives.
+func TestActorSystem_AbsorbRespawn_QuietEndsWithIt(t *testing.T) {
+	m := state.ForgeFor[*trec]("after").
+		Actor("pinger").
+		State("waiting").InvokeActor("pinger").
+		State("hellod").
+		Initial("waiting").
+		Transition("waiting").On("hello").GoTo("hellod").
+		Quench()
+	inst := m.Cast(&trec{}, state.WithInitialState("waiting"))
+	sys := state.NewActorSystem(inst)
+	var captured context.Context
+	sys.RegisterContext("pinger", func(ctx context.Context, _ map[string]any) (state.ActorInstance, error) {
+		captured = ctx
+		return &pinger{}, nil
+	})
+	sys.AbsorbRespawn(context.Background(), inst.StartEffects())
+	if !sys.DeliverByID(captured, state.ActorID("after", "waiting", 0), "ping") {
+		t.Fatal("the pinger isn't running")
+	}
+	if got := inst.Current(); got != "hellod" {
+		t.Fatalf("a delivery after AbsorbRespawn left the parent in %q, want hellod: its hello should reach the parent", got)
+	}
+}
