@@ -67,13 +67,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   recorded with a delivery's last Fire still replays into that transition. Only steps
   this version records get the fixes below.
 - Requires Go 1.27.4.
-- **`Start` fails when a context ends during it.** If ctx ends, or a context's ending
-  (ctx's, or one middleware derived from it) refuses a parent Fire an initial actor
-  drove, such as a failed spawn's onError, `Start` returns an error wrapping the
-  context's error and no Handle. It used to return a Handle whose state lacked that
-  Fire, while `Recover` would apply it. The baseline is recorded, so `Recover` the
-  instance. `Recover` likewise fails when a context's ending refuses a parent Fire its
-  own spawns drove, rather than returning a Handle the journal can't reach.
+- **`Start` fails on a context refusal.** If a context's ending (ctx's, or one
+  middleware derived from it) refuses a parent Fire an initial actor drove, such as a
+  failed spawn's onError, `Start` returns an error wrapping the context's error and no
+  Handle. It used to return a Handle whose state lacked that Fire, while `Recover`
+  would apply it. The baseline is recorded, so `Recover` the instance. A ctx that ends
+  with no Fire refused doesn't fail `Start`. `Recover` likewise fails when a context's
+  ending refuses a parent Fire its own spawns drove, rather than returning a Handle the
+  journal can't reach.
 - **A Handle's steps are serialized across goroutines.** `Fire`, `Tick`, `RunService` and
   `DeliverToActor` hold a lock while they apply to the kernel and record the step, so a
   host's timer loop no longer loses acknowledged steps. Effects dispatch after the lock

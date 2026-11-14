@@ -874,3 +874,70 @@ func TestRecover_FailsWhenItsContextEndsAfterReplay(t *testing.T) {
 		t.Fatalf("Recover = Handle %v, %v, want no Handle and context.Canceled", recovered != nil, err)
 	}
 }
+
+// cancelingStore ends a context once Start's baseline checkpoint is written.
+type cancelingStore struct {
+	durable.Store
+	cancel context.CancelFunc
+}
+
+func (s cancelingStore) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
+	err := s.Store.Checkpoint(ctx, id, snapshot, throughStep, opts...)
+	s.cancel()
+	return err
+}
+
+// TestStart_SucceedsWhenItsContextEndsWithNoRefusal proves Start fails only on a parent
+// Fire a context's ending refused, not whenever its context ends after the baseline:
+// with no actors, or with an actor that started and drove nothing, Start returns a
+// Handle whose steps record, and Recover rebuilds the same state.
+func TestStart_SucceedsWhenItsContextEndsWithNoRefusal(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[stepCtx]("lateStart").
+		Actor("quiet").
+		State("idle").
+		State("working").InvokeActor("quiet").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("working").
+		Transition("working").On("poke").GoTo("working").
+		Quench()
+	for _, initial := range []string{"idle", "working"} {
+		t.Run(initial, func(t *testing.T) {
+			turn, cancel := context.WithCancel(ctx)
+			defer cancel()
+			mem := durable.NewMemStore()
+			var store durable.Store = mem
+			hook := func() {}
+			if initial == "idle" {
+				store = cancelingStore{Store: mem, cancel: cancel}
+			} else {
+				hook = cancel
+			}
+			opts := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+				"quiet": func(map[string]any) (state.ActorInstance, error) {
+					hook()
+					return &sender{sent: true}, nil
+				},
+			})}
+			id := durable.InstanceID("late-" + initial)
+			h, err := durable.NewRunner(m, store, opts...).Start(turn, id, stepCtx{}, state.WithInitialState(initial))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if turn.Err() == nil {
+				t.Fatal("Start's context didn't end")
+			}
+			hook = func() {}
+			if _, err = h.Fire(ctx, map[string]string{"idle": "go", "working": "poke"}[initial]); err != nil {
+				t.Fatalf("Fire after Start: %v", err)
+			}
+			recovered, err := durable.Recover(ctx, m, mem, id, opts...)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if got := recovered.Instance().Current(); got != "working" {
+				t.Fatalf("recovered state = %q, want working", got)
+			}
+		})
+	}
+}

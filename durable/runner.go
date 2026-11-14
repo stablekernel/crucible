@@ -491,10 +491,11 @@ func (h *Handle[S, E, C]) ID() InstanceID { return h.id }
 // InstanceID that already exists in the Store reports ErrInstanceExists rather
 // than clobbering its recorded baseline.
 //
-// If ctx ends during Start, or a context ending (ctx's, or one middleware derived from
-// it) refuses a parent Fire an initial actor drove, such as a failed spawn's onError,
-// Start returns an error wrapping the context's error and no Handle. The baseline is
-// recorded by then, so Recover the instance rather than Start it again.
+// If a context ending (ctx's, or one middleware derived from it) refuses a parent Fire
+// an initial actor drove, such as a failed spawn's onError, Start returns an error
+// wrapping the context's error and no Handle. The baseline is recorded by then, so
+// Recover the instance rather than Start it again. A ctx that ends with no Fire refused
+// doesn't fail Start.
 func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opts ...state.CastOption[S]) (*Handle[S, E, C], error) {
 	if _, _, err := r.store.Load(ctx, id); err == nil {
 		return nil, fmt.Errorf("%w: %q", ErrInstanceExists, id)
@@ -558,14 +559,11 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// A parent Fire a starting actor drove (a message it sent as it started, or a failed
 	// spawn's onError) applied to the instance after its baseline, so the first step
 	// journals it, ahead of its own work. One a context's ending refused never applied,
-	// and the Handle would hold state the journal can't reach, so Start fails, as it does
-	// when ctx ended: Recover starts from the baseline.
-	startFires, ended := heldFires(actorFires.take())
-	if ended == nil {
-		ended = ctx.Err()
-	}
-	if ended != nil {
-		return nil, fmt.Errorf("durable: starting %q: %w", id, ended)
+	// and replaying it under a live context would apply it, so Start fails: Recover
+	// starts from the baseline. A context that ended with no Fire refused cost nothing.
+	startFires := actorFires.take()
+	if refused := refusedByContext(parentFireErrs(startFires)...); refused != nil {
+		return nil, fmt.Errorf("durable: starting %q: %w", id, refused)
 	}
 	// The actors that started are seen running, so one later stopped counts as ended.
 	seen := map[string]bool{}
@@ -1093,16 +1091,6 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 	return nil
 }
 
-// heldFires returns the parent Fires a Start's or Recover's spawns drove, all of which
-// the next step journals, or the context error that refused one: that Fire never
-// applied, and replaying it under a live context would apply it.
-func heldFires[S comparable](fires []state.ParentFire[S]) ([]state.ParentFire[S], error) {
-	if err := refusedByContext(parentFireErrs(fires)...); err != nil {
-		return nil, err
-	}
-	return fires, nil
-}
-
 // recordedSet is an actor set the journal records when a step changes it.
 type recordedSet struct {
 	ids []string // the set the journal last recorded
@@ -1214,33 +1202,18 @@ func declaredActors(effects []state.Effect) []string {
 	return ids
 }
 
-// spawnsExcept returns effects without the spawns of the actors ended holds, so
-// Recover doesn't spawn an actor the live run had ended. With no recorded set it
-// returns effects unchanged, spawning every declared actor, as Recover did before the
-// set was recorded.
-func spawnsExcept(effects []state.Effect, ended *ActorSet) []state.Effect {
-	if ended == nil {
+// startsExcept returns effects without the starts of kind T (a SpawnActor or a
+// StartService) whose id, as id reads it, ids holds. Recover uses it so it doesn't
+// spawn an actor the live run had ended, or start a service that settled while its
+// state stayed active. The kind matters: an explicit invoke id can name both an actor
+// and a service. With no ids it returns effects unchanged.
+func startsExcept[T state.Effect](effects []state.Effect, ids []string, id func(T) string) []state.Effect {
+	if len(ids) == 0 {
 		return effects
 	}
 	out := make([]state.Effect, 0, len(effects))
 	for _, eff := range effects {
-		if sp, ok := eff.(state.SpawnActor); ok && slices.Contains(ended.IDs, sp.ID) {
-			continue
-		}
-		out = append(out, eff)
-	}
-	return out
-}
-
-// servicesExcept returns effects without the starts of the services ended names, so
-// Recover doesn't start a service that settled while its state stayed active.
-func servicesExcept(effects []state.Effect, ended []string) []state.Effect {
-	if len(ended) == 0 {
-		return effects
-	}
-	out := make([]state.Effect, 0, len(effects))
-	for _, eff := range effects {
-		if sv, ok := eff.(state.StartService); ok && slices.Contains(ended, sv.ID) {
+		if start, ok := eff.(T); ok && slices.Contains(ids, id(start)) {
 			continue
 		}
 		out = append(out, eff)
@@ -1256,17 +1229,16 @@ func servicesExcept(effects []state.Effect, ended []string) []state.Effect {
 // spawns a running actor, which must already be running, or its start would reach the
 // parent a second time.
 func respawn[S comparable, E comparable, C any](ctx context.Context, actors *state.ActorSystem[S, E, C], effects []state.Effect, unstarted *ActorSet) {
-	var fresh []state.Effect
+	var running, fresh []state.Effect
 	for _, eff := range effects {
 		if sp, ok := eff.(state.SpawnActor); ok && unstarted != nil && !slices.Contains(unstarted.IDs, sp.ID) {
-			actors.AbsorbRespawn(ctx, []state.Effect{eff})
+			running = append(running, eff)
 			continue
 		}
 		fresh = append(fresh, eff)
 	}
-	for _, eff := range fresh {
-		actors.Absorb(ctx, []state.Effect{eff})
-	}
+	actors.AbsorbRespawn(ctx, running)
+	actors.Absorb(ctx, fresh)
 }
 
 // Recover reconstructs a durable instance purely from the Store: it loads the
@@ -1327,7 +1299,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	svcBuf := make([]state.JournalEntry, 0)
 	svc := r.newServiceRunner(inst)
 	if svc != nil {
-		svc.Absorb(ctx, servicesExcept(inst.StartEffects(), env.EndedServices))
+		svc.Absorb(ctx, startsExcept(inst.StartEffects(), env.EndedServices, func(sv state.StartService) string { return sv.ID }))
 	}
 
 	// Build the child-machine actor host driver, but DO NOT spawn the restored
@@ -1414,7 +1386,13 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// An actor that was running sends the parent nothing as it spawns again: the journal
 	// holds what its start drove.
 	if actors != nil {
-		spawns := spawnsExcept(inst.StartEffects(), ended)
+		// With no recorded ended set, Recover spawns every declared actor, as it did
+		// before the set was recorded.
+		var endedIDs []string
+		if ended != nil {
+			endedIDs = ended.IDs
+		}
+		spawns := startsExcept(inst.StartEffects(), endedIDs, func(sp state.SpawnActor) string { return sp.ID })
 		actorFires.attempt(spawns)
 		respawn(ctx, actors, spawns, unstarted)
 	}
@@ -1422,8 +1400,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// failed spawn's onError) applied to the instance past its journal, so the next step
 	// journals it, ahead of its own work. One a context's ending refused never applied,
 	// and the Handle would hold state the journal can't reach, so Recover fails.
-	recoverFires, refused := heldFires(actorFires.take())
-	if refused != nil {
+	recoverFires := actorFires.take()
+	if refused := refusedByContext(parentFireErrs(recoverFires)...); refused != nil {
 		return nil, fmt.Errorf("durable: recovering %q: %w", id, refused)
 	}
 	// The journal's ended actors stay ended, and seen, so the next step records a set

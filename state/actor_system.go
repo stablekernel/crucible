@@ -302,7 +302,9 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 // on receiving a message from it. Such a message is dropped without a parent Fire, so
 // WithParentFireObserver doesn't see it. A spawn that can't start still routes its
 // onError, and a settle its onDone or onError, since those aren't messages the earlier
-// start sent. Its other effects absorb as under Absorb.
+// start sent, and the effects such a Fire drives absorb as under Absorb: an actor its
+// state spawns, or one it sends to, reaches the parent. Its other effects absorb as
+// under Absorb.
 func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
 	quiet := context.WithValue(ctx, respawnKey{}, true)
 	for _, eff := range effects {
@@ -323,6 +325,17 @@ type respawnKey struct{}
 func respawning(ctx context.Context) bool {
 	quiet, _ := ctx.Value(respawnKey{}).(bool)
 	return quiet
+}
+
+// audible returns ctx without an AbsorbRespawn spawn's mark, for a parent Fire that
+// isn't a message the earlier start sent (a failed spawn's onError, or a settle's
+// onDone or onError) and the effects it drives: an actor that Fire's state spawns, or
+// one it sends to, reaches the parent as under Absorb.
+func audible(ctx context.Context) context.Context {
+	if !respawning(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, respawnKey{}, false)
 }
 
 // absorb scans effects emitted by the parent instance while handling curEvent,
@@ -416,6 +429,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 // failure escalates to the parent as a typed ActorEscalation rather than being
 // silently swallowed (the G3 default), so a spawn that cannot start is never lost.
 func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
+	ctx = audible(ctx)
 	ev, ok := e.OnError.(E)
 	if !ok {
 		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
@@ -725,6 +739,7 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 // (the G3 escalate-to-parent default), so an unhandled child crash always surfaces.
 // A clean completion with no onDone remains a fire-and-forget no-op.
 func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any, err error) (FireResult[S], bool) {
+	ctx = audible(ctx)
 	s.mu.Lock()
 	ra, ok := s.actors[id]
 	if !ok {
