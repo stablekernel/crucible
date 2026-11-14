@@ -22,7 +22,8 @@ var errInjectedEffectCrash = errors.New("injected: crashed mid effect dispatch")
 // a delayed (`after`) timer — driven through the Runner over both the in-memory and
 // the on-disk Store, with crashes injected at each seam boundary. It proves the
 // seams compose: a recovery at any point reaches a snapshot byte-identical to a
-// never-crashed reference, each external call (service, actor) happens exactly once,
+// never-crashed reference, each external call (service, actor) happens once per
+// recorded result (none of these crash points falls inside a call),
 // each domain effect is applied exactly once, and the timer fires from its recorded
 // deadline regardless of the wall clock at recovery.
 
@@ -458,7 +459,8 @@ func finishPipeline(t *testing.T, ctx context.Context, h *durable.Handle[string,
 
 // TestIntegration_CrashMatrix_MemStore is the capstone over the in-memory Store: the
 // pipeline machine — service + actor + effect + timer — recovers byte-identically to
-// a never-crashed reference at every crash point, invoking each seam exactly once.
+// a never-crashed reference at every crash point, invoking each seam once per
+// recorded result.
 func TestIntegration_CrashMatrix_MemStore(t *testing.T) {
 	newStore := func() durable.Store { return durable.NewMemStore() }
 	runCrashMatrix(t, "MemStore", newStore)

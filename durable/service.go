@@ -16,14 +16,15 @@ import (
 // (configuration, context, event payload, machine definition) and MUST be recorded
 // to reproduce a run.
 //
-// # Run exactly once, replay the result
+// # Run once per recorded result, replay the result
 //
-// A durable service runs exactly once, on the live path, and its result is
-// recorded; on recovery the recorded result is replayed back through the same
-// settle seam, and the service is NEVER re-invoked. This is the standard
-// durable-execution guarantee: the external call (with its side effects and its
-// nondeterministic output) happens once, and recovery is a pure replay against the
-// kernel rather than a re-execution of the host's services.
+// A durable service runs on the live path and its result is recorded; on recovery the
+// recorded result is replayed back through the same settle seam, and that service is
+// NEVER re-invoked. This is the standard durable-execution guarantee: recovery is a pure
+// replay against the kernel rather than a re-execution of the host's services. A result
+// that wasn't recorded, after a context canceled during the service, a crash, or a failed
+// Append whose write didn't land, has nothing to replay, so it stays in flight, runs again
+// when the host calls RunService, and must tolerate a second run.
 //
 // The Runner wraps the kernel's reusable host driver, state.ServiceRunner, which
 // turns StartService / StopService effects into real ServiceFn executions and
@@ -75,7 +76,7 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 	return out
 }
 
-// RunService runs the in-flight invoked service identified by id exactly once,
+// RunService runs the in-flight invoked service identified by id,
 // records its outcome, and settles it — firing the invocation's onDone (on
 // success) or onError (on failure) event through the durable instance and
 // recording the produced step. The service is resolved and executed against the
@@ -84,19 +85,28 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // re-invoking the service.
 //
 // It returns the routed FireResult and true, or the zero result and false when id
-// names no in-flight service (already settled, stopped, or never started), or false
-// and the error when the Handle had already failed or ctx has ended. If the service
-// settled but its outcome couldn't be recorded or appended, it returns the result,
-// true and ErrHandleFailed: the Handle has failed. If another goroutine failed the
-// Handle while this step was recording, it returns the result, true and ErrHandleFailed
-// saying the step was recorded. A failed checkpoint returns the result, true and that
-// error, and the Handle carries on. A recovered Handle has an
-// unrecorded service in flight again, and RunService runs it a second time.
+// names no in-flight service (already settled, stopped, or never started). It returns
+// false and an error when no registry is wired, the Handle has failed, or ctx ended
+// before the service started.
+//
+// Once the service has run, it returns true with any error. A result that won't encode,
+// a ctx that ended during the service or while its settle's effects were absorbed (even
+// after a clean settle), or a Fire the settle drove refused because a context ended (ctx,
+// or one middleware derived from it) returns ErrHandleFailed and records nothing: a
+// recovered Handle has the service in flight again, and RunService runs it a second time.
+// A failed Append also returns ErrHandleFailed, but the write may have landed anyway:
+// Recover finds out, and the service runs again only if the result isn't in the
+// journal. If another goroutine failed the Handle while this step was recording, it
+// returns the result, true and ErrHandleFailed saying the step was recorded. Every
+// ErrHandleFailed also matches its cause, so test for ErrHandleFailed first, then
+// ErrFenced, as the Handle doc says. A failed Checkpoint returns the plain error, and
+// the result is recorded.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
 	}
 	defer h.release()
+	defer h.failOnPanic()
 	if err := h.refuse(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
 	}
@@ -112,12 +122,25 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 	res := results[0]
+	// The service settled: unless the settle's own Fire leaves or re-enters the state
+	// that declares it, which the absorb below notes, a checkpoint records it as settled.
+	h.noteSettled(id)
 
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
 	// that arms a timer, starts another service, or spawns an actor. Absorb those
 	// effects into every driver so the next seam method finds them armed — the service
 	// seam composes with the timer and actor seams in one instance.
-	h.absorbDrivers(ctx, res.Effects)
+	h.absorbDrivers(h.stepContext(ctx), res.Effects)
+
+	// A context that ended during the service or the absorb can stop the settle's Fire,
+	// or a Fire an actor spawn routes, before it applies, so the instance may not have
+	// seen this result: journaling it would commit on recovery what live never applied.
+	// The runner has already dropped the service, so this Handle can't run it again;
+	// Recover re-arms it.
+	fires := h.actorFires.take()
+	if err := h.stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
+		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
+	}
 
 	entry, err := recordServiceOutcome(id, h.svc.LastResult, h.svc.LastError())
 	if err != nil {
@@ -127,12 +150,30 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		*h.svcBuf = append(*h.svcBuf, entry)
 	}
 
+	// Every parent Fire the absorb drove (a message an actor sent as it spawned, a
+	// settle, a failed spawn's onError) applied after the settle, so the step journals
+	// them, and replay re-fires them after it.
+	driven, err := recordParentFires(fires, false)
+	if err != nil {
+		return res, true, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
+	}
+
 	step := h.nextStep
-	rec := Record{Step: step, Entries: h.drainServices()}
+	// Arming a timer the settle's state declares reads the clock, so the step carries
+	// its reads.
+	rec := Record{Step: step, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return res, true, err
 	}
 	return res, true, nil
+}
+
+// noteSettled records that the service id settled in its state's current activation.
+func (h *Handle[S, E, C]) noteSettled(id string) {
+	if h.settled == nil {
+		h.settled = map[string]bool{}
+	}
+	h.settled[id] = true
 }
 
 // recordServiceOutcome builds the JournalServiceResult entry for a just-settled
@@ -167,32 +208,35 @@ func recordServiceOutcome(id string, lastResult func() (any, bool), lastErr erro
 // the recorded payload and calls SettleDone (with the recorded result) or
 // SettleError (with the reconstructed error), so the kernel re-fires the same
 // onDone / onError event with the same data and re-derives identical context. It
-// reports an error only when the recorded entry cannot be decoded or names no
-// in-flight service (a corrupt or mis-ordered journal).
-func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) error {
+// returns the settle's effects, so the caller arms the timers its state declares, as
+// the live RunService did. It reports an error only when the recorded entry cannot be
+// decoded or names no in-flight service (a corrupt or mis-ordered journal).
+func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) ([]state.Effect, error) {
 	if svc == nil {
-		return errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
+		return nil, errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
 	}
 	var sp serviceResultPayload
 	if err := json.Unmarshal(entry.Payload, &sp); err != nil {
-		return fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
+		return nil, fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
 	}
 	if sp.Error != nil {
-		if _, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error)); !ok {
-			return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+		res, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error))
+		if !ok {
+			return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 		}
-		return nil
+		return res.Effects, nil
 	}
 	var result any
 	if len(sp.Result) > 0 {
 		if err := json.Unmarshal(sp.Result, &result); err != nil {
-			return fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
+			return nil, fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
 		}
 	}
-	if _, ok := svc.SettleDone(ctx, entry.CorrelationID, result); !ok {
-		return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+	res, ok := svc.SettleDone(ctx, entry.CorrelationID, result)
+	if !ok {
+		return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 	}
-	return nil
+	return res.Effects, nil
 }
 
 // serviceEntries returns the recorded service outcomes carried by a single

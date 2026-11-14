@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stablekernel/crucible/durable"
 	"github.com/stablekernel/crucible/state"
@@ -468,5 +469,526 @@ func TestService_Determinism(t *testing.T) {
 	s2, _, _ := liveFetchRun(t, &c2)
 	if string(s1) != string(s2) {
 		t.Fatalf("two live runs diverged:\n run1=%s\n run2=%s", s1, s2)
+	}
+}
+
+// TestService_ResultFromCanceledTurn_NotCommittedOnRecover proves a service result
+// whose settle is canceled with the turn's context, and so never reaches the live
+// instance, is not committed by recovery either.
+func TestService_ResultFromCanceledTurn_NotCommittedOnRecover(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		cancel() // the turn's deadline passes while the call is in flight
+		return "late", nil
+	}
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	runner := durable.NewRunner(m, store, opts...)
+	h, err := runner.Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	_, _, _ = h.RunService(turnCtx, state.InvokeID("fetch", "loading", 0))
+
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	// Compare state, not bytes: live keeps the Trace of the refused settle.
+	if live, got := h.Instance().Current(), recovered.Instance().Current(); got != live || live != "loading" {
+		t.Fatalf("recovered %q, live %q, want both loading: the canceled turn's result was committed", got, live)
+	}
+	if notes := recovered.Instance().Entity().Notes; len(notes) != 0 {
+		t.Fatalf("recovered notes %v, want none", notes)
+	}
+}
+
+// TestService_CanceledTurn_RecoverRerunsTheService proves the canceled result isn't
+// journaled, the Handle refuses further steps, and a recovered Handle can run the
+// service to completion.
+func TestService_CanceledTurn_RecoverRerunsTheService(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	calls := 0
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		calls++
+		cancel()
+		return "late", nil
+	}
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	invoke := state.InvokeID("fetch", "loading", 0)
+	before := tailLen(t, store, id)
+	if _, _, err = h.RunService(turnCtx, invoke); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunService = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want the canceled result unrecorded", before, after)
+	}
+	if _, err = h.Fire(ctx, "start"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("Fire after the cancel = %v, want ErrHandleFailed", err)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok, err := recovered.RunService(ctx, invoke); err != nil || !ok {
+		t.Fatalf("RunService after Recover = (%v, %v)", ok, err)
+	}
+	if calls != 2 {
+		t.Fatalf("service ran %d times, want 2", calls)
+	}
+}
+
+// TestRecover_CanceledContext_DoesNotLoseARecordedResult proves a canceled Recover
+// reports the cancellation rather than a Handle short of the journal.
+func TestRecover_CanceledContext_DoesNotLoseARecordedResult(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchMachine(fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("loading"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetch", "loading", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.Recover(canceled, m, store, id, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = %v, want context.Canceled", err)
+	}
+}
+
+// TestStateAt_CanceledContext_ReportsIt proves a canceled historical read reports the
+// cancellation, not a view short of the journal.
+func TestStateAt_CanceledContext_ReportsIt(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := fetchMachine(fn)
+	store := durable.NewMemStore(durable.WithHistory())
+	id := durable.InstanceID("fetch-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("loading"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("fetch", "loading", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.StateAt(canceled, m, store, id, 0, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("StateAt = %v, want context.Canceled", err)
+	}
+}
+
+// TestRecover_CanceledContext_ChainedServices_ReportsIt proves a canceled replay of two
+// chained services reports the cancellation, not a journal that looks corrupt.
+func TestRecover_CanceledContext_ChainedServices_ReportsIt(t *testing.T) {
+	ctx := context.Background()
+	var calls int64
+	fn := counterService(&calls)
+	m := chainMachine(fn, fn)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("chain-1")
+	opts := []durable.Option[string, string, svcCtx]{durable.WithServiceRegistry[string, string, svcCtx](chainRegistry(fn, fn))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, svcCtx{}, state.WithInitialState("first"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mustRunService(t, h, state.InvokeID("chain", "first", 0))
+	mustRunService(t, h, state.InvokeID("chain", "second", 0))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = durable.Recover(canceled, m, store, id, opts...); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recover = %v, want context.Canceled", err)
+	}
+}
+
+// TestTick_ContextEndedPartway_RecordsNothing proves a due timer the kernel refused isn't
+// journaled: the Handle fails and the journal doesn't grow.
+func TestTick_ContextEndedPartway_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := timerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("timer-1")
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	clk := &cancelingClock{Clock: state.NewFakeClock(epoch)}
+	opts := []durable.Option[string, string, *timerCtx]{durable.WithRunnerClock[string, string, *timerCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	_, before, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	clk.Clock.(*state.FakeClock).Advance(6 * time.Second)
+	clk.onNow = cancel // the turn ends as the Tick reads the clock
+	if _, err = h.Tick(turn); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	clk.onNow = nil
+	_, after, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("journal grew from %d to %d records", len(before), len(after))
+	}
+}
+
+// cancelingClock runs onNow once on the next clock read.
+type cancelingClock struct {
+	state.Clock
+	onNow func()
+}
+
+func (c *cancelingClock) Now() time.Time {
+	if c.onNow != nil {
+		f := c.onNow
+		c.onNow = nil
+		f()
+	}
+	return c.Clock.Now()
+}
+
+// TestService_ContextEndedDuringAbsorb_RecordsNothing proves a service that settles
+// cleanly, and whose context then ends while the settle's actor spawn is absorbed,
+// fails the Handle and records nothing: the spawn's onError Fire was refused, so the
+// live instance never applied what the journal would otherwise commit.
+func TestService_ContextEndedDuringAbsorb_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return "ok", nil }
+	spawn := func(map[string]any) (state.ActorInstance, error) {
+		cancel() // the turn's deadline passes while the settle's spawn is absorbed
+		return nil, errors.New("worker unavailable")
+	}
+	m := state.ForgeFor[svcCtx]("absorb").
+		Service("fetch", fn).
+		Actor("spawnChild").
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+		State("failed").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("spawning").
+		Transition("spawning").On("spawnFailed").GoTo("failed").
+		Quench()
+	store := durable.NewMemStore()
+	h, err := durable.NewRunner(m, store,
+		durable.WithServiceRegistry[string, string, svcCtx](state.NewRegistry[svcCtx]().Service("fetch", fn)),
+		durable.WithActorPalette[string, string, svcCtx](map[string]state.ActorBehavior{"spawnChild": spawn})).
+		Start(ctx, "absorb-1", svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	before := tailLen(t, store, "absorb-1")
+	_, ran, err := h.RunService(turnCtx, state.InvokeID("absorb", "loading", 0))
+	if !ran || !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("RunService = %v, %v; want true, ErrHandleFailed", ran, err)
+	}
+	if after := tailLen(t, store, "absorb-1"); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+}
+
+// countingClock counts clock reads and runs onRead on each.
+type countingClock struct {
+	state.Clock
+	n      int
+	onRead func(n int)
+}
+
+func (c *countingClock) Now() time.Time {
+	c.n++
+	if c.onRead != nil {
+		c.onRead(c.n)
+	}
+	return c.Clock.Now()
+}
+
+// TestTick_ContextEndedAfterTheTimersApplied_RecordsNothing proves a Tick whose context
+// ends after its due timer's Fire applied still fails the Handle and records nothing,
+// as RunService and DeliverToActor do, and Recover fires the timer again.
+func TestTick_ContextEndedAfterTheTimersApplied_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := chainedTimerMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("chain-1")
+	fc := state.NewFakeClock(epoch)
+	clk := &countingClock{Clock: fc}
+	opts := []durable.Option[string, string, *timerCtx]{durable.WithRunnerClock[string, string, *timerCtx](clk)}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "arm"); err != nil {
+		t.Fatalf("Fire(arm): %v", err)
+	}
+	before := tailLen(t, store, id)
+	fc.Advance(4 * time.Second)
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	base := clk.n
+	clk.onRead = func(n int) {
+		if n == base+3 { // the scheduler's last read, after the first timer applied
+			cancel()
+		}
+	}
+	results, err := h.Tick(turn)
+	clk.onRead = nil
+	if turn.Err() == nil {
+		t.Fatal("the test didn't end the context")
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("Tick results %v, want one applied timer", results)
+	}
+	if !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Tick = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "first" {
+		t.Fatalf("recovered state %q, want first: the unrecorded tick must fire again", got)
+	}
+}
+
+// TestService_RefusedByADerivedContext_RecordsNothing proves a settle refused because a
+// context middleware derived from the caller's ended, while the caller's is still live,
+// fails the Handle and records nothing.
+func TestService_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	fn := counterService(new(int64))
+	cancelOnOK := func(next state.FireFunc[string, string, svcCtx]) state.FireFunc[string, string, svcCtx] {
+		return func(ctx context.Context, event string) state.FireResult[string] {
+			if event == "ok" {
+				derived, cancel := context.WithCancel(ctx)
+				cancel()
+				return next(derived, event)
+			}
+			return next(ctx, event)
+		}
+	}
+	m := state.ForgeFor[svcCtx]("derived").
+		Use(cancelOnOK).
+		Service("fetch", fn).
+		State("idle").
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		State("ready").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("loading").
+		Transition("loading").On("ok").GoTo("ready").
+		Quench()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("derived-1")
+	h, err := durable.NewRunner(m, store, durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))).
+		Start(ctx, id, svcCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "start"); err != nil {
+		t.Fatalf("Fire(start): %v", err)
+	}
+	before := tailLen(t, store, id)
+	if _, _, err = h.RunService(ctx, state.InvokeID("derived", "loading", 0)); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunService = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+}
+
+// TestRecover_DoesNotRearmASuperstatesSettledService proves a service a compound state
+// declares, which settled into one of the compound's children, isn't in flight after
+// Recover, so RunService doesn't run it again: not from the journal, and not from a
+// checkpoint taken after the settle, where the compound is still active.
+func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
+	ctx := context.Background()
+	// every=-1 runs live with no checkpoint, then checkpoints from each recovered Handle,
+	// so the checkpoint comes from a replay of the settle.
+	for _, every := range []int{0, 1, -1} {
+		t.Run(fmt.Sprintf("every=%d", every), func(t *testing.T) {
+			var runs int64
+			fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) {
+				atomic.AddInt64(&runs, 1)
+				return "ok", nil
+			}
+			m := state.ForgeFor[stepCtx]("nestSvc").
+				Service("fetch", fetch).
+				SuperState("outer").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+				SubState("a").
+				SubState("b").
+				Initial("a").
+				EndSuperState().
+				Initial("outer").
+				Transition("a").On("fetched").GoTo("b").
+				Transition("b").On("poke").GoTo("b").
+				Quench()
+			opts := []stepOption{durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch))}
+			live := opts
+			switch {
+			case every > 0:
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+				live = opts
+			case every < 0:
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](1))
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("nest-svc")
+			svcID := state.InvokeID("nestSvc", "outer", 0)
+			h, err := durable.NewRunner(m, store, live...).Start(ctx, id, stepCtx{}, state.WithInitialState("a"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, ran, err := h.RunService(ctx, svcID); err != nil || !ran {
+				t.Fatalf("RunService = %v, %v", ran, err)
+			}
+			if got := h.Instance().Current(); got != "b" {
+				t.Fatalf("state = %q, want b after the settle", got)
+			}
+			for round := 1; round <= 2; round++ {
+				recovered, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("Recover %d: %v", round, err)
+				}
+				if _, ran, runErr := recovered.RunService(ctx, svcID); runErr != nil || ran {
+					t.Fatalf("RunService after Recover %d = %v, %v, want the settled service not in flight", round, ran, runErr)
+				}
+				if n := atomic.LoadInt64(&runs); n != 1 {
+					t.Fatalf("the service ran %d times, want once", n)
+				}
+				// A step on the recovered Handle checkpoints again, from its own view.
+				if _, err = recovered.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+				}
+			}
+		})
+	}
+}
+
+// TestRecover_StartsAServiceThatNeverSettled proves a checkpoint records as settled only
+// a service that settled, not every declared service that isn't in flight, so Recover
+// starts the rest: one whose state a Tick's timer entered (a Tick starts no service),
+// and one whose state was re-entered after it settled, which is a new service, whether
+// a Fire re-entered it, starting it live, or a Tick did. The checkpoint is the live
+// run's, or one a recovered Handle takes after replaying the run.
+func TestRecover_StartsAServiceThatNeverSettled(t *testing.T) {
+	ctx := context.Background()
+	for _, how := range []string{"timer entered", "Fire re-entered", "timer re-entered"} {
+		for _, where := range []string{"live checkpoint", "replayed checkpoint"} {
+			t.Run(how+"/"+where, func(t *testing.T) {
+				fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) { return "ok", nil }
+				m := state.ForgeFor[stepCtx]("unsettled").
+					Service("fetch", fetch).
+					State("idle").
+					State("waiting").
+					State("fetching").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+					Initial("idle").
+					Transition("idle").On("begin").GoTo("waiting").
+					Transition("waiting").On("go").GoTo("fetching").
+					Transition("waiting").After(10 * time.Second).On("elapsed").GoTo("fetching").
+					Transition("fetching").On("fetched").GoTo("fetching").
+					Transition("fetching").On("again").GoTo("fetching").Reenter().
+					Transition("fetching").After(10 * time.Second).On("redo").GoTo("fetching").Reenter().
+					Transition("fetching").On("poke").GoTo("fetching").
+					Quench()
+				clk := state.NewFakeClock(epoch)
+				opts := []stepOption{
+					durable.WithRunnerClock[string, string, stepCtx](clk),
+					durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch)),
+				}
+				checkpointing := append(opts, durable.WithCheckpointEvery[string, string, stepCtx](1))
+				live := checkpointing
+				if where == "replayed checkpoint" {
+					live = opts
+				}
+				store, id := durable.NewMemStore(), durable.InstanceID("unsettled")
+				svcID := state.InvokeID("unsettled", "fetching", 0)
+				h, err := durable.NewRunner(m, store, live...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if _, err = h.Fire(ctx, "begin"); err != nil {
+					t.Fatalf("Fire(begin): %v", err)
+				}
+				switch how {
+				case "timer entered":
+					clk.Advance(10 * time.Second)
+					if _, err = h.Tick(ctx); err != nil {
+						t.Fatalf("Tick: %v", err)
+					}
+				default:
+					if _, err = h.Fire(ctx, "go"); err != nil {
+						t.Fatalf("Fire(go): %v", err)
+					}
+					if _, ran, runErr := h.RunService(ctx, svcID); !ran || runErr != nil {
+						t.Fatalf("RunService = %v, %v", ran, runErr)
+					}
+					if how == "Fire re-entered" {
+						if _, err = h.Fire(ctx, "again"); err != nil {
+							t.Fatalf("Fire(again): %v", err)
+						}
+					} else {
+						clk.Advance(10 * time.Second)
+						if results, tickErr := h.Tick(ctx); tickErr != nil || len(results) != 1 {
+							t.Fatalf("Tick = %d results, %v, want the redo timer to fire", len(results), tickErr)
+						}
+					}
+				}
+				if got := h.Instance().Current(); got != "fetching" {
+					t.Fatalf("state = %q, want fetching", got)
+				}
+				if where == "replayed checkpoint" {
+					// Replay the journal, then checkpoint from the recovered Handle's view.
+					if h, err = durable.Recover(ctx, m, store, id, checkpointing...); err != nil {
+						t.Fatalf("Recover from the journal: %v", err)
+					}
+				}
+				if _, err = h.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke): %v", err)
+				}
+				recovered, err := durable.Recover(ctx, m, store, id, checkpointing...)
+				if err != nil {
+					t.Fatalf("Recover: %v", err)
+				}
+				if _, ran, runErr := recovered.RunService(ctx, svcID); !ran || runErr != nil {
+					t.Fatalf("RunService after Recover = %v, %v, want the service in flight: it never settled in this activation of fetching", ran, runErr)
+				}
+			})
+		}
 	}
 }

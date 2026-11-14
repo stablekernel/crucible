@@ -101,7 +101,8 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 // historical read applies no side effect.
 //
 // step must be in [BaselineStep, lastRecordedStep]; a step outside that range
-// reports ErrStepOutOfRange, and an unknown instance reports ErrInstanceNotFound.
+// reports ErrStepOutOfRange, an unknown instance reports ErrInstanceNotFound, and an
+// ended ctx reports its error.
 func StateAt[S comparable, E comparable, C any](
 	ctx context.Context,
 	m *state.Machine[S, E, C],
@@ -137,7 +138,7 @@ func StateAt[S comparable, E comparable, C any](
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded); err != nil {
+	if err := replayThrough(ctx, inst, &cfg, bounded, unmarshalCheckpoint(baseline).UnstartedActors != nil); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -202,11 +203,7 @@ func restoreBaseline[S comparable, E comparable, C any](
 	baseline []byte,
 	repClock state.Clock,
 ) (*state.Instance[S, E, C], error) {
-	kernelSnap, _, _, err := unmarshalCheckpoint(baseline)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshaling baseline envelope: %w", err)
-	}
-	snap, err := state.UnmarshalSnapshot[S, E, C](kernelSnap)
+	snap, err := state.UnmarshalSnapshot[S, E, C](unmarshalCheckpoint(baseline).Snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling baseline snapshot: %w", err)
 	}
@@ -226,12 +223,14 @@ func restoreBaseline[S comparable, E comparable, C any](
 // It is the bounded, read-only analog of Recover's replay loop: it builds its own
 // service host driver (to settle recorded outcomes) and ticks a scheduler over the
 // instance's recorded-instant clock, consuming exactly the records the caller bounded
-// to the target step.
+// to the target step. actorArms reports whether the baseline was written by a version
+// that arms an actor-driven Fire's timers and services.
 func replayThrough[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
 	bounded []Record,
+	actorArms bool,
 ) error {
 	sched := state.NewScheduler(inst)
 
@@ -241,48 +240,21 @@ func replayThrough[S comparable, E comparable, C any](
 	}
 
 	for i := range bounded {
-		rec := &bounded[i]
-		switch {
-		case hasActorEntry(rec):
-			for _, entry := range actorEntries(rec) {
-				if err := replayActor(ctx, inst, cfg.eventCodec, entry); err != nil {
-					return fmt.Errorf("at step %d: %w", rec.Step, err)
-				}
-			}
-		case hasServiceEntry(rec):
-			for _, entry := range serviceEntries(rec) {
-				if err := replayService(ctx, svc, entry); err != nil {
-					return fmt.Errorf("at step %d: %w", rec.Step, err)
-				}
-			}
-		case rec.Tick:
-			sched.Tick(ctx)
-		case len(rec.Event) == 0:
-			continue // a checkpoint-only Record drives no event
-		default:
-			event, err := cfg.eventCodec.Decode(rec.Event)
-			if err != nil {
-				return fmt.Errorf("decoding recorded event at step %d: %w", rec.Step, err)
-			}
-			fireOpts, err := replayFireOptions(rec, event, cfg.eventDataDecoder)
-			if err != nil {
-				return fmt.Errorf("decoding recorded event data at step %d: %w", rec.Step, err)
-			}
-			res := inst.Fire(ctx, event, fireOpts...)
-			if res.Err != nil {
-				return fmt.Errorf("replaying step %d: %w", rec.Step, res.Err)
-			}
-			if hasTimerEffect(res.Effects) {
-				sched.Absorb(ctx, res.Effects)
-			}
-			if svc != nil {
-				svc.Absorb(ctx, res.Effects)
-			}
-			// A domain effect is intentionally NOT dispatched here: a time-travel read
-			// applies no side effect.
+		// A canceled context can stop a replayed settle or tick with no error, leaving
+		// state short of the journal, so check it before each Record.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// A domain effect is never dispatched here: a time-travel read applies no
+		// side effect.
+		actorArms = armsActorFires(actorArms, &bounded[i])
+		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, actorArms); err != nil {
+			return err
 		}
 	}
-	return nil
+	// A canceled context can stop a replayed settle or tick without an error reaching
+	// here, which would hand back a view short of the journal.
+	return ctx.Err()
 }
 
 // boundRecords returns the prefix of records whose first ordinal falls at or below

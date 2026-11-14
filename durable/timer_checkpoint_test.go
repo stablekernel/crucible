@@ -2,6 +2,7 @@ package durable_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -379,5 +380,115 @@ func TestTimerCheckpoint_RecoveryDeterministic(t *testing.T) {
 	}
 	if first, second := fire(), fire(); first != second {
 		t.Fatalf("recovery across checkpoint nondeterministic\n first:  %s\n second: %s", first, second)
+	}
+}
+
+// steppingClock is a Clock that moves step past each reading it returns, as a wall
+// clock moves between the reads of one Tick.
+type steppingClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
+}
+
+func (c *steppingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := c.now
+	c.now = c.now.Add(c.step)
+	return t
+}
+
+func (c *steppingClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- c.Now().Add(d)
+	return ch
+}
+
+func (c *steppingClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// TestTick_DropsEachTimerItFired proves the timer table a checkpoint persists after a
+// Tick holds none of the timers the Tick fired, so a Recover from it doesn't fire one
+// again: not a chained zero-delay timer the Tick armed and fired in the same pass, and
+// not a timer that came due between the Tick's first clock read and a later one, as
+// a wall clock moves on. Each fired transition stays in its state, so no cancel drops
+// the timer. The checkpoint is the live run's, or one a recovered Handle takes after
+// replaying the Tick.
+func TestTick_DropsEachTimerItFired(t *testing.T) {
+	ctx := context.Background()
+	for _, how := range []string{"chained zero delay", "due between reads"} {
+		for _, where := range []string{"live checkpoint", "replayed checkpoint"} {
+			t.Run(how+"/"+where, func(t *testing.T) {
+				b := state.ForgeFor[stepCtx]("fired").
+					State("idle").
+					State("first").
+					State("second").
+					Initial("idle").
+					Transition("idle").On("arm").GoTo("first").
+					Transition("second").On("poke").GoTo("second").
+					Transition("first").On("poke").GoTo("first")
+				var clk interface {
+					state.Clock
+					Advance(time.Duration)
+				}
+				wantFired := 2
+				if how == "chained zero delay" {
+					// first's timer enters second, whose zero-delay timer is due at once.
+					b = b.Transition("first").After(10 * time.Second).On("toSecond").GoTo("second").
+						Transition("second").After(0).On("zero").GoTo("second")
+					clk = state.NewFakeClock(epoch)
+				} else {
+					// Two timers 1ms apart; each read moves the clock 1ms, so the second
+					// comes due at the Tick's third read.
+					b = b.Transition("first").After(10 * time.Second).On("a").GoTo("first").
+						Transition("first").After(10*time.Second + time.Millisecond).On("b").GoTo("first")
+					clk = &steppingClock{now: epoch, step: time.Millisecond}
+				}
+				m := b.Quench()
+				opts := []stepOption{durable.WithRunnerClock[string, string, stepCtx](clk)}
+				checkpointing := append(opts[:len(opts):len(opts)], durable.WithCheckpointEvery[string, string, stepCtx](1))
+				live := checkpointing
+				if where == "replayed checkpoint" {
+					live = opts
+				}
+				store, id := durable.NewMemStore(), durable.InstanceID("fired")
+				h, err := durable.NewRunner(m, store, live...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if _, err = h.Fire(ctx, "arm"); err != nil {
+					t.Fatalf("Fire(arm): %v", err)
+				}
+				// The arming read moved a stepping clock 1ms: land the Tick's first read at
+				// the first timer's deadline.
+				if how == "due between reads" {
+					clk.Advance(10*time.Second - time.Millisecond)
+				} else {
+					clk.Advance(10 * time.Second)
+				}
+				if results, tickErr := h.Tick(ctx); tickErr != nil || len(results) != wantFired {
+					t.Fatalf("Tick = %d results, %v, want %d", len(results), tickErr, wantFired)
+				}
+				if where == "replayed checkpoint" {
+					if h, err = durable.Recover(ctx, m, store, id, checkpointing...); err != nil {
+						t.Fatalf("Recover from the journal: %v", err)
+					}
+					if _, err = h.Fire(ctx, "poke"); err != nil {
+						t.Fatalf("Fire(poke): %v", err)
+					}
+				}
+				recovered, err := durable.Recover(ctx, m, store, id, checkpointing...)
+				if err != nil {
+					t.Fatalf("Recover: %v", err)
+				}
+				if results, tickErr := recovered.Tick(ctx); tickErr != nil || len(results) != 0 {
+					t.Fatalf("Tick after Recover = %d results, %v, want none: the Tick before it fired every due timer", len(results), tickErr)
+				}
+			})
+		}
 	}
 }

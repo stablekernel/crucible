@@ -94,10 +94,10 @@ func WithRunnerClock[S comparable, E comparable, C any](c state.Clock) Option[S,
 }
 
 // WithServiceRegistry binds the invoked-service implementations the Runner runs on
-// the live path and resolves on recovery. A durable service runs exactly once —
-// live — and its result is recorded; on recovery the recorded result is replayed
-// through the same settle seam and the service is never re-invoked, so the registry
-// is consulted only to execute a service the first time. Supply it for any machine
+// the live path and resolves on recovery. A durable service runs live and its result is
+// recorded; on recovery the recorded result is replayed through the same settle seam and
+// that service is never re-invoked, so the registry is consulted only to execute a
+// service whose result isn't recorded. Supply it for any machine
 // that declares `invoke` states; a purely event-driven or timer-driven machine
 // needs none. The registry binds the same ServiceFns the machine declares, by name
 // (state.NewRegistry().Service(name, fn)).
@@ -111,11 +111,11 @@ func WithServiceRegistry[S comparable, E comparable, C any](reg *state.Registry[
 
 // WithActorPalette binds the child-machine actor behaviors the Runner spawns and
 // runs on the live path and resolves on recovery, keyed by the actor src name (the
-// name passed to InvokeActor or the Spawn built-in). A durable actor's behavior
-// runs exactly once — live — and its done-data, error, or parent-driving message is
-// recorded; on recovery the recorded result is replayed back through the same parent
-// transition and the behavior is never re-instantiated, so the palette is consulted
-// only to run an actor the first time. Supply it for any machine that spawns child
+// name passed to InvokeActor or the Spawn built-in). A durable actor's behavior runs
+// live and its done-data, error, or parent-driving message is recorded; on recovery the
+// recorded result is replayed back through the same parent transition and that behavior
+// is never re-instantiated, so the palette is consulted only to run an actor whose
+// result isn't recorded. Supply it for any machine that spawns child
 // actors; a machine that spawns none needs none. Each behavior is the actor-model
 // analog of a ServiceFn, registered by the same src name the machine declares.
 func WithActorPalette[S comparable, E comparable, C any](palette map[string]state.ActorBehavior) Option[S, E, C] {

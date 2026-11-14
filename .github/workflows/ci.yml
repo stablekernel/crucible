@@ -1,8 +1,14 @@
 name: CI
 
-# A draft PR runs only the gate, which fails until the PR is marked ready, so work
-# under review spends no CI time. Marking it ready (ready_for_review) runs the full
-# CI, as does every later push to a ready PR.
+# A draft PR runs no jobs: every job, the gate included, skips while the PR is a
+# draft, so work under review spends no CI time. GitHub still records a run for each
+# push, with every job skipped. Marking it ready (ready_for_review) runs the full CI,
+# as does every later push to a ready PR.
+#
+# The cost: a skipped required check counts as passing, so the draft's skipped `gate`
+# reads as passed until the ready run starts, when its pending `gate` blocks a merge.
+# A PR merged in the seconds between marking it ready and that run starting would
+# merge without CI. We accept that window to keep drafts free of runs and red checks.
 on:
   pull_request:
     branches: [main]
@@ -24,8 +30,8 @@ env:
 
 jobs:
   # Detect whether anything other than docs changed. Docs-only PRs skip the Go
-  # lint/test/vuln/coverage/bench jobs entirely; the `gate` job below still runs
-  # and is the single required status check, so such PRs stay mergeable.
+  # lint/test/vuln/coverage/bench jobs entirely; on a ready PR the `gate` job below
+  # still runs and is the single required status check, so such PRs stay mergeable.
   changes:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -597,19 +603,12 @@ jobs:
   # docs) as a pass — so such PRs stay mergeable without running every matrix.
   # `bench` is advisory and is deliberately excluded so a benchmark regression
   # never blocks a merge.
+  # It skips on a draft, like every job here; the header says why, and what it costs.
   gate:
-    if: always()
+    if: ${{ always() && !github.event.pull_request.draft }}
     needs: [changes, lint, tests, sink, source, vuln, coverage, docs]
     runs-on: ubuntu-latest
     steps:
-      # On a draft every other job is skipped, and a skipped required check would
-      # count as passing for this commit. Fail instead, so a PR can't be marked ready
-      # and merged before its CI has run.
-      - name: Fail on a draft
-        if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::Draft PR: CI runs when it's marked ready for review."
-          exit 1
       - name: Fail if a required job did not pass
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |

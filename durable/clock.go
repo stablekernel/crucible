@@ -110,6 +110,17 @@ func (c *recordingClock) armReadingAt(i int) (time.Time, bool) {
 	return time.Unix(0, (*c.buf)[i].ClockUnixNano).UTC(), true
 }
 
+// lastReadingSince returns the last clock reading recorded at or past index i, ok false
+// when none was. Taken under the clock mutex, like armReadingAt.
+func (c *recordingClock) lastReadingSince(i int) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < 0 || i >= len(*c.buf) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, (*c.buf)[len(*c.buf)-1].ClockUnixNano).UTC(), true
+}
+
 // replayClock returns recorded clock readings in order instead of reading any
 // real clock, so a recovered instance's scheduler re-derives identical timer
 // deadlines without consulting the wall clock. It is the inverse of
@@ -125,6 +136,7 @@ type replayClock struct {
 	readings []int64
 	cursor   int
 	fallback state.Clock
+	last     time.Time // the reading Now last returned
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
@@ -139,11 +151,20 @@ func (c *replayClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cursor < len(c.readings) {
-		t := time.Unix(0, c.readings[c.cursor]).UTC()
+		c.last = time.Unix(0, c.readings[c.cursor]).UTC()
 		c.cursor++
-		return t
+		return c.last
 	}
-	return c.fallback.Now()
+	c.last = c.fallback.Now()
+	return c.last
+}
+
+// lastRead returns the reading Now last returned: the instant a replayed timer arming
+// or tick computed its deadlines against.
+func (c *replayClock) lastRead() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
 }
 
 // After delegates to the fallback clock; replay drives elapses through Now + Tick
