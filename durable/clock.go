@@ -110,6 +110,17 @@ func (c *recordingClock) armReadingAt(i int) (time.Time, bool) {
 	return time.Unix(0, (*c.buf)[i].ClockUnixNano).UTC(), true
 }
 
+// lastReadingSince returns the last clock reading recorded at or past index i, ok false
+// when none was. Taken under the clock mutex, like armReadingAt.
+func (c *recordingClock) lastReadingSince(i int) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < 0 || i >= len(*c.buf) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, (*c.buf)[len(*c.buf)-1].ClockUnixNano).UTC(), true
+}
+
 // replayClock returns recorded clock readings in order instead of reading any
 // real clock, so a recovered instance's scheduler re-derives identical timer
 // deadlines without consulting the wall clock. It is the inverse of

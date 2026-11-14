@@ -138,7 +138,7 @@ func StateAt[S comparable, E comparable, C any](
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded); err != nil {
+	if err := replayThrough(ctx, inst, &cfg, bounded, unmarshalCheckpoint(baseline).UnstartedActors != nil); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -223,12 +223,14 @@ func restoreBaseline[S comparable, E comparable, C any](
 // It is the bounded, read-only analog of Recover's replay loop: it builds its own
 // service host driver (to settle recorded outcomes) and ticks a scheduler over the
 // instance's recorded-instant clock, consuming exactly the records the caller bounded
-// to the target step.
+// to the target step. actorArms reports whether the baseline was written by a version
+// that arms an actor-driven Fire's timers and services.
 func replayThrough[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
 	bounded []Record,
+	actorArms bool,
 ) error {
 	sched := state.NewScheduler(inst)
 
@@ -245,7 +247,8 @@ func replayThrough[S comparable, E comparable, C any](
 		}
 		// A domain effect is never dispatched here: a time-travel read applies no
 		// side effect.
-		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil); err != nil {
+		actorArms = armsActorFires(actorArms, &bounded[i])
+		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, actorArms); err != nil {
 			return err
 		}
 	}

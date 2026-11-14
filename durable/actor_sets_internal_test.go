@@ -11,10 +11,9 @@ type setsCtx struct {
 	Notes []string `json:"notes"`
 }
 
-// TestActorSets_SkipsAStepThatTouchedNoActor proves a step that spawned nothing and
-// changed neither the configuration nor the running actors gets the last actor sets
-// back without recomputing them, while a step that moves the configuration recomputes.
-func TestActorSets_SkipsAStepThatTouchedNoActor(t *testing.T) {
+// TestActorSets_FollowTheActorsState proves a step that touched no actor leaves both
+// actor sets as they were, while a step that leaves the actor's state ends it.
+func TestActorSets_FollowTheActorsState(t *testing.T) {
 	ctx := context.Background()
 	child := state.ForgeFor[setsCtx]("child").
 		State("working").
@@ -42,18 +41,20 @@ func TestActorSets_SkipsAStepThatTouchedNoActor(t *testing.T) {
 		t.Fatalf("Fire(poke): %v", err)
 	}
 	ended, unstarted := h.actorSets()
+	if len(ended.IDs) != 0 || len(unstarted.IDs) != 0 {
+		t.Fatalf("sets = %v, %v, want none: the actor is running", ended.IDs, unstarted.IDs)
+	}
 	if _, err = h.Fire(ctx, "poke"); err != nil {
 		t.Fatalf("Fire(poke): %v", err)
 	}
-	again, againUnstarted := h.actorSets()
-	if again != ended || againUnstarted != unstarted {
-		t.Fatal("a step that touched no actor recomputed the actor sets")
+	if ended, unstarted = h.actorSets(); len(ended.IDs) != 0 || len(unstarted.IDs) != 0 {
+		t.Fatalf("sets = %v, %v after a step that touched no actor, want none", ended.IDs, unstarted.IDs)
 	}
 	if _, err = h.Fire(ctx, "leave"); err != nil {
 		t.Fatalf("Fire(leave): %v", err)
 	}
-	if moved, _ := h.actorSets(); moved == ended {
-		t.Fatal("a step that left the actor's state reused the old actor sets")
+	if ended, unstarted = h.actorSets(); len(ended.IDs) != 0 || len(unstarted.IDs) != 0 {
+		t.Fatalf("sets = %v, %v after leaving the actor's state, want none: idle declares no actor", ended.IDs, unstarted.IDs)
 	}
 }
 

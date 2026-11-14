@@ -122,6 +122,9 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return state.FireResult[S]{}, false, nil
 	}
 	res := results[0]
+	// The service settled: unless the settle's own Fire leaves or re-enters the state
+	// that declares it, which the absorb below notes, a checkpoint records it as settled.
+	h.noteSettled(id)
 
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
 	// that arms a timer, starts another service, or spawns an actor. Absorb those
@@ -163,6 +166,14 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 		return res, true, err
 	}
 	return res, true, nil
+}
+
+// noteSettled records that the service id settled in its state's current activation.
+func (h *Handle[S, E, C]) noteSettled(id string) {
+	if h.settled == nil {
+		h.settled = map[string]bool{}
+	}
+	h.settled[id] = true
 }
 
 // recordServiceOutcome builds the JournalServiceResult entry for a just-settled

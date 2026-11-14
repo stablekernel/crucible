@@ -277,3 +277,158 @@ func TestRecover_KeepsAReplayedActorFiresTimerDeadline(t *testing.T) {
 		t.Fatalf("state = %q, want timedOut at the deadline", got)
 	}
 }
+
+// TestRecover_StartsAServiceAnActorsMessageReentered proves a service that settled, then
+// started again because an actor's message re-entered its state, is recorded as in
+// flight, not settled, so Recover starts it: by a checkpoint the live run took, and by
+// one a recovered Handle took after replaying the run.
+func TestRecover_StartsAServiceAnActorsMessageReentered(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[actorCtx]("relay").
+		Service("fetch", fetchOK).
+		Actor("pinger").
+		SuperState("outer").InvokeActor("pinger").
+		SubState("fetching").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+		Initial("fetching").
+		EndSuperState().
+		Initial("outer").
+		Transition("fetching").On("fetched").GoTo("fetching").
+		Transition("fetching").On("pong").GoTo("fetching").Reenter().
+		Transition("fetching").On("poke").GoTo("fetching").
+		Quench()
+	svcID := state.InvokeID("relay", "fetching", 0)
+	for _, where := range []string{"live checkpoint", "replayed checkpoint"} {
+		t.Run(where, func(t *testing.T) {
+			var msgs int64
+			opts := []greetOption{
+				durable.WithServiceRegistry[string, string, actorCtx](state.NewRegistry[actorCtx]().Service("fetch", fetchOK)),
+				durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{"pinger": pingerChild(&msgs)}),
+			}
+			checkpointing := append(opts[:len(opts):len(opts)], durable.WithCheckpointEvery[string, string, actorCtx](1))
+			live := checkpointing
+			if where == "replayed checkpoint" {
+				live = opts
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("relay")
+			h, err := durable.NewRunner(m, store, live...).Start(ctx, id, actorCtx{}, state.WithInitialState("fetching"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, ran, runErr := h.RunService(ctx, svcID); !ran || runErr != nil {
+				t.Fatalf("RunService = %v, %v", ran, runErr)
+			}
+			if found, deliverErr := h.DeliverToActorByID(ctx, state.ActorID("relay", "outer", 0), "ping"); !found || deliverErr != nil {
+				t.Fatalf("DeliverToActorByID = %v, %v", found, deliverErr)
+			}
+			if where == "replayed checkpoint" {
+				if h, err = durable.Recover(ctx, m, store, id, checkpointing...); err != nil {
+					t.Fatalf("Recover from the journal: %v", err)
+				}
+			}
+			if _, err = h.Fire(ctx, "poke"); err != nil {
+				t.Fatalf("Fire(poke): %v", err)
+			}
+			recovered, err := durable.Recover(ctx, m, store, id, checkpointing...)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if _, ran, runErr := recovered.RunService(ctx, svcID); !ran || runErr != nil {
+				t.Fatalf("RunService after Recover = %v, %v, want the service the pong restarted in flight", ran, runErr)
+			}
+		})
+	}
+}
+
+// TestRecover_ReplaysAnOlderJournalsActorFireWithoutArming proves a journal an older
+// version wrote, which didn't arm the timers an actor-driven parent Fire's state
+// declares and took no clock read for them, replays as it did, in Recover and in
+// StateAt: the Fire arms nothing, so it doesn't take the read a later step recorded,
+// and the timer that step armed comes due at its recorded deadline, when a recorded
+// Tick fires it. The journal is this version's, put back in the older shape: no clock
+// read for the onDone's timer, and no recorded actor sets.
+func TestRecover_ReplaysAnOlderJournalsActorFireWithoutArming(t *testing.T) {
+	ctx := context.Background()
+	m := state.ForgeFor[actorCtx]("older").
+		Actor("finisher").
+		State("working").InvokeActor("finisher", state.WithInvokeOnDone("childDone")).
+		State("armed").
+		State("waiting").
+		State("timedOut").
+		State("late").
+		Initial("working").
+		Transition("working").On("childDone").GoTo("armed").
+		Transition("armed").After(10 * time.Second).On("elapsed").GoTo("timedOut").
+		Transition("armed").On("leave").GoTo("waiting").
+		Transition("waiting").After(30 * time.Second).On("overdue").GoTo("late").
+		Quench()
+	clk := state.NewFakeClock(epoch)
+	opts := []greetOption{
+		durable.WithRunnerClock[string, string, actorCtx](clk),
+		durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{"finisher": finishingChild()}),
+	}
+	written, id := durable.NewMemStore(), durable.InstanceID("older")
+	h, err := durable.NewRunner(m, written, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("working"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if found, deliverErr := h.DeliverToActorByID(ctx, state.ActorID("older", "working", 0), "finish"); !found || deliverErr != nil {
+		t.Fatalf("DeliverToActorByID = %v, %v", found, deliverErr)
+	}
+	clk.Advance(5 * time.Second)
+	if _, err = h.Fire(ctx, "leave"); err != nil {
+		t.Fatalf("Fire(leave): %v", err)
+	}
+	clk.Advance(30 * time.Second)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := h.Instance().Current(); got != "late" {
+		t.Fatalf("live state = %q, want late", got)
+	}
+
+	baseline, tail, err := written.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(tail) != 3 {
+		t.Fatalf("journal holds %d Records, want the delivery, the leave and the tick", len(tail))
+	}
+	older := durable.NewMemStore()
+	if err = older.Checkpoint(ctx, id, baseline, durable.BaselineStep); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	for i, rec := range tail {
+		rec.EndedActors, rec.UnstartedActors = nil, nil
+		if i == 0 {
+			// The older version armed nothing for the onDone, so took no read.
+			var entries []state.JournalEntry
+			for _, e := range rec.Entries {
+				if e.Kind != state.JournalClockRead {
+					entries = append(entries, e)
+				}
+			}
+			if len(entries) == len(rec.Entries) {
+				t.Fatal("the delivery recorded no clock read for the onDone's timer")
+			}
+			rec.Entries = entries
+		}
+		if _, err = older.Append(ctx, id, rec); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	view, err := durable.StateAt(ctx, m, older, id, tail[2].Step+tail[2].TickSteps, opts...)
+	if err != nil {
+		t.Fatalf("StateAt: %v", err)
+	}
+	if got := view.Instance().Current(); got != "late" {
+		t.Fatalf("StateAt state = %q, want late: the recorded Tick should fire waiting's timer", got)
+	}
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "late" {
+		t.Fatalf("recovered state = %q, want late: the recorded Tick should fire waiting's timer", got)
+	}
+}

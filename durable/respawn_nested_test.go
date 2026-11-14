@@ -85,3 +85,82 @@ func TestRecover_ANestedChildsStartFireAppliesOnce(t *testing.T) {
 		})
 	}
 }
+
+// relay is an actor that sends its parent "pong" each time it's delivered "ping", and
+// keeps running.
+type relay struct{ out []state.Effect }
+
+func (r *relay) DeliverFire(_ context.Context, ev any) (bool, any) {
+	if ev == "ping" {
+		r.out = append(r.out, state.SendParent{Event: "pong"})
+	}
+	return false, nil
+}
+
+func (r *relay) ChildEffects() []state.Effect {
+	out := r.out
+	r.out = nil
+	return out
+}
+func (r *relay) Output() any { return nil }
+
+// TestRecover_DropsAPongLiveNeverSent proves Recover's respawn of the running actors,
+// which follows the order the configuration declares them in, not the order they
+// spawned live, can't apply a parent Fire live never did. Live, the pinger in the right
+// region spawned first and pinged the relay as it started, but the relay, in the left
+// region, wasn't running yet, so the ping went nowhere; the relay spawned later. Recover
+// spawns the relay first, so the pinger's ping reaches it, and its pong is part of a
+// running actor's start, which the parent doesn't hear.
+func TestRecover_DropsAPongLiveNeverSent(t *testing.T) {
+	ctx := context.Background()
+	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {
+		return func(in state.AssignCtx[actorCtx]) actorCtx {
+			c := in.Entity
+			c.Notes = append(c.Notes, s)
+			return c
+		}
+	}
+	m := state.ForgeFor[actorCtx]("order").
+		Reducer("notePong", note("pong")).
+		Actor("relay").
+		Actor("pinger").
+		SuperState("par").
+		Region("left").
+		Initial("l1").
+		SubState("l1").
+		SubState("l2").InvokeActor("relay", state.WithInvokeID("relay")).
+		EndRegion().
+		Region("right").
+		Initial("r1").
+		SubState("r1").InvokeActor("pinger").
+		EndRegion().
+		EndSuperState().
+		Initial("par").
+		Transition("l1").On("go").GoTo("l2").
+		Transition("par").On("pong").GoTo("par").Assign("notePong").
+		Quench()
+	opts := []greetOption{durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+		"relay": func(map[string]any) (state.ActorInstance, error) { return &relay{}, nil },
+		"pinger": func(map[string]any) (state.ActorInstance, error) {
+			return &starting{start: []state.Effect{state.SendTo{TargetID: "relay", Event: "ping"}}}, nil
+		},
+	})}
+	store, id := durable.NewMemStore(), durable.InstanceID("order")
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("par"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
+	}
+	if notes := h.Instance().Entity().Notes; len(notes) != 0 {
+		t.Fatalf("live notes = %v, want none: the relay wasn't running when the pinger pinged", notes)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if notes := recovered.Instance().Entity().Notes; len(notes) != 0 {
+		t.Fatalf("recovered notes = %v, want none: live never heard a pong", notes)
+	}
+}

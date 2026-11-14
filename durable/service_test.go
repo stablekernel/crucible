@@ -839,7 +839,9 @@ func TestService_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
 // checkpoint taken after the settle, where the compound is still active.
 func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
 	ctx := context.Background()
-	for _, every := range []int{0, 1} {
+	// every=-1 runs live with no checkpoint, then checkpoints from each recovered Handle,
+	// so the checkpoint comes from a replay of the settle.
+	for _, every := range []int{0, 1, -1} {
 		t.Run(fmt.Sprintf("every=%d", every), func(t *testing.T) {
 			var runs int64
 			fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) {
@@ -858,12 +860,17 @@ func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
 				Transition("b").On("poke").GoTo("b").
 				Quench()
 			opts := []stepOption{durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch))}
-			if every > 0 {
+			live := opts
+			switch {
+			case every > 0:
 				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+				live = opts
+			case every < 0:
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](1))
 			}
 			store, id := durable.NewMemStore(), durable.InstanceID("nest-svc")
 			svcID := state.InvokeID("nestSvc", "outer", 0)
-			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("a"))
+			h, err := durable.NewRunner(m, store, live...).Start(ctx, id, stepCtx{}, state.WithInitialState("a"))
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
@@ -890,5 +897,98 @@ func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRecover_StartsAServiceThatNeverSettled proves a checkpoint records as settled only
+// a service that settled, not every declared service that isn't in flight, so Recover
+// starts the rest: one whose state a Tick's timer entered (a Tick starts no service),
+// and one whose state was re-entered after it settled, which is a new service, whether
+// a Fire re-entered it, starting it live, or a Tick did. The checkpoint is the live
+// run's, or one a recovered Handle takes after replaying the run.
+func TestRecover_StartsAServiceThatNeverSettled(t *testing.T) {
+	ctx := context.Background()
+	for _, how := range []string{"timer entered", "Fire re-entered", "timer re-entered"} {
+		for _, where := range []string{"live checkpoint", "replayed checkpoint"} {
+			t.Run(how+"/"+where, func(t *testing.T) {
+				fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) { return "ok", nil }
+				m := state.ForgeFor[stepCtx]("unsettled").
+					Service("fetch", fetch).
+					State("idle").
+					State("waiting").
+					State("fetching").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+					Initial("idle").
+					Transition("idle").On("begin").GoTo("waiting").
+					Transition("waiting").On("go").GoTo("fetching").
+					Transition("waiting").After(10 * time.Second).On("elapsed").GoTo("fetching").
+					Transition("fetching").On("fetched").GoTo("fetching").
+					Transition("fetching").On("again").GoTo("fetching").Reenter().
+					Transition("fetching").After(10 * time.Second).On("redo").GoTo("fetching").Reenter().
+					Transition("fetching").On("poke").GoTo("fetching").
+					Quench()
+				clk := state.NewFakeClock(epoch)
+				opts := []stepOption{
+					durable.WithRunnerClock[string, string, stepCtx](clk),
+					durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch)),
+				}
+				checkpointing := append(opts, durable.WithCheckpointEvery[string, string, stepCtx](1))
+				live := checkpointing
+				if where == "replayed checkpoint" {
+					live = opts
+				}
+				store, id := durable.NewMemStore(), durable.InstanceID("unsettled")
+				svcID := state.InvokeID("unsettled", "fetching", 0)
+				h, err := durable.NewRunner(m, store, live...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if _, err = h.Fire(ctx, "begin"); err != nil {
+					t.Fatalf("Fire(begin): %v", err)
+				}
+				switch how {
+				case "timer entered":
+					clk.Advance(10 * time.Second)
+					if _, err = h.Tick(ctx); err != nil {
+						t.Fatalf("Tick: %v", err)
+					}
+				default:
+					if _, err = h.Fire(ctx, "go"); err != nil {
+						t.Fatalf("Fire(go): %v", err)
+					}
+					if _, ran, runErr := h.RunService(ctx, svcID); !ran || runErr != nil {
+						t.Fatalf("RunService = %v, %v", ran, runErr)
+					}
+					if how == "Fire re-entered" {
+						if _, err = h.Fire(ctx, "again"); err != nil {
+							t.Fatalf("Fire(again): %v", err)
+						}
+					} else {
+						clk.Advance(10 * time.Second)
+						if results, tickErr := h.Tick(ctx); tickErr != nil || len(results) != 1 {
+							t.Fatalf("Tick = %d results, %v, want the redo timer to fire", len(results), tickErr)
+						}
+					}
+				}
+				if got := h.Instance().Current(); got != "fetching" {
+					t.Fatalf("state = %q, want fetching", got)
+				}
+				if where == "replayed checkpoint" {
+					// Replay the journal, then checkpoint from the recovered Handle's view.
+					if h, err = durable.Recover(ctx, m, store, id, checkpointing...); err != nil {
+						t.Fatalf("Recover from the journal: %v", err)
+					}
+				}
+				if _, err = h.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke): %v", err)
+				}
+				recovered, err := durable.Recover(ctx, m, store, id, checkpointing...)
+				if err != nil {
+					t.Fatalf("Recover: %v", err)
+				}
+				if _, ran, runErr := recovered.RunService(ctx, svcID); !ran || runErr != nil {
+					t.Fatalf("RunService after Recover = %v, %v, want the service in flight: it never settled in this activation of fetching", ran, runErr)
+				}
+			})
+		}
 	}
 }

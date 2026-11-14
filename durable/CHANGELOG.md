@@ -201,12 +201,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   The actor system armed only that state's actors, so its service wasn't in flight, and
   `RunService` reported none, and its timer never fired; a checkpoint then recorded the
   service as settled, so `Recover` didn't start it either. Such a Fire now arms them,
-  live, at `Start` and `Recover`, and on replay, as a host `Fire` does. A service's
+  live, at `Start` and `Recover`, and on replay, as a host `Fire` does. Replay arms them
+  only in a journal this version wrote, which records the unstarted actors: one an
+  older version wrote took no clock read for them, and replays as it did. A service's
   settle re-arms its state's timers on replay too, and `DeliverToActor` and `RunService`
   now journal the clock reads their step took, so a checkpoint on that step can't leave
   a read for the next to replay. `Recover` re-arms a checkpoint's timers before it
-  spawns the running actors, so a Fire one of theirs drives can cancel one, and a `Tick`
-  drops the timers it fired at its own clock read, not an earlier one its step records.
+  spawns the running actors, so a Fire one of theirs drives can cancel one. A `Tick`
+  drops from the timers a checkpoint records exactly the ones it fired, live and on
+  replay: one that came due between its clock reads, and a chained one it armed and
+  fired, used to stay, so a `Recover` from a later checkpoint fired it again.
 - **A delivery journals each parent Fire under the actor that drove it,** where it used to
   record every one under the actor delivered to. It no longer copies the instance's
   history twice per delivery to do it.
@@ -221,8 +225,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   checkpoint taken after such a settle, on a compound state whose onDone went to a child,
   or on a leaf state that stayed put, left the service in flight again on recovery, so
   `RunService` ran it a second time. A checkpoint now records the declared services that
-  weren't in flight, and `Recover` doesn't start them. A checkpoint from before this
-  records none, and `Recover` starts every declared service, as before.
+  settled while their state stayed active, and `Recover` doesn't start them. One that
+  never settled, such as one whose state a `Tick` entered or re-entered (a `Tick`
+  starts no service), isn't recorded, so `Recover` starts it, as before. A checkpoint
+  from before this records none, and `Recover` starts every declared service.
 - **A parent Fire that middleware denied replays.** Denied before the kernel saw it, it
   is recorded as refused, and replay meets the same refusal instead of failing `Recover`.
 - **A panic during a step fails the Handle.** A panic in host code under the step lock,

@@ -132,7 +132,10 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		return false, fmt.Errorf("durable: no actor palette wired for %q (supply WithActorPalette)", h.id)
 	}
 
-	delivered := h.actors.Deliver(h.stepContext(ctx), ref, event)
+	stepCtx := h.stepContext(ctx)
+	restore := h.actorFires.driving(stepCtx)
+	delivered := h.actors.Deliver(stepCtx, ref, event)
+	restore()
 	fires := h.actorFires.take()
 	if !delivered {
 		return false, nil

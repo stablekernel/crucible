@@ -92,10 +92,11 @@ type checkpointEnvelope struct {
 	// UnstartedActors is the set of declared actors that weren't running and hadn't
 	// ended at the checkpoint (see Record.UnstartedActors). Nil means none was recorded.
 	UnstartedActors *ActorSet `json:"unstartedActors,omitempty"`
-	// EndedServices are the invoked services the active states declared that weren't in
-	// flight at the checkpoint, sorted: each settled in the current activation of the
-	// state that declares it, so Recover doesn't start it again. None, as in a Start
-	// baseline or an older checkpoint, means Recover starts every declared service.
+	// EndedServices are the invoked services the active states declared that had settled
+	// in the current activation of the state that declares each, sorted, so Recover
+	// doesn't start them again. A declared service that wasn't in flight but never
+	// settled isn't one. None, as in a Start baseline or an older checkpoint, means
+	// Recover starts every declared service.
 	EndedServices []string `json:"endedServices,omitempty"`
 }
 
