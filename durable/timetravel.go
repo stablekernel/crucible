@@ -245,7 +245,7 @@ func replayThrough[S comparable, E comparable, C any](
 		}
 		// A domain effect is never dispatched here: a time-travel read applies no
 		// side effect.
-		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i]); err != nil {
+		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil); err != nil {
 			return err
 		}
 	}

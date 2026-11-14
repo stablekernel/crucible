@@ -156,7 +156,9 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	}
 
 	step := h.nextStep
-	rec := Record{Step: step, Entries: append(h.drainServices(), driven...)}
+	// Arming a timer the settle's state declares reads the clock, so the step carries
+	// its reads.
+	rec := Record{Step: step, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
 	if err := h.persistStep(ctx, step, &rec); err != nil {
 		return res, true, err
 	}
@@ -195,32 +197,35 @@ func recordServiceOutcome(id string, lastResult func() (any, bool), lastErr erro
 // the recorded payload and calls SettleDone (with the recorded result) or
 // SettleError (with the reconstructed error), so the kernel re-fires the same
 // onDone / onError event with the same data and re-derives identical context. It
-// reports an error only when the recorded entry cannot be decoded or names no
-// in-flight service (a corrupt or mis-ordered journal).
-func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) error {
+// returns the settle's effects, so the caller arms the timers its state declares, as
+// the live RunService did. It reports an error only when the recorded entry cannot be
+// decoded or names no in-flight service (a corrupt or mis-ordered journal).
+func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry) ([]state.Effect, error) {
 	if svc == nil {
-		return errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
+		return nil, errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
 	}
 	var sp serviceResultPayload
 	if err := json.Unmarshal(entry.Payload, &sp); err != nil {
-		return fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
+		return nil, fmt.Errorf("durable: decoding recorded service %q outcome: %w", entry.CorrelationID, err)
 	}
 	if sp.Error != nil {
-		if _, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error)); !ok {
-			return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+		res, ok := svc.SettleError(ctx, entry.CorrelationID, errors.New(*sp.Error))
+		if !ok {
+			return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 		}
-		return nil
+		return res.Effects, nil
 	}
 	var result any
 	if len(sp.Result) > 0 {
 		if err := json.Unmarshal(sp.Result, &result); err != nil {
-			return fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
+			return nil, fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
 		}
 	}
-	if _, ok := svc.SettleDone(ctx, entry.CorrelationID, result); !ok {
-		return fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
+	res, ok := svc.SettleDone(ctx, entry.CorrelationID, result)
+	if !ok {
+		return nil, fmt.Errorf("durable: replaying service %q: no in-flight service to settle", entry.CorrelationID)
 	}
-	return nil
+	return res.Effects, nil
 }
 
 // serviceEntries returns the recorded service outcomes carried by a single

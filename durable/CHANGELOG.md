@@ -197,6 +197,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   spawn failed with no onError never ran, so its messages are new: they reach the parent
   and are journaled with the next step. A journal from before this records no unstarted
   actors, and `Recover` spawns every actor as new, as before.
+- **A state an actor's onDone, onError or message enters runs its timers and services.**
+  The actor system armed only that state's actors, so its service wasn't in flight, and
+  `RunService` reported none, and its timer never fired; a checkpoint then recorded the
+  service as settled, so `Recover` didn't start it either. Such a Fire now arms them,
+  live, at `Start` and `Recover`, and on replay, as a host `Fire` does. A service's
+  settle re-arms its state's timers on replay too, and `DeliverToActor` and `RunService`
+  now journal the clock reads their step took, so a checkpoint on that step can't leave
+  a read for the next to replay. `Recover` re-arms a checkpoint's timers before it
+  spawns the running actors, so a Fire one of theirs drives can cancel one, and a `Tick`
+  drops the timers it fired at its own clock read, not an earlier one its step records.
 - **A delivery journals each parent Fire under the actor that drove it,** where it used to
   record every one under the actor delivered to. It no longer copies the instance's
   history twice per delivery to do it.

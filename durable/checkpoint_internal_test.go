@@ -151,21 +151,6 @@ func TestMarshalCheckpoint_BadEventErrors(t *testing.T) {
 	}
 }
 
-// TestTickInstant covers the no-clock-read branch (a tick that fired nothing
-// records no read) alongside the happy path.
-func TestTickInstant(t *testing.T) {
-	if _, ok := tickInstant(nil); ok {
-		t.Fatal("empty entries should report no instant")
-	}
-	entries := []state.JournalEntry{
-		{Kind: state.JournalClockRead, ClockUnixNano: 42},
-	}
-	got, ok := tickInstant(entries)
-	if !ok || got.UnixNano() != 42 {
-		t.Fatalf("tickInstant: ok=%v got=%d", ok, got.UnixNano())
-	}
-}
-
 // TestCheckpoint_NextStepRoundTrips proves the envelope carries the ordinal after
 // the checkpoint, and that a checkpoint without one reports zero, the old form.
 func TestCheckpoint_NextStepRoundTrips(t *testing.T) {
