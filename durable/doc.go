@@ -96,8 +96,9 @@
 // instants regardless of the wall clock at recovery time. A timer also survives
 // checkpoint compaction: each checkpoint persists the absolute deadlines of the
 // timers armed at that instant; on recovery a timer whose arming ScheduleAfter
-// was compacted out of the tail is re-armed from its persisted deadline rather
-// than lost.
+// was compacted out of the tail is re-armed from its persisted deadline before
+// the tail replays — so a tail Tick that fired it live, or a tail cancel, acts on
+// it as the live run did — rather than lost.
 //
 // Invoked services (WithServiceRegistry): a service (`invoke`) runs on the live path;
 // its result is journaled as a JournalServiceResult. On recovery the recorded result is

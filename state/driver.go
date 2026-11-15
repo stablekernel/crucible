@@ -89,6 +89,20 @@ func (s *Scheduler[S, E, C]) absorbLocked(effects []Effect) {
 	}
 }
 
+// ArmAt arms the delayed transition id — the same event a ScheduleAfter for id
+// would carry — at the absolute deadline due, without reading the clock. Absorb
+// computes a timer's deadline from one clock reading plus the effect's declared
+// Delay; a host that persisted the deadline itself, as a durable runtime does for
+// the timers a checkpoint recorded, re-arms it exactly through ArmAt instead, so
+// no reading is taken. A timer already armed under id is re-armed at due. It fires
+// on the Tick whose clock reading reaches due, like any other, and a CancelScheduled
+// for id cancels it.
+func (s *Scheduler[S, E, C]) ArmAt(id string, event E, due time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending[id] = pending[E]{event: event, due: due}
+}
+
 // Pending reports the number of armed (not-yet-fired, not-canceled) timers. A
 // test asserts on it to confirm a timer was scheduled or auto-canceled on exit.
 func (s *Scheduler[S, E, C]) Pending() int {

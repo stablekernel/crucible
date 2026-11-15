@@ -13,7 +13,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   ran and have ended, settled or stopped, so `Recover` doesn't spawn them again. A Store
   must keep an empty set distinct from nil.
 - **`Record.UnstartedActors`** records the declared actors that aren't running and
-  haven't ended, because their spawn failed with no onError, so `Recover` can tell them
+  haven't ended, because their spawn failed with no onError to route to, or its
+  onError was refused because a context ended, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
 - **`Record.Format`** records the journal format of the version that wrote the Record,
   which is 1 from this version. Replay arms the timers and services an actor-driven
@@ -183,8 +184,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   without leaving the state, or an explicit stop. Each step now records the declared
   actors that ran and ended, in the new `Record.EndedActors`, and a checkpoint keeps the
   set, so `Recover` spawns the declared actors that aren't in it. An actor whose spawn
-  failed with no onError never ran, so `Recover` tries it again, as before; one whose
-  onError applied counts as ended, since the journal holds that onError. A journal from before this
+  failed with no onError to route to never ran, so `Recover` tries it again, as before,
+  and so does one whose onError a context's ending refused, since the step that drove
+  it records nothing; one whose onError applied counts as ended, since the journal
+  holds that onError, and, from the refused-onError fix below, so does one whose
+  onError was refused for another reason replay meets again. A journal from before this
   records no set, and `Recover` spawns every declared actor, as before.
 - **A failed spawn's onError, and a settle an absorb drove, are journaled.** When an
   actor a `Fire`, `RunService`, `Start` or `Recover` spawned couldn't start and its
@@ -195,6 +199,16 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `Start`'s and `Recover`'s spawns, with the step after, and replay re-fires each where
   it ran. An actor output that has no JSON form now fails the Handle here too, as it
   does for a delivery.
+- **A spawn whose onError was refused deterministically isn't retried.** A failed
+  spawn counted as handled only when its onError Fire applied, so one whose onError
+  was refused for a reason other than a context ending — a guard returning false —
+  landed in `UnstartedActors`, and every `Recover` spawned it again: the behavior,
+  and any side effect it ran, re-executed each time, and each recovery journaled
+  another refused onError. Such a refusal now counts as handled — the journal
+  already records it, and replay meets it again — so the actor counts as ended and
+  `Recover` leaves it alone. A spawn whose onError a context's ending refused still
+  retries, since the step that drove it records nothing, as does one with no onError
+  to route to, none declared or none the parent handles, as before.
 - **A message an actor sends its parent as it spawns applies once.** A `Fire`,
   `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor
   again to send it again: it landed after the steps that followed it live, or never, if
@@ -216,13 +230,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   took no clock read for them, and its Records replay as they did. A service's
   settle re-arms its state's timers on replay too, and `DeliverToActor` and `RunService`
   now journal the clock reads their step took, so a checkpoint on that step can't leave
-  a read for the next to replay. `Recover` re-arms a checkpoint's timers before it
-  spawns the running actors, so a Fire one of theirs drives can cancel one. A timer
-  the checkpoint recorded and a later step canceled stays canceled: `Recover` used to
-  re-arm it, since that step's cancel replays before the re-arm. A `Tick`
+  a read for the next to replay. `Recover` restores a checkpoint's timers before the
+  replay walk, so a tail step, or a Fire one of the recovered spawns drives, acts on
+  them as the live run did. A `Tick`
   drops from the timers a checkpoint records exactly the ones it fired, live and on
   replay: one that came due between its clock reads, and a chained one it armed and
   fired, used to stay, so a `Recover` from a later checkpoint fired it again.
+- **A checkpoint's timers are restored before the replay walk.** `Recover` armed them
+  only after replaying the journal's tail, so a tail `Tick` that fired one of them
+  live fired nothing in replay: the recovered `Handle` kept the pre-tick state, the
+  timer was then armed and fired a second time on top of it, and a later tail Record
+  that needed the post-tick state failed replay. The timers are now armed into the
+  replay scheduler at their recorded absolute deadlines before the walk — taking no
+  clock reading, so the walk's recorded readings still land in order — and a tail
+  `Tick` fires one, and a later tail Fire moves on from the state it reached, exactly
+  as live did. A timer the checkpoint recorded and a later step canceled stays
+  canceled the same way: its cancel replays against the restored timer, where
+  `Recover` used to re-arm it after the cancel had replayed.
 - **A delivery journals each parent Fire under the actor that drove it,** where it used to
   record every one under the actor delivered to. It no longer copies the instance's
   history twice per delivery to do it.

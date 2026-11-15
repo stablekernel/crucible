@@ -249,3 +249,81 @@ func assertCancelEffect(t *testing.T, effects []state.Effect, id string) {
 	}
 	t.Fatalf("no CancelScheduled effect for id %q in %v", id, effects)
 }
+
+// readCountingClock wraps a Clock and counts its Now() readings, so a test can
+// prove a driver step took none.
+type readCountingClock struct {
+	state.Clock
+	reads int
+}
+
+func (c *readCountingClock) Now() time.Time {
+	c.reads++
+	return c.Clock.Now()
+}
+
+func (c *readCountingClock) Advance(d time.Duration) {
+	c.Clock.(interface{ Advance(time.Duration) }).Advance(d)
+}
+
+// TestScheduler_ArmAt_ArmsAtTheDeadlineWithoutReadingTheClock proves ArmAt arms a
+// timer at an absolute deadline — a deadline a host persisted and re-arms exactly,
+// rather than re-deriving from a fresh reading plus a declared delay — without
+// taking the clock reading Absorb would. The armed timer fires when a Tick's
+// reading reaches the deadline, and a CancelScheduled drops it as any other.
+func TestScheduler_ArmAt_ArmsAtTheDeadlineWithoutReadingTheClock(t *testing.T) {
+	m := afterMachine()
+	clk := &readCountingClock{Clock: state.NewFakeClock(time.Unix(0, 0))}
+	inst := m.Cast(&trec{}, state.WithInitialState("armed"), state.WithClock[string](clk))
+	sch := state.NewScheduler(inst)
+	ctx := context.Background()
+
+	id := state.ScheduleID("timed", "armed", 0)
+	due := time.Unix(0, 5*time.Second.Nanoseconds())
+	sch.ArmAt(id, "elapsed", due)
+	if clk.reads != 0 {
+		t.Fatalf("ArmAt took %d clock readings, want none", clk.reads)
+	}
+	if !sch.HasPending(id) {
+		t.Fatalf("ArmAt should arm timer %q", id)
+	}
+
+	// Before the deadline the timer stays armed; a tick fires nothing and the
+	// instance stays in armed.
+	if fired := sch.Tick(ctx); len(fired) != 0 {
+		t.Fatalf("tick before the deadline fired %d events", len(fired))
+	}
+	if inst.Current() != "armed" {
+		t.Fatalf("before the deadline, want armed, got %q", inst.Current())
+	}
+
+	// Past the deadline the timer fires the delayed event and the instance advances.
+	clk.Advance(5 * time.Second)
+	if fired := sch.Tick(ctx); len(fired) != 1 || inst.Current() != "fired" {
+		t.Fatalf("tick past the deadline: fired=%d state=%q, want 1 and fired", len(fired), inst.Current())
+	}
+
+	// A deadline already in the past arms as immediately due, so an elapsed timer
+	// fires on the next Tick.
+	inst = m.Cast(&trec{}, state.WithInitialState("armed"), state.WithClock[string](clk))
+	sch = state.NewScheduler(inst)
+	sch.ArmAt(id, "elapsed", time.Unix(0, 0))
+	clk.Advance(time.Nanosecond)
+	if fired := sch.Tick(ctx); len(fired) != 1 || inst.Current() != "fired" {
+		t.Fatalf("tick past an elapsed deadline: fired=%d state=%q, want 1 and fired", len(fired), inst.Current())
+	}
+
+	// A CancelScheduled for an ArmAt-armed timer drops it, as for an Absorb-armed one.
+	inst = m.Cast(&trec{}, state.WithInitialState("armed"), state.WithClock[string](clk))
+	sch = state.NewScheduler(inst)
+	sch.ArmAt(id, "elapsed", clk.Now().Add(time.Hour))
+	leave := inst.Fire(ctx, "leave")
+	assertCancelEffect(t, leave.Effects, id)
+	sch.Absorb(ctx, leave.Effects)
+	if sch.HasPending(id) {
+		t.Fatalf("cancel should drop the ArmAt-armed timer %q", id)
+	}
+	if fired := sch.Tick(ctx); len(fired) != 0 {
+		t.Fatalf("canceled ArmAt-armed timer fired %d events", len(fired))
+	}
+}

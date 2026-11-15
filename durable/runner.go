@@ -666,7 +666,7 @@ type parentFires[S comparable] struct {
 	fires     []state.ParentFire[S]
 	spawned   map[string]bool // actors whose latest spawn this step started
 	attempted map[string]bool // actors the system was asked to spawn this step
-	failed    map[string]bool // actors whose latest spawn failed and whose onError applied
+	failed    map[string]bool // actors whose latest spawn failed and whose onError applied, or was refused for a reason other than a context ending or an unroutable onError
 }
 
 // attempt notes the actors effects ask the system to spawn.
@@ -719,9 +719,15 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
-	// A spawn whose onError applied is handled: the journal holds the onError, so
-	// retrying the spawn would apply it twice.
-	if pf.SpawnFailed && pf.Result.Err == nil {
+	// A spawn whose onError applied is handled: the journal holds that onError, so
+	// retrying the spawn would apply it twice. One whose onError was refused for a
+	// reason other than a context ending — a failing guard, say — is handled too:
+	// the journal records the refusal, replay meets it again, and a retry would
+	// re-run the behavior and journal another refusal. One a context's ending
+	// refused, and one whose parent had no transition for its onError event, are
+	// not: the first left the step that drove it recording nothing, and the second
+	// is the spawn's having no onError to route to, so a retry is right for both.
+	if pf.SpawnFailed && spawnErrorHandled(pf.Result.Err) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
@@ -1183,9 +1189,13 @@ func (r *recordedSet) note(now *ActorSet) {
 // keeps a settled actor), or when this step asked the system to spawn it and the latest
 // of those spawns started it (then something stopped it), or, when this step didn't try
 // to spawn it, when it was running or ended at the previous step. A spawn whose onError
-// applied also counts as ended, since the journal holds that onError. So an actor whose
-// spawn failed with no onError, at entry or on a re-entry, hasn't ended: it's unstarted,
-// and Recover tries it again. Both are nil with no actor palette.
+// applied, or whose onError was refused for a reason other than a context ending and
+// other than the parent's having no transition for it, also counts as ended, since the
+// journal holds that onError, or the refusal replay meets again. So an actor whose
+// spawn failed with no onError to route to — none declared, or none the parent handles
+// — or whose onError a context's ending refused, which left the step that drove it
+// recording nothing, hasn't ended: it's unstarted, and Recover tries it again. Both are
+// nil with no actor palette.
 func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	if h.actors == nil {
 		return nil, nil
@@ -1360,10 +1370,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	actorBuf := make([]state.JournalEntry, 0)
 	actors, actorFires := r.newActorSystem(inst)
 
-	// armed mirrors the scheduler's pending timers re-established by tail replay,
-	// with their recorded deadlines, so a persisted-but-compacted timer is re-armed
-	// only when the tail did not already re-arm it, and the Handle's table is seeded
-	// with every still-pending timer's deadline for the next checkpoint.
+	// armed is the Handle's timer table: it starts with the timers the checkpoint
+	// persisted, armed into the replay scheduler below, and the walk folds the tail's
+	// schedules, cancels and fired timers into it, so it ends with every still-pending
+	// timer's deadline for the next checkpoint.
 	armed := map[string]pendingTimer{}
 
 	// mirror tracks, as replay walks the tail, the still-pending timers in armed and the
@@ -1372,6 +1382,16 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	mirror := &armMirror{armed: armed, clock: repClock}
 	for _, sv := range env.EndedServices {
 		mirror.settle(sv)
+	}
+
+	// Arm the checkpoint's persisted timers into the replay scheduler at their
+	// recorded absolute deadlines, BEFORE the walk, so the tail acts on them as the
+	// live run did: a tail Tick that fired one fires it in replay, reaching the same
+	// state, and a tail cancel leaves it canceled. A tail Record that needs the
+	// post-tick state then replays against it. The arming takes no clock reading, so
+	// the walk's first tail Record still gets its own recorded reading.
+	if err := armPersistedTimers(r.cfg.eventCodec, sched, persistedTimers, armed); err != nil {
+		return nil, fmt.Errorf("durable: re-arming pending timers for %q: %w", id, err)
 	}
 
 	// ended is the latest recorded set of the declared actors the live run had ended:
@@ -1416,35 +1436,6 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// Drain any clock readings the replay re-recorded after the cursor exhausted
 	// (none in the common case where replay consumes exactly the recorded
 	// readings): they belong to no new step and must not leak into the next Fire.
-	buf = buf[:0]
-
-	// Re-arming reads the clock past the journal, and so can arming a timer for a parent
-	// Fire an actor Recover spawns drives, which the next step records: re-arm before the
-	// spawns, so the re-arm's read can be dropped while theirs are kept, and so one of
-	// their Fires can cancel a re-armed timer.
-	//
-	// Re-arm any timer that was pending at the checkpoint but whose arming
-	// ScheduleAfter was compacted out of the tail, so it survives compaction: the
-	// tail replay could not re-arm it (its arm is gone), so re-arm it here at its
-	// persisted absolute deadline. Already-armed timers (re-established by the tail)
-	// are skipped, so a timer the tail still carried is never double-armed. The
-	// remaining delay is the persisted deadline minus the recovery clock's now, so
-	// the re-armed timer fires at its recorded instant — an already-elapsed deadline
-	// arms as immediately due and fires on the next Tick.
-	// A timer the tail canceled stays canceled: its cancel replayed before this re-arm.
-	persistedTimers = slices.DeleteFunc(persistedTimers, func(w pendingTimerWire) bool { return mirror.canceled[w.ID] })
-	reEffects, reSeeded, reErr := reArmEffects(r.cfg.eventCodec, persistedTimers, armed, repClock.Now())
-	if reErr != nil {
-		return nil, fmt.Errorf("durable: re-arming pending timers for %q: %w", id, reErr)
-	}
-	if len(reEffects) > 0 {
-		sched.Absorb(ctx, reEffects)
-	}
-	for id, pt := range reSeeded {
-		armed[id] = pt
-	}
-	// The re-arm reads the recovery clock to compute remaining delays; that reading
-	// belongs to no recorded step and must not leak into the next Fire's Record.
 	buf = buf[:0]
 
 	// The next step ordinal continues past the highest assigned step. Step ordinals
@@ -1720,6 +1711,29 @@ func (jsonEventCodec[E]) Decode(payload []byte) (E, error) {
 	return e, err
 }
 
+// spawnErrorHandled reports whether the onError Fire of a failed spawn leaves the
+// spawn handled, so the journal's actor sets count it as ended and Recover doesn't
+// retry it: the Fire applied (err is nil), or it was refused for a reason other
+// than a context ending — a failing guard, say — which the journal records and
+// replay meets again. A context's ending leaves it unhandled: the step that drove
+// the Fire records nothing, so a retry is right. So does the parent's having no
+// transition for the onError event, the same "no onError to route to" as an
+// undeclared one, matching the kernel's own reading of that outcome: the spawn
+// stays unstarted, and Recover tries it again, as it always has.
+func spawnErrorHandled(err error) bool {
+	if err == nil {
+		return true
+	}
+	if isContextErr(err) {
+		return false
+	}
+	var it *state.InvalidTransitionError
+	if errors.As(err, &it) && it.Reason == "no transition declared for this state and event" {
+		return false
+	}
+	return true
+}
+
 // isContextErr reports whether err is a context's cancellation or deadline, which a
 // Store may report for either when the caller's context ends.
 func isContextErr(err error) bool {
@@ -1929,9 +1943,6 @@ type armMirror struct {
 	armed   map[string]pendingTimer
 	clock   *replayClock
 	settled map[string]bool
-	// canceled holds the timers replay canceled and didn't arm again, so Recover doesn't
-	// re-arm one the checkpoint recorded: the tail's cancel replays before that re-arm.
-	canceled map[string]bool
 }
 
 // settle notes that a replayed settle settled the service id.
@@ -1960,24 +1971,7 @@ func (m *armMirror) arm(effects []state.Effect) {
 	if m == nil {
 		return
 	}
-	m.track(effects, m.clock.lastRead())
-}
-
-// track folds a replayed step's timer effects into the table at now, and notes the
-// timers they cancel.
-func (m *armMirror) track(effects []state.Effect, now time.Time) {
-	mirrorArmed(m.armed, effects, now)
-	for _, eff := range effects {
-		switch e := eff.(type) {
-		case state.ScheduleAfter:
-			delete(m.canceled, e.ID)
-		case state.CancelScheduled:
-			if m.canceled == nil {
-				m.canceled = map[string]bool{}
-			}
-			m.canceled[e.ID] = true
-		}
-	}
+	mirrorArmed(m.armed, effects, m.clock.lastRead())
 }
 
 // mirrorTick arms in m any timer a replayed tick's chained transition scheduled, at the
@@ -1989,7 +1983,7 @@ func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Sc
 	}
 	now := m.clock.lastRead()
 	for i := range results {
-		m.track(results[i].Effects, now)
+		mirrorArmed(m.armed, results[i].Effects, now)
 		m.forget(results[i].Effects)
 	}
 	dropUnscheduled(m.armed, sched)

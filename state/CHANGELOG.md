@@ -13,6 +13,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- **`Scheduler.ArmAt`** arms one delayed transition at an absolute deadline — the
+  same timer id, event and firing behavior a `ScheduleAfter` for it would carry —
+  without reading the clock, where `Absorb` reads one to turn the effect's declared
+  delay into a deadline. A host that persisted a timer's deadline, as `durable` does
+  for the timers a checkpoint recorded, re-arms it exactly, so no reading is taken.
+  It's additive, within v1.1.0.
 - **`ActorSystem.WithParentFireObserver`** calls a function with each parent Fire the
   system drives (a `ParentFire`: its result, refused ones included, the actor it came
   from, whether it settled that actor, with its output or error, and whether it routed

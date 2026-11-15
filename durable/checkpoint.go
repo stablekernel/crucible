@@ -23,10 +23,11 @@ import (
 // The declared `after` Delay re-arms a fresh timer at now+Delay; a timer pending at
 // a checkpoint has already burned part of its delay, so the durable layer persists
 // each armed timer's absolute deadline alongside the checkpoint and, on recovery,
-// re-arms the remainder (deadline − resumed now) rather than the full declared
-// Delay. The deadline is itself a recorded clock read, so the re-armed timer fires
-// at the same recorded instant regardless of the wall clock at recovery time, and
-// the recovered run is byte-identical to one that never crashed.
+// arms it at that deadline — through the scheduler's ArmAt, which reads no clock —
+// before the replay walk, so a tail Tick or cancel acts on it as it did live. The
+// deadline is itself a recorded clock read, so the re-armed timer fires at the same
+// recorded instant regardless of the wall clock at recovery time, and the recovered
+// run is byte-identical to one that never crashed.
 
 // pendingTimer is one armed delayed (`after`) timer the durable Handle tracks
 // alongside the kernel scheduler, so its absolute deadline can be persisted at a
@@ -40,7 +41,7 @@ type pendingTimer struct {
 	// scheduler's pending set key identically.
 	id string
 	// due is the timer's absolute fire deadline (the recorded arming clock read plus
-	// the declared Delay), the value persisted so recovery re-arms the remainder.
+	// the declared Delay), the value persisted so recovery re-arms it at that deadline.
 	due time.Time
 	// event is the delayed event the timer re-fires through Fire when it elapses,
 	// type-erased for the abstract ScheduleAfter surface and re-typed by the
@@ -150,7 +151,7 @@ func unmarshalCheckpoint(b []byte) checkpointEnvelope {
 
 // decodeTimerEvent decodes a persisted timer event wire back into the machine's
 // event type E through the same codec the Runner replays driving events with, so
-// the re-armed ScheduleAfter carries a correctly-typed event the scheduler accepts.
+// the re-armed timer carries a correctly-typed event the scheduler accepts.
 func decodeTimerEvent[E comparable](codec EventCodec[E], raw json.RawMessage) (E, error) {
 	return codec.Decode(raw)
 }
@@ -171,38 +172,33 @@ func mirrorArmed(armed map[string]pendingTimer, effects []state.Effect, now time
 	}
 }
 
-// reArmEffects builds the ScheduleAfter effects that re-arm persisted timers at
-// their recorded absolute deadlines, relative to now: each timer's remaining delay
-// is its deadline minus now, so absorbing the effects through the live scheduler
-// reproduces the same absolute deadline the live run held. A deadline already at or
-// before now yields a non-positive delay, which the scheduler arms as immediately
-// due, so an elapsed-while-down timer fires on the next Tick. Timers whose id is
-// already armed (re-established by tail replay) are skipped, so a timer the tail
-// still carries is not double-armed. Returns the effects and the durable-side
-// pendingTimer table to seed the Handle, both in scheduleID order.
-func reArmEffects[E comparable](
+// armPersistedTimers arms each timer the checkpoint persisted into the replay
+// scheduler at its recorded absolute deadline, and seeds the mirror's armed table
+// with it, before the replay walk: a tail Tick that fired one of them live fires it
+// in replay too, and a tail cancel leaves it canceled, as each acted live. It must
+// take no clock reading: during the walk the replay clock hands out the recorded
+// readings in order, and a read taken before the walk would consume the reading
+// that belongs to the first tail Record and shift every later one. So each timer is
+// armed through Scheduler.ArmAt at its persisted deadline, not through Absorb,
+// which reads the clock to turn a delay into a deadline. The mirror's table is the
+// Handle's timer table after Recover: the walk folds the tail's schedules, cancels
+// and fired timers into it, so it ends with each still-pending timer at its
+// persisted deadline. A deadline already in the past arms as immediately due, so a
+// timer that elapsed while the instance was down fires on the next Tick.
+func armPersistedTimers[S comparable, E comparable, C any](
 	codec EventCodec[E],
+	sched *state.Scheduler[S, E, C],
 	wires []pendingTimerWire,
-	already map[string]pendingTimer,
-	now time.Time,
-) ([]state.Effect, map[string]pendingTimer, error) {
-	var effects []state.Effect
-	seeded := map[string]pendingTimer{}
+	armed map[string]pendingTimer,
+) error {
 	for _, w := range wires {
-		if _, armed := already[w.ID]; armed {
-			continue // tail replay already re-armed this timer; do not double-arm.
-		}
 		ev, err := decodeTimerEvent(codec, w.Event)
 		if err != nil {
-			return nil, nil, fmt.Errorf("durable: decoding pending timer %q event: %w", w.ID, err)
+			return fmt.Errorf("durable: decoding pending timer %q event: %w", w.ID, err)
 		}
 		due := time.Unix(0, w.DueUnixNano).UTC()
-		effects = append(effects, state.ScheduleAfter{
-			ID:    w.ID,
-			Delay: due.Sub(now),
-			Event: ev,
-		})
-		seeded[w.ID] = pendingTimer{id: w.ID, due: due, event: ev}
+		sched.ArmAt(w.ID, ev, due)
+		armed[w.ID] = pendingTimer{id: w.ID, due: due, event: ev}
 	}
-	return effects, seeded, nil
+	return nil
 }

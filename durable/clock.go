@@ -128,9 +128,10 @@ func (c *recordingClock) lastReadingSince(i int) (time.Time, bool) {
 // readings and returns each once.
 //
 // When the cursor is exhausted — a Now() beyond the recorded readings, which
-// happens on the live re-arm after replay — it falls through to a real clock so
-// post-recovery timing continues against wall time. The fallthrough never affects
-// the replayed prefix, which is fully determined by the journal.
+// happens once replay is over and the recovered run reads the clock live, as when
+// a timer an actor Recover spawns drives arms — it falls through to a real clock
+// so post-recovery timing continues against wall time. The fallthrough never
+// affects the replayed prefix, which is fully determined by the journal.
 type replayClock struct {
 	mu       sync.Mutex
 	readings []int64
@@ -140,7 +141,7 @@ type replayClock struct {
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
-// to fallback once the readings are exhausted (the live re-arm after replay).
+// to fallback once the readings are exhausted and the recovered run reads live.
 func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 	return &replayClock{readings: readings, fallback: fallback}
 }

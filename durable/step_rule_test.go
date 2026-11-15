@@ -765,11 +765,12 @@ func TestRecover_ReplaysASpawnsOnErrorOnce(t *testing.T) {
 	})
 }
 
-// TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused proves the latest spawn attempt
-// decides: a failed spawn's onError applies and re-enters the state, the spawn there
-// fails too, and the parent refuses that onError, so the actor isn't handled and
-// Recover tries it again.
-func TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused(t *testing.T) {
+// TestRecover_HandlesASpawnWhoseLatestOnErrorWasRefused proves the latest spawn attempt
+// decides, and a refused onError that isn't a context's ending counts as handled: a
+// failed spawn's onError applies and re-enters the state, the spawn there fails too,
+// and the parent refuses that onError for its guard — so the journal holds the
+// refusal, Recover doesn't retry the spawn, and the behavior never runs again.
+func TestRecover_HandlesASpawnWhoseLatestOnErrorWasRefused(t *testing.T) {
 	ctx := context.Background()
 	fail := func(in state.AssignCtx[stepCtx]) stepCtx {
 		c := in.Entity
@@ -787,20 +788,36 @@ func TestRecover_RetriesASpawnWhoseLatestOnErrorWasRefused(t *testing.T) {
 		Transition("spawning").On("spawnFailed").GoTo("spawning").Reenter().When("firstFailure").Assign("noteFail").
 		Quench()
 	store, id := durable.NewMemStore(), durable.InstanceID("again")
-	failing := durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": failingSpawn(nil)})
-	h, err := durable.NewRunner(m, store, failing).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+	var calls int
+	palette := durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+		"spawnChild": func(map[string]any) (state.ActorInstance, error) {
+			calls++
+			return nil, errors.New("the child can't start")
+		},
+	})
+	h, err := durable.NewRunner(m, store, palette).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if _, err = h.Fire(ctx, "start"); err != nil {
 		t.Fatalf("Fire(start): %v", err)
 	}
-	recovered, err := durable.Recover(ctx, m, store, id, durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"spawnChild": finishingChild()}))
+	if calls != 2 {
+		t.Fatalf("live ran the behavior %d times, want the two failed spawns of one step", calls)
+	}
+	liveState, liveNotes := h.Instance().Current(), fmt.Sprint(h.Instance().Entity().Notes)
+	recovered, err := durable.Recover(ctx, m, store, id, palette)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if _, ok := recovered.ActorRef(state.ActorID("again", "spawning", 0)); !ok {
-		t.Fatal("Recover didn't retry the spawn whose latest onError the parent refused")
+	if calls != 2 {
+		t.Fatalf("Recover ran the behavior again: %d calls, want the two live ones", calls)
+	}
+	if got, notes := recovered.Instance().Current(), fmt.Sprint(recovered.Instance().Entity().Notes); got != liveState || notes != liveNotes {
+		t.Fatalf("recovered %s %s, want the live %s %s", got, notes, liveState, liveNotes)
+	}
+	if _, ok := recovered.ActorRef(state.ActorID("again", "spawning", 0)); ok {
+		t.Fatal("Recover retried the spawn whose latest onError the parent refused")
 	}
 }
 
@@ -939,5 +956,131 @@ func TestStart_SucceedsWhenItsContextEndsWithNoRefusal(t *testing.T) {
 				t.Fatalf("recovered state = %q, want working", got)
 			}
 		})
+	}
+}
+
+// guardedSpawnMachine is idle -start-> spawning, whose actor can't start: its
+// onError is guarded false, so the parent refuses it deterministically and the
+// spawn stays where it is.
+func guardedSpawnMachine() stepMachine {
+	return state.ForgeFor[stepCtx]("guarded").
+		Guard("never", func(state.GuardCtx[stepCtx]) bool { return false }).
+		Actor("spawnChild").
+		State("idle").
+		State("spawning").InvokeActor("spawnChild", state.WithInvokeOnError("spawnFailed")).
+		State("failed").Final().
+		Initial("idle").
+		Transition("idle").On("start").GoTo("spawning").
+		Transition("spawning").On("spawnFailed").GoTo("failed").When("never").
+		Transition("spawning").On("poke").GoTo("spawning").
+		Quench()
+}
+
+// TestRecover_RunsAGuardedSpawnOnce proves a spawn whose onError was refused for a
+// reason other than a context ending, here a guard, is handled: the journal holds
+// the refusal and replay meets it again, so the behavior runs once live and no
+// Recover runs it again, with or without a checkpoint compacting the step.
+func TestRecover_RunsAGuardedSpawnOnce(t *testing.T) {
+	ctx := context.Background()
+	for _, every := range []int{0, 1} {
+		t.Run(fmt.Sprintf("checkpoint every %d", every), func(t *testing.T) {
+			m := guardedSpawnMachine()
+			store, id := durable.NewMemStore(), durable.InstanceID("guarded")
+			var calls int
+			opts := []stepOption{durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+				"spawnChild": failingSpawn(func() { calls++ }),
+			})}
+			if every > 0 {
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+			}
+			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, err = h.Fire(ctx, "start"); err != nil {
+				t.Fatalf("Fire(start): %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("live ran the behavior %d times, want once", calls)
+			}
+			liveState, liveNotes := h.Instance().Current(), fmt.Sprint(h.Instance().Entity().Notes)
+			for round := 1; round <= 2; round++ {
+				recovered, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("Recover %d: %v", round, err)
+				}
+				if calls != 1 {
+					t.Fatalf("Recover %d ran the behavior again: %d calls, want the one live call", round, calls)
+				}
+				if got, notes := recovered.Instance().Current(), fmt.Sprint(recovered.Instance().Entity().Notes); got != liveState || notes != liveNotes {
+					t.Fatalf("Recover %d = %s %s, want the live %s %s", round, got, notes, liveState, liveNotes)
+				}
+				if _, err = recovered.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+				}
+			}
+		})
+	}
+}
+
+// TestRecover_RetriesAGuardedSpawnOnlyWhenAContextRefusedItsOnError proves the
+// context case keeps its retry: a spawn whose onError a context's ending refused
+// was recorded nowhere, so Recover runs the behavior again, and once a live
+// context refuses the onError for the guard's reason instead, the next step
+// journals it and later Recovers leave the behavior alone.
+func TestRecover_RetriesAGuardedSpawnOnlyWhenAContextRefusedItsOnError(t *testing.T) {
+	ctx := context.Background()
+	m := guardedSpawnMachine()
+	store, id := durable.NewMemStore(), durable.InstanceID("guarded-ctx")
+	var calls int
+	// countingSpawn counts each run and runs hook, if any, before failing.
+	countingSpawn := func(hook func()) state.ActorBehavior {
+		return func(map[string]any) (state.ActorInstance, error) {
+			calls++
+			if hook != nil {
+				hook()
+			}
+			return nil, errors.New("the child can't start")
+		}
+	}
+	palette := func(hook func()) stepOption {
+		return durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+			"spawnChild": countingSpawn(hook),
+		})
+	}
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	h, err := durable.NewRunner(m, store, palette(cancel)).Start(turn, id, stepCtx{}, state.WithInitialState("spawning"))
+	if h != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start = Handle %v, %v, want no Handle and context.Canceled", h != nil, err)
+	}
+	if calls != 1 {
+		t.Fatalf("Start ran the behavior %d times, want once", calls)
+	}
+	// Nothing was recorded, so Recover retries the spawn; with a live context the
+	// parent refuses its onError for the guard's reason, which the next step
+	// journals.
+	recovered, err := durable.Recover(ctx, m, store, id, palette(nil))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("Recover ran the behavior %d times, want the retry to make two", calls)
+	}
+	if got := recovered.Instance().Current(); got != "spawning" {
+		t.Fatalf("recovered state = %q, want spawning", got)
+	}
+	if _, err = recovered.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	again, err := durable.Recover(ctx, m, store, id, palette(nil))
+	if err != nil {
+		t.Fatalf("second Recover: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("second Recover ran the behavior again: %d calls, want two", calls)
+	}
+	if got := again.Instance().Current(); got != recovered.Instance().Current() {
+		t.Fatalf("second Recover state = %q, want %q", got, recovered.Instance().Current())
 	}
 }
