@@ -386,7 +386,7 @@ func cloneBytes(b []byte) []byte {
 // json.RawMessage payloads within entries/effects are immutable by convention,
 // so the slice headers are copied without cloning each payload's bytes.
 func cloneRecord(rec Record) Record {
-	out := Record{Step: rec.Step, Tick: rec.Tick, TickSteps: rec.TickSteps}
+	out := Record{Step: rec.Step, Tick: rec.Tick, TickSteps: rec.TickSteps, Format: rec.Format}
 	if rec.Event != nil {
 		out.Event = append([]byte(nil), rec.Event...)
 	}

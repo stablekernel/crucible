@@ -995,7 +995,7 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	// applied, so record nothing: Recover re-arms the timers.
 	// A tick that fired no timer consumed nothing, so an ended ctx can't have cost it
 	// anything: it records as usual.
-	if err := h.consumedCanceled(ctx, len(results) > 0, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
+	if err := consumedCanceled(ctx, len(results) > 0, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
 		return results, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
 
@@ -1142,6 +1142,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 		}
 		rec.Snapshot = env
 	}
+	rec.Format = journalFormat
 	if h.ended.changedBy(ended) {
 		rec.EndedActors = ended
 	}
@@ -1372,9 +1373,6 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	for _, sv := range env.EndedServices {
 		mirror.settle(sv)
 	}
-	// actorArms reports whether the Record replay is at was written by a version that
-	// arms an actor-driven Fire's timers and services.
-	actorArms := env.UnstartedActors != nil
 
 	// ended is the latest recorded set of the declared actors the live run had ended:
 	// the checkpoint's, then each tail Record's that records one. Nil means none was
@@ -1394,8 +1392,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		// The mirror tracks the still-pending timers in armed as replay arms, cancels and
 		// fires them, with deadlines drawn from the recorded clock reads, not the live
 		// wall clock.
-		actorArms = armsActorFires(actorArms, rec)
-		did, err := replayRecord(ctx, inst, &r.cfg, sched, svc, rec, mirror, actorArms)
+		did, err := replayRecord(ctx, inst, &r.cfg, sched, svc, rec, mirror, armsActorFires(rec))
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
@@ -1434,6 +1431,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// remaining delay is the persisted deadline minus the recovery clock's now, so
 	// the re-armed timer fires at its recorded instant — an already-elapsed deadline
 	// arms as immediately due and fires on the next Tick.
+	// A timer the tail canceled stays canceled: its cancel replayed before this re-arm.
+	persistedTimers = slices.DeleteFunc(persistedTimers, func(w pendingTimerWire) bool { return mirror.canceled[w.ID] })
 	reEffects, reSeeded, reErr := reArmEffects(r.cfg.eventCodec, persistedTimers, armed, repClock.Now())
 	if reErr != nil {
 		return nil, fmt.Errorf("durable: re-arming pending timers for %q: %w", id, reErr)
@@ -1736,7 +1735,7 @@ func isContextErr(err error) bool {
 // they consumed can end on it without any Fire reporting it. A refusal with any other
 // cause, such as a failing guard, is deterministic: the step is journaled, and replay
 // meets the same refusal.
-func (h *Handle[S, E, C]) stepCanceled(ctx context.Context, errs ...error) error {
+func stepCanceled(ctx context.Context, errs ...error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1746,9 +1745,9 @@ func (h *Handle[S, E, C]) stepCanceled(ctx context.Context, errs ...error) error
 // consumedCanceled is stepCanceled for a step that consumed something (a timer it
 // fired, a delivery that drove the parent), and refusedByContext for one that didn't,
 // which has nothing an ended ctx could have cost it.
-func (h *Handle[S, E, C]) consumedCanceled(ctx context.Context, consumed bool, errs ...error) error {
+func consumedCanceled(ctx context.Context, consumed bool, errs ...error) error {
 	if consumed {
-		return h.stepCanceled(ctx, errs...)
+		return stepCanceled(ctx, errs...)
 	}
 	return refusedByContext(errs...)
 }
@@ -1786,7 +1785,6 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 // replayed is what replayRecord fired, for a caller that tracks more than the
 // instance: a tick barrier's timer fires, or a plain event's Fire.
 type replayed[S comparable] struct {
-	tick  []state.FireResult[S]
 	fired *state.FireResult[S]
 }
 
@@ -1858,8 +1856,7 @@ func replayRecord[S comparable, E comparable, C any](
 			replayArm(ctx, sched, nil, effects, mirror)
 		}
 	case rec.Tick:
-		out.tick = sched.Tick(ctx)
-		mirrorTick(mirror, sched, out.tick)
+		mirrorTick(mirror, sched, sched.Tick(ctx))
 	}
 	// The rest are a delivery's parent Fires, or the ones a Fire's or settle's absorb
 	// drove after it, such as a spawned actor's onError.
@@ -1896,12 +1893,18 @@ func replayActors[S comparable, E comparable, C any](
 }
 
 // armsActorFires reports whether rec was written by a version that arms the timers and
-// services an actor-driven parent Fire declares, given whether an earlier Record or the
-// checkpoint replay started from was: such a version records the unstarted actors
-// with its first step, and in every checkpoint, when an actor palette is wired.
-func armsActorFires(earlier bool, rec *Record) bool {
-	return earlier || rec.UnstartedActors != nil
+// services an actor-driven parent Fire declares, from the journal Format it records.
+func armsActorFires(rec *Record) bool {
+	return rec.Format >= actorArmsFormat
 }
+
+// journalFormat is the format this version writes in every Record. It is
+// actorArmsFormat, the first that arms the timers and services an actor-driven parent
+// Fire's state declares.
+const (
+	actorArmsFormat = 1
+	journalFormat   = actorArmsFormat
+)
 
 // replayArm arms the timers and services a replayed Fire's effects declare, as the live
 // step's absorb did, reading the clock only when they schedule or cancel a timer, as it
@@ -1926,6 +1929,9 @@ type armMirror struct {
 	armed   map[string]pendingTimer
 	clock   *replayClock
 	settled map[string]bool
+	// canceled holds the timers replay canceled and didn't arm again, so Recover doesn't
+	// re-arm one the checkpoint recorded: the tail's cancel replays before that re-arm.
+	canceled map[string]bool
 }
 
 // settle notes that a replayed settle settled the service id.
@@ -1954,7 +1960,24 @@ func (m *armMirror) arm(effects []state.Effect) {
 	if m == nil {
 		return
 	}
-	mirrorArmed(m.armed, effects, m.clock.lastRead())
+	m.track(effects, m.clock.lastRead())
+}
+
+// track folds a replayed step's timer effects into the table at now, and notes the
+// timers they cancel.
+func (m *armMirror) track(effects []state.Effect, now time.Time) {
+	mirrorArmed(m.armed, effects, now)
+	for _, eff := range effects {
+		switch e := eff.(type) {
+		case state.ScheduleAfter:
+			delete(m.canceled, e.ID)
+		case state.CancelScheduled:
+			if m.canceled == nil {
+				m.canceled = map[string]bool{}
+			}
+			m.canceled[e.ID] = true
+		}
+	}
 }
 
 // mirrorTick arms in m any timer a replayed tick's chained transition scheduled, at the
@@ -1966,7 +1989,7 @@ func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Sc
 	}
 	now := m.clock.lastRead()
 	for i := range results {
-		mirrorArmed(m.armed, results[i].Effects, now)
+		m.track(results[i].Effects, now)
 		m.forget(results[i].Effects)
 	}
 	dropUnscheduled(m.armed, sched)

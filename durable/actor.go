@@ -111,8 +111,9 @@ type actorMessagePayload struct {
 // actor (already settled, stopped, or never spawned), or false and an error when no
 // palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
 // actor ran it returns true with any error. A result that won't encode, a ctx that ended
-// during the delivery, or a parent Fire refused because a context ended (ctx, or one
-// middleware derived from it) returns ErrHandleFailed and records nothing: on a
+// during a delivery that drove a parent Fire, or a parent Fire refused because a context
+// ended (ctx, or one middleware derived from it) returns ErrHandleFailed and records
+// nothing; a delivery that drove no parent Fire records as usual. On a
 // recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
 // actor doesn't return. A failed Append also returns ErrHandleFailed, but the write may
 // have landed anyway, and Recover finds out which. If another goroutine failed the Handle while this step was
@@ -146,7 +147,7 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	// Record nothing.
 	// A delivery that drove no parent Fire changed nothing the journal holds, so an ended
 	// ctx can't have cost it anything.
-	if err := h.consumedCanceled(ctx, len(fires) > 0, parentFireErrs(fires)...); err != nil {
+	if err := consumedCanceled(ctx, len(fires) > 0, parentFireErrs(fires)...); err != nil {
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 
@@ -203,7 +204,7 @@ func (h *Handle[S, E, C]) drainActors() []state.JournalEntry {
 func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) ([]state.JournalEntry, error) {
 	entries := make([]state.JournalEntry, 0, len(fires))
 	for _, pf := range fires {
-		entry, err := actorEntry(pf.ActorID, pf.Result.Trace.EventPayload, pf, before)
+		entry, err := actorEntry(pf, before)
 		if err != nil {
 			return nil, err
 		}
@@ -216,9 +217,9 @@ func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) (
 // whether the live Fire was refused, and, for a Fire that settled an actor, the
 // actor's outcome, which it passed as event data, so replay re-fires the same onDone
 // or onError with it.
-func actorEntry[S comparable](id string, event json.RawMessage, pf state.ParentFire[S], before bool) (state.JournalEntry, error) {
+func actorEntry[S comparable](pf state.ParentFire[S], before bool) (state.JournalEntry, error) {
 	var mp actorMessagePayload
-	mp.Event = append(json.RawMessage(nil), event...)
+	mp.Event = append(json.RawMessage(nil), pf.Result.Trace.EventPayload...)
 	mp.Refused = pf.Result.Err != nil
 	mp.Before = before
 	if pf.Settle {
@@ -239,7 +240,7 @@ func actorEntry[S comparable](id string, event json.RawMessage, pf state.ParentF
 	if err != nil {
 		return state.JournalEntry{}, fmt.Errorf("marshaling actor transition: %w", err)
 	}
-	return state.JournalEntry{Kind: state.JournalActorMessage, CorrelationID: id, Payload: payload}, nil
+	return state.JournalEntry{Kind: state.JournalActorMessage, CorrelationID: pf.ActorID, Payload: payload}, nil
 }
 
 // splitActorEntries returns a Record's actor entries in recorded order, the ones that

@@ -102,12 +102,15 @@ type Record struct {
 	// drove, so Recover spawns it again without letting those reach the parent. It's
 	// recorded as EndedActors is: with the first step after Start, then when a step
 	// changes it, and an empty set is not nil. When the journal holds none, as on a
-	// Record from before this field, Recover lets every spawn reach the parent. Replay
-	// also reads a Record from a journal that has recorded this set, in the checkpoint
-	// or in that Record or one before it, as written by a version that arms the timers and
-	// services an actor-driven parent Fire's state declares, and arms them; it arms none
-	// for an older Record, as the run that wrote it didn't.
+	// Record from before this field, Recover lets every spawn reach the parent.
 	UnstartedActors *ActorSet `json:",omitempty"`
+
+	// Format is the journal format of the durable version that wrote the Record: zero on a
+	// Record from before this field, and 1 from the version that arms the timers and
+	// services an actor-driven parent Fire's state declares. Replay arms them only for a
+	// Record of format 1 or later, since an older run took no clock read for them. A
+	// Store keeps it as it keeps Step.
+	Format int `json:",omitempty"`
 }
 
 // ActorSet is a set of child-machine actor ids at a point in a durable instance's

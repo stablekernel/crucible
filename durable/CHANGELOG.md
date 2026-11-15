@@ -15,6 +15,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **`Record.UnstartedActors`** records the declared actors that aren't running and
   haven't ended, because their spawn failed with no onError, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
+- **`Record.Format`** records the journal format of the version that wrote the Record,
+  which is 1 from this version. Replay arms the timers and services an actor-driven
+  parent Fire's state declares only for a Record of format 1 or later.
+  **For Store authors:** a Store must keep `Format`, `EndedActors` and
+  `UnstartedActors`, and keep an empty set distinct from nil. A Store that drops them, or
+  maps an empty set to nil as an SQL array column or a protobuf repeated field can,
+  makes `Recover` spawn ended actors again, and replay arm nothing for a Record without
+  its `Format`. MemStore and FileStore keep all three.
 
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
@@ -148,8 +156,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   wrapping the error and records nothing. One rule covers them: a step records nothing
   once its context ended by the end of the step, or a Fire it drove was refused with a
   context's error, which catches a context middleware derived from the caller's. A
-  callback that returns its own context error, such as an HTTP client's timeout, counts
-  as a context ending too.
+  guard binding, action or middleware of that Fire that returns its own context error, such as
+  an HTTP client's timeout, counts as a context ending too. A service function's error
+  doesn't: a service that returns one settles through its onError, and the step
+  journals.
   A Fire refused for another reason, such as a failing guard, is still recorded, and
   replay now meets the same refusal instead of failing Recover on it. After `Recover`
   the service stays in flight and must tolerate running again, the timer is re-armed, an
@@ -202,12 +212,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `RunService` reported none, and its timer never fired; a checkpoint then recorded the
   service as settled, so `Recover` didn't start it either. Such a Fire now arms them,
   live, at `Start` and `Recover`, and on replay, as a host `Fire` does. Replay arms them
-  only in a journal this version wrote, which records the unstarted actors: one an
-  older version wrote took no clock read for them, and replays as it did. A service's
+  only for a Record this version wrote, which records its `Format`: an older version
+  took no clock read for them, and its Records replay as they did. A service's
   settle re-arms its state's timers on replay too, and `DeliverToActor` and `RunService`
   now journal the clock reads their step took, so a checkpoint on that step can't leave
   a read for the next to replay. `Recover` re-arms a checkpoint's timers before it
-  spawns the running actors, so a Fire one of theirs drives can cancel one. A `Tick`
+  spawns the running actors, so a Fire one of theirs drives can cancel one. A timer
+  the checkpoint recorded and a later step canceled stays canceled: `Recover` used to
+  re-arm it, since that step's cancel replays before the re-arm. A `Tick`
   drops from the timers a checkpoint records exactly the ones it fired, live and on
   replay: one that came due between its clock reads, and a chained one it armed and
   fired, used to stay, so a `Recover` from a later checkpoint fired it again.

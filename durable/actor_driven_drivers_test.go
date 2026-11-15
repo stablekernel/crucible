@@ -398,7 +398,7 @@ func TestRecover_ReplaysAnOlderJournalsActorFireWithoutArming(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 	for i, rec := range tail {
-		rec.EndedActors, rec.UnstartedActors = nil, nil
+		rec.EndedActors, rec.UnstartedActors, rec.Format = nil, nil, 0
 		if i == 0 {
 			// The older version armed nothing for the onDone, so took no read.
 			var entries []state.JournalEntry

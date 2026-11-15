@@ -138,7 +138,7 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	// The runner has already dropped the service, so this Handle can't run it again;
 	// Recover re-arms it.
 	fires := h.actorFires.take()
-	if err := h.stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
+	if err := stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
 		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
 
