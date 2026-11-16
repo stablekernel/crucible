@@ -99,17 +99,20 @@
 // was compacted out of the tail is re-armed from its persisted deadline rather
 // than lost.
 //
-// Invoked services (WithServiceRegistry): a service (`invoke`) runs exactly once
-// on the live path; its result is journaled as a JournalServiceResult. On
-// recovery the recorded result is replayed back through the same kernel settle
-// seam — the service is never re-invoked and the same onDone or onError event
-// re-fires with the same data.
+// Invoked services (WithServiceRegistry): a service (`invoke`) runs on the live path;
+// its result is journaled as a JournalServiceResult. On recovery the recorded result is
+// replayed back through the same kernel settle seam — that service is never re-invoked
+// and the same onDone or onError event re-fires with the same data. A result that
+// wasn't recorded has nothing to replay, so the service runs again when the host calls
+// RunService.
 //
-// Child-machine actors (WithActorPalette): an actor's behavior runs exactly once
-// on the live path; each parent transition the delivery drives is journaled as a
-// JournalActorMessage. On recovery the recorded transition is re-fired directly
-// through the parent with the recorded done-data — the actor behavior is never
-// re-instantiated.
+// Child-machine actors (WithActorPalette): an actor's behavior runs on the live path;
+// each parent transition the delivery drives is journaled as a JournalActorMessage. On
+// recovery the recorded transition is re-fired directly through the parent with the
+// recorded done-data, so a settled actor never re-runs. Each step records the declared
+// actors that ran and ended, settled or stopped, and Recover doesn't spawn those. An
+// InvokeActor actor still running at recovery restarts from its initial state, because
+// its own state isn't journaled, and a Spawn actor doesn't return.
 //
 // # Idempotent effect dispatch
 //

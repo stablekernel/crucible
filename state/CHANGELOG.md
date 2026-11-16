@@ -13,6 +13,29 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- **`ErrNoTransition`** matches, with `errors.Is`, the `*InvalidTransitionError` a `Fire`
+  returns when the active configuration declares no transition for the event, and no
+  host-built error with the same `Reason`. It's additive, within v1.1.0.
+- **`ActorSystem.WithParentFireObserver`** calls a function with each parent Fire the
+  system drives (a `ParentFire`: its result, refused ones included, the actor it came
+  from, whether it settled that actor, with its output or error, and whether it routed
+  the onError of a spawn that couldn't start), so a host that records a delivery or spawn
+  can tell a parent transition refused because its context ended from one that applied,
+  and which Fire carried the actor's output. It's additive, within v1.1.0.
+- **`Scheduler.Due`** reports when a pending timer is due, so a host that keeps its own
+  record of armed timers' deadlines, as `durable` does for a checkpoint, reads the one
+  the scheduler holds rather than working it out from a clock read of its own. It's
+  additive, within v1.1.0.
+- **`ActorSystem.AbsorbRespawn`** is `Absorb` for actors a host spawns again after
+  rebuilding the parent from a record that already holds every parent Fire their
+  earlier start drove: an actor it spawns starts as under `Absorb`, but its start
+  doesn't reach the parent, neither a message sent to the parent nor the onDone or
+  onError of a nested actor it spawns. The onError of a respawn that can't start, and
+  the onDone or onError of a respawned actor that settles as the others start, still
+  fire the parent, since that actor was running. A nested actor's failure with no
+  onError doesn't escalate again, since its start already escalated it; a respawned
+  actor's own failure with no onError does. The durable runner's `Recover` uses it for
+  the actors that were running. It's additive, within v1.1.0.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
@@ -42,6 +65,13 @@ counts as an additive (minor) versus breaking (major) change. Use the
   transitions alike. A Fire whose context ended while its eventless
   transitions' guards ran now fails, whether or not one was chosen, where it could
   succeed before.
+
+### Fixed
+
+- **`AbsorbRespawn` quiets only the actors it spawns.** Its quiet was one flag for the
+  whole system, so a message another goroutine's delivery sent the parent while it ran
+  was dropped. The quiet now rides the call chain that spawns each actor, and ends when
+  `AbsorbRespawn` returns.
 
 ## [1.0.0] — 2026-06-13
 

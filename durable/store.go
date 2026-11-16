@@ -83,6 +83,47 @@ type Record struct {
 	// (zero for a tick that found nothing due). It lets replay advance its step
 	// accounting across a re-derived tick without a recorded Event per timer.
 	TickSteps int
+
+	// EndedActors, when set, holds the child-machine actors the instance's state
+	// declared once this step ended that ran and have ended, settled or stopped, or
+	// whose spawn failed and whose onError applied, or was refused for a reason
+	// other than a context ending (the journal holds that onError, or the refusal
+	// replay meets again), so Recover doesn't spawn them again. An actor whose spawn
+	// failed with no onError declared isn't one, and
+	// neither is one whose onError a context's ending refused, since the step that
+	// drove it records nothing: Recover tries both again. The first step after Start records the
+	// set, and later steps record it when they change it. It is nil otherwise, for a
+	// machine with no actor palette, and on a Record from before this field. An empty
+	// set is not nil: a Store must keep it, though it treats other empty fields as nil.
+	EndedActors *ActorSet `json:",omitempty"`
+
+	// UnstartedActors, when set, holds the child-machine actors the instance's state
+	// declared once this step ended that aren't running and haven't ended: their latest
+	// spawn failed with no onError declared, or its onError was refused because a
+	// context ended, which
+	// left the step that drove it recording nothing. Recover
+	// spawns them as new, so the messages they send the parent as they start apply and
+	// are journaled. A declared actor in neither set was running, or a Recover's respawn
+	// of it failed, and the journal holds every parent Fire its start drove, so Recover
+	// spawns it again without letting those reach the parent. It's
+	// recorded as EndedActors is: with the first step after Start, then when a step
+	// changes it, and an empty set is not nil. When the journal holds none, as on a
+	// Record from before this field, Recover lets every spawn reach the parent.
+	UnstartedActors *ActorSet `json:",omitempty"`
+
+	// Format is the journal format of the durable version that wrote the Record: zero on a
+	// Record from before this field, and 1 from the version that arms the timers and
+	// services an actor-driven parent Fire's state declares. Replay arms them only for a
+	// Record of format 1 or later, since an older run took no clock read for them. A
+	// Store keeps it as it keeps Step.
+	Format int `json:",omitempty"`
+}
+
+// ActorSet is a set of child-machine actor ids at a point in a durable instance's
+// journal.
+type ActorSet struct {
+	// IDs are the actors' ids, sorted.
+	IDs []string `json:"ids"`
 }
 
 // followingStep returns the step ordinal after r. A tick barrier consumes one
@@ -118,7 +159,9 @@ func (r *Record) followingStep() int {
 // already-checkpointed Step is still recognized rather than rejected as out of
 // order, and a different Record there is still a conflict. Two Records are the
 // same when every field matches, with a nil and an empty field counting as equal,
-// except EventDataError, where nil means no error and an empty message is an error.
+// except EventDataError, where nil means no error and an empty message is an error,
+// and EndedActors and UnstartedActors, where nil means none recorded and an empty set
+// means none.
 // An Append carrying WithIdempotencyKey (a backend reads it with
 // AppendIdempotencyKey) dedups on that key alone, so the caller vouches for the
 // Record: no comparison is made. Keys starting "step:" are reserved for the Store's

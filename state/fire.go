@@ -604,13 +604,7 @@ func microstepOverflow[S comparable](res FireResult[S], state S) FireResult[S] {
 
 // isNoTransition reports whether err is the "no transition declared" outcome —
 // the benign result of a raised event the current configuration does not handle.
-func isNoTransition(err error) bool {
-	var it *InvalidTransitionError
-	if as(err, &it) {
-		return it.Reason == "no transition declared for this state and event"
-	}
-	return false
-}
+func isNoTransition(err error) bool { return errors.Is(err, ErrNoTransition) }
 
 // fireOnce is the pure single-event transition step. It resolves the event
 // against the active configuration child-first, bubbling up through ancestors,
@@ -750,11 +744,7 @@ func (i *Instance[S, E, C]) fireSpine(ctx context.Context, event E, tr Trace) Fi
 		return FireResult[S]{NewState: from, Trace: tr, Err: lastGuardErr}
 	}
 
-	err := &InvalidTransitionError{
-		From:   fmtState(from),
-		Event:  fmt.Sprint(event),
-		Reason: "no transition declared for this state and event",
-	}
+	err := newNoTransitionError(fmtState(from), fmt.Sprint(event))
 	return FireResult[S]{NewState: from, Trace: tr, Err: err}
 }
 

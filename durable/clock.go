@@ -125,6 +125,7 @@ type replayClock struct {
 	readings []int64
 	cursor   int
 	fallback state.Clock
+	last     time.Time // the reading Now last returned
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
@@ -139,11 +140,20 @@ func (c *replayClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cursor < len(c.readings) {
-		t := time.Unix(0, c.readings[c.cursor]).UTC()
+		c.last = time.Unix(0, c.readings[c.cursor]).UTC()
 		c.cursor++
-		return t
+		return c.last
 	}
-	return c.fallback.Now()
+	c.last = c.fallback.Now()
+	return c.last
+}
+
+// lastRead returns the reading Now last returned: the instant a replayed timer arming
+// or tick computed its deadlines against.
+func (c *replayClock) lastRead() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
 }
 
 // After delegates to the fallback clock; replay drives elapses through Now + Tick

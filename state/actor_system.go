@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // This file ships the reusable host-driver harness for the actor model. The
@@ -155,6 +156,10 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// never silently swallowed. Read through LastEscalation.
 	lastEscalation *ActorEscalation
 
+	// parentFireObserver, when set, is called with each parent Fire the system
+	// drives. Set with WithParentFireObserver; guarded by mu.
+	parentFireObserver func(ParentFire[S])
+
 	// escalationHandler is the optional host policy invoked for each escalation. It
 	// is nil by default — the default escalation behavior (record + inspect) needs no
 	// handler — and wired with WithEscalationHandler.
@@ -290,6 +295,94 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 	s.absorb(ctx, effects, event)
 }
 
+// AbsorbRespawn is Absorb for actors a host spawns again after rebuilding the parent
+// from a record that already holds every parent Fire their earlier start drove, as the
+// durable runner's Recover does for the actors that were running. Each actor it spawns
+// starts as under Absorb, but its start doesn't reach the parent again: no message it,
+// or an actor it sends to or spawns, sends the parent while it starts, and no onDone or
+// onError of a nested actor its start spawns, fires the parent. Such a Fire is dropped,
+// so WithParentFireObserver doesn't see it. What the earlier start can't have driven
+// still fires the parent, since each actor in effects was running: the onError of one
+// whose spawn fails now, and the onDone or onError of one that settles as the others
+// start. A nested actor's failure with no onError doesn't escalate again either, while
+// one in effects that fails now does. The effects such a Fire drives absorb as under
+// Absorb: an actor its state spawns, or one it sends to, reaches the parent. Its other
+// effects absorb as under Absorb. The quiet rides the call chain that spawns each actor,
+// so a delivery another goroutine makes while AbsorbRespawn runs reaches the parent as
+// usual, and it ends when AbsorbRespawn returns.
+func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
+	respawned := map[string]bool{}
+	for _, eff := range effects {
+		if e, ok := eff.(SpawnActor); ok {
+			respawned[e.ID] = true
+		}
+	}
+	q := &respawnQuiet{respawned: respawned}
+	// The quiet ends with AbsorbRespawn, even for a context an actor's behavior kept.
+	defer q.ended.Store(true)
+	for _, eff := range effects {
+		if e, ok := eff.(SpawnActor); ok {
+			s.respawnOne(ctx, q, e)
+			continue
+		}
+		s.absorb(ctx, []Effect{eff}, nil)
+	}
+}
+
+// respawnQuiet is the quiet of one AbsorbRespawn: it rides the context of the call
+// chain that spawns each actor, so only that chain's messages to the parent are dropped,
+// and a delivery another goroutine makes meanwhile is heard.
+type respawnQuiet struct {
+	// respawned holds the ids of the actors AbsorbRespawn was given, whose failed spawn
+	// or settle fires the parent even while it's quiet.
+	respawned map[string]bool
+	// ended is set when AbsorbRespawn returns, ending the quiet.
+	ended atomic.Bool
+}
+
+// quietKey is the context key a respawnQuiet rides under.
+type quietKey struct{}
+
+// quietOf returns the quiet ctx carries, or nil when ctx carries none or AbsorbRespawn
+// has returned.
+func quietOf(ctx context.Context) *respawnQuiet {
+	q, _ := ctx.Value(quietKey{}).(*respawnQuiet)
+	if q == nil || q.ended.Load() {
+		return nil
+	}
+	return q
+}
+
+// heard returns ctx with the quiet lifted, for a parent Fire that's new and so is all
+// it drives.
+func heard(ctx context.Context) context.Context {
+	if quietOf(ctx) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, quietKey{}, (*respawnQuiet)(nil))
+}
+
+// respawnOne spawns e with the parent quiet on its call chain, so its start doesn't
+// reach the parent.
+func (s *ActorSystem[S, E, C]) respawnOne(ctx context.Context, q *respawnQuiet, e SpawnActor) {
+	s.spawn(context.WithValue(ctx, quietKey{}, q), e)
+}
+
+// hearing reports how a parent Fire for actor id's failed spawn or settle goes on ctx's
+// call chain: dropped, when it's part of the start AbsorbRespawn is repeating, or fired
+// with the parent heard again, when id is an actor AbsorbRespawn was given, which was
+// running, so the Fire is new and so is all it drives.
+func hearing(ctx context.Context, id string) (drop, lift bool) {
+	q := quietOf(ctx)
+	if q == nil {
+		return false, false
+	}
+	if q.respawned[id] {
+		return false, true
+	}
+	return true, false
+}
+
 // absorb scans effects emitted by the parent instance while handling curEvent,
 // spawning/stopping actors and routing the parent's outbound messages (the parent
 // is the sender). curEvent is nil for the plain Absorb path (a parent ForwardEvent
@@ -381,12 +474,22 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 // failure escalates to the parent as a typed ActorEscalation rather than being
 // silently swallowed (the G3 default), so a spawn that cannot start is never lost.
 func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
+	drop, lift := hearing(ctx, e.ID)
+	// A failure the start AbsorbRespawn is repeating was routed or escalated when it
+	// first happened.
+	if drop {
+		return
+	}
 	ev, ok := e.OnError.(E)
 	if !ok {
 		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}
+	if lift {
+		ctx = heard(ctx)
+	}
 	res := s.parent.Fire(ctx, ev)
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -642,6 +745,9 @@ func (s *ActorSystem[S, E, C]) resolveTarget(targetID, systemID string) (string,
 // drains it. This is the single path every routed message flows through, so parent
 // and child delivery share their sender bookkeeping.
 func (s *ActorSystem[S, E, C]) dispatch(ctx context.Context, targetID string, event any, senderID string) {
+	if targetID == parentActorID && quietOf(ctx) != nil {
+		return
+	}
 	s.inspectMessage(senderID, targetID, MessageSent, event)
 	if targetID == parentActorID {
 		s.fireParentFrom(ctx, event, senderID)
@@ -668,6 +774,7 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 	s.mu.Unlock()
 
 	res := s.parent.Fire(ctx, ev)
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: senderID})
 	s.Absorb(ctx, res.Effects)
 
 	s.mu.Lock()
@@ -703,6 +810,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	}
 	s.lastOutcome = actorOutcome{output: output, err: err, set: true}
 	s.mu.Unlock()
+	drop, lift := hearing(ctx, id)
 
 	// A completed actor's children are torn down with it.
 	for _, c := range children {
@@ -712,11 +820,18 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		// G3 default: an unhandled child FAILURE (no onError wired) escalates to the
 		// parent as a typed, observable ActorEscalation rather than being silently
 		// swallowed. A clean completion with no onDone is still a fire-and-forget
-		// no-op — only a failure escalates.
-		if err != nil {
+		// no-op — only a failure escalates. A failure the start AbsorbRespawn is
+		// repeating escalated when it first happened.
+		if err != nil && !drop {
 			s.escalate(ctx, ra, parentID, err)
 		}
 		return FireResult[S]{}, false
+	}
+	if drop {
+		return FireResult[S]{}, false
+	}
+	if lift {
+		ctx = heard(ctx)
 	}
 	// Deliver the child's output/error to the parent's onDone/onError transition's
 	// Assign through the done-event payload (AssignCtx.Event), not a side channel:
@@ -729,6 +844,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		payload = output
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: id, Settle: true, Output: output, Err: err})
 	s.Absorb(ctx, res.Effects)
 	return res, true
 }
@@ -787,4 +903,54 @@ func (s *ActorSystem[S, E, C]) LastError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastOutcome.err
+}
+
+// ParentFire is one parent Fire an ActorSystem drove, as WithParentFireObserver
+// reports it.
+type ParentFire[S comparable] struct {
+	// Result is the parent Fire's result. A refused Fire carries its error.
+	Result FireResult[S]
+	// ActorID is the actor the Fire came from: the one that settled, sent the message,
+	// or couldn't start.
+	ActorID string
+	// SpawnFailed reports that the Fire routed the onError of a spawn that couldn't
+	// start (an unbound Src, or a behavior that returned an error).
+	SpawnFailed bool
+	// Settle reports that the Fire routed a settled actor's onDone or onError, which
+	// carried the actor's outcome as its event data (WithEventData): Err for an onError,
+	// Output for an onDone. A message the actor sent the parent, or the onError of a
+	// spawn that couldn't start, carries none.
+	Settle bool
+	// Output is the settled actor's output, when Settle is set and Err is nil.
+	Output any
+	// Err is the settled actor's failure, when Settle is set and it failed.
+	Err error
+}
+
+// WithParentFireObserver calls observe with each parent Fire the system drives (an
+// actor's onDone or onError, a message it sends the parent, a failed spawn's
+// onError), in fire order, refused ones included, after the Fire returns and before
+// its effects are absorbed. A host that records what a delivery or spawn drove uses
+// it: a parent Fire refused because the context it ran under ended reports that
+// context's error, so the host can tell a refusal it can't replay from one it can,
+// and Settle, Output and Err say which Fire carried an actor's outcome, and what it
+// was. observe runs on the goroutine that drove the Fire, with no lock of the system's
+// held, so it may read the system but must not drive it. Calls from Fires driven on
+// different goroutines can overlap, so observe must be safe for concurrent use.
+// Setting it returns the system for chaining.
+func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S])) *ActorSystem[S, E, C] {
+	s.mu.Lock()
+	s.parentFireObserver = observe
+	s.mu.Unlock()
+	return s
+}
+
+// noteParentFire hands a parent Fire to the observer, if one is set.
+func (s *ActorSystem[S, E, C]) noteParentFire(pf ParentFire[S]) {
+	s.mu.Lock()
+	observe := s.parentFireObserver
+	s.mu.Unlock()
+	if observe != nil {
+		observe(pf)
+	}
 }

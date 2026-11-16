@@ -2,6 +2,7 @@ package durable_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -702,5 +703,145 @@ func TestActor_Determinism(t *testing.T) {
 	s2, _, _ := liveSupervisorRun(t, &r2)
 	if string(s1) != string(s2) {
 		t.Fatalf("two live runs diverged:\n run1=%s\n run2=%s", s1, s2)
+	}
+}
+
+// TestDeliverToActor_ContextEndedPartway_RecordsNothing proves a delivery whose context
+// ended records nothing, so every later Recover still works.
+func TestDeliverToActor_ContextEndedPartway_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	m := supervisorMachine()
+	store := durable.NewMemStore()
+	id := durable.InstanceID("sup-cancel")
+	turn, cancel := context.WithCancel(ctx)
+	defer cancel()
+	behavior := func(map[string]any) (state.ActorInstance, error) {
+		child := state.ForgeFor[actorCtx]("child").
+			State("working").
+			State("done").Final().
+			Initial("working").
+			Transition("working").On("finish").GoTo("done").
+			Quench()
+		inst := child.Cast(actorCtx{}, state.WithInitialState[string]("working"))
+		return state.NewActor(inst, func(*state.Instance[string, string, actorCtx]) any {
+			cancel() // the turn ends after the child finishes, before the parent settles
+			return "late"
+		}), nil
+	}
+	opts := []durable.Option[string, string, actorCtx]{
+		durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{"spawnChild": behavior}),
+	}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for spawned child")
+	}
+	before := tailLen(t, store, id)
+	if _, err = h.DeliverToActor(turn, ref, "finish"); !errors.Is(err, durable.ErrHandleFailed) {
+		t.Fatalf("DeliverToActor = %v, want ErrHandleFailed", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "supervising" {
+		t.Fatalf("recovered state %q, want supervising: the canceled delivery was committed", got)
+	}
+}
+
+// supervisorUsing is supervisorMachine with mw installed and, if refuseDone, a
+// childDone transition whose guard always fails.
+func supervisorUsing(mw state.Middleware[string, string, actorCtx], refuseDone bool) *state.Machine[string, string, actorCtx] {
+	b := state.ForgeFor[actorCtx]("supervisor").
+		Guard("never", func(state.GuardCtx[actorCtx]) bool { return false }).
+		Actor("spawnChild").
+		State("supervising").InvokeActor("spawnChild", state.WithInvokeOnDone("childDone"), state.WithInvokeOnError("childFail")).
+		State("complete").Final().
+		State("failed").Final().
+		Initial("supervising")
+	if mw != nil {
+		b = b.Use(mw)
+	}
+	t := b.Transition("supervising").On("childDone").GoTo("complete")
+	if refuseDone {
+		t = t.When("never")
+	}
+	return t.Transition("supervising").On("childFail").GoTo("failed").Quench()
+}
+
+// TestDeliverToActor_RefusedByADerivedContext_RecordsNothing proves a delivery whose
+// parent Fire is refused because a context middleware derived from the caller's ended,
+// while the caller's is still live, fails the Handle and records nothing.
+func TestDeliverToActor_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	cancelOnDone := func(next state.FireFunc[string, string, actorCtx]) state.FireFunc[string, string, actorCtx] {
+		return func(ctx context.Context, event string) state.FireResult[string] {
+			if event == "childDone" {
+				derived, cancel := context.WithCancel(ctx)
+				cancel()
+				return next(derived, event)
+			}
+			return next(ctx, event)
+		}
+	}
+	m := supervisorUsing(cancelOnDone, false)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("sup-derived")
+	var runs int64
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for spawned child")
+	}
+	before := tailLen(t, store, id)
+	if _, err = h.DeliverToActor(ctx, ref, "finish"); !errors.Is(err, durable.ErrHandleFailed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("DeliverToActor = %v, want ErrHandleFailed wrapping context.Canceled", err)
+	}
+	if after := tailLen(t, store, id); after != before {
+		t.Fatalf("journal grew from %d to %d records, want nothing recorded", before, after)
+	}
+}
+
+// TestDeliverToActor_DeterministicRefusal_Recovers proves a parent Fire refused for a
+// reason replay meets again (a guard that fails) is journaled, and Recover replays it
+// to the live state instead of failing on the refusal.
+func TestDeliverToActor_DeterministicRefusal_Recovers(t *testing.T) {
+	ctx := context.Background()
+	m := supervisorUsing(nil, true)
+	store := durable.NewMemStore()
+	id := durable.InstanceID("sup-refused")
+	var runs int64
+	opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](counterPalette(&runs))}
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ref, ok := h.ActorRef(state.ActorID("supervisor", "supervising", 0))
+	if !ok {
+		t.Fatal("no actor ref for spawned child")
+	}
+	before := tailLen(t, store, id)
+	if _, err = h.DeliverToActor(ctx, ref, "finish"); err != nil {
+		t.Fatalf("DeliverToActor: %v", err)
+	}
+	if after := tailLen(t, store, id); after != before+1 {
+		t.Fatalf("journal grew from %d to %d records, want one", before, after)
+	}
+	recovered, err := durable.Recover(ctx, m, store, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if live, got := h.Instance().Current(), recovered.Instance().Current(); got != live || live != "supervising" {
+		t.Fatalf("recovered %q, live %q, want both supervising", got, live)
 	}
 }

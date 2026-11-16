@@ -159,10 +159,11 @@ func quoteMachine(fn state.ServiceFn[*quoteCtx]) *state.Machine[string, string, 
 }
 
 // ExampleHandle_RunService shows the invoked-service record/replay seam: a pricing
-// service runs exactly once on the live path (its returned quote recorded), and on
+// service runs once on the live path (its returned quote recorded), and on
 // recovery the recorded quote is replayed back through the same settle seam without
 // re-invoking the service — so the recovered instance reaches the same state and
-// context, and the service's call count never advances past one.
+// context, and the service's call count never advances past one. (A turn whose
+// context ends partway records nothing, and a recovered Handle runs it again.)
 func ExampleHandle_RunService() {
 	ctx := context.Background()
 	var calls int
@@ -232,10 +233,11 @@ func fulfillmentMachine() *state.Machine[string, string, *fulfillmentCtx] {
 }
 
 // ExampleHandle_DeliverToActor shows the actor record/replay seam: a child shipping
-// actor runs exactly once on the live path (its done-data recorded), and on recovery
+// actor runs once on the live path (its done-data recorded), and on recovery
 // the recorded done-data is replayed back through the same parent onDone without
 // re-running the actor — so the recovered instance reaches the same state and
-// context, and the actor's run count never advances past one.
+// context, and the actor's run count never advances past one. (A delivery whose
+// context ends partway records nothing, and a recovered Handle restarts the actor.)
 func ExampleHandle_DeliverToActor() {
 	ctx := context.Background()
 	var runs int

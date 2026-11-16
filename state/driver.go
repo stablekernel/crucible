@@ -105,6 +105,17 @@ func (s *Scheduler[S, E, C]) HasPending(id string) bool {
 	return ok
 }
 
+// Due reports when the pending timer id is due, and false when no timer is pending
+// under id. A host that keeps its own record of armed timers' deadlines, as a durable
+// runtime does for a checkpoint, reads it after Absorb or Tick, rather than working the
+// deadline out from a clock reading of its own.
+func (s *Scheduler[S, E, C]) Due(id string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pending[id]
+	return p.due, ok
+}
+
 // Tick fires every timer whose due time is at or before the Scheduler clock's
 // current time, in due-time order (ties broken by id for determinism). Each due
 // timer is removed, then its delayed event is fired through the instance and the
