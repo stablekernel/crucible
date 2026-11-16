@@ -159,6 +159,25 @@ func (c *replayClock) Now() time.Time {
 	return c.last
 }
 
+// mark returns how many recorded readings Now has handed out, so a caller can find
+// the readings a step took after it.
+func (c *replayClock) mark() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cursor
+}
+
+// readingAt returns the recorded reading at index i, ok false when Now hasn't handed it
+// out, or the recorded readings ran out before it.
+func (c *replayClock) readingAt(i int) (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < 0 || i >= c.cursor || i >= len(c.readings) {
+		return time.Time{}, false
+	}
+	return time.Unix(0, c.readings[i]).UTC(), true
+}
+
 // lastRead returns the reading Now last returned: the instant a replayed timer arming
 // or tick computed its deadlines against.
 func (c *replayClock) lastRead() time.Time {

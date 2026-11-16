@@ -995,6 +995,16 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	mark := h.recClock.markBuf()
 	results := h.sched.Tick(h.stepContext(ctx))
 	now, haveNow := h.recClock.lastReadingSince(mark)
+	// Each fired timer's chained timers were armed at its absorb read (tickArmRead);
+	// take those reads now, before the Record drains the buffer.
+	armAt := make([]time.Time, len(results))
+	for i := range results {
+		at, ok := h.recClock.armReadingAt(mark + tickArmRead(i))
+		if !ok {
+			at = now
+		}
+		armAt[i] = at
+	}
 	// A context that ended partway can make the kernel refuse a due timer's Fire after
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
 	// applied, so record nothing: Recover re-arms the timers.
@@ -1009,11 +1019,11 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	// Reconcile the Handle's timer table with the tick: arm any timer a chained
 	// transition scheduled, then drop the ones the tick fired, by id, so a checkpoint
 	// after the tick persists exactly the still-pending deadlines. A chained timer's
-	// deadline counts from the tick's last read, as replay's does (a SystemClock's
-	// intra-tick drift is sub-timer).
+	// deadline counts from the read the scheduler armed it at (tickArmRead), as
+	// replay's does.
 	if haveNow {
 		for i := range results {
-			h.armTimersFrom(results[i].Effects, now)
+			h.armTimersFrom(results[i].Effects, armAt[i])
 			forgetSettled(h.settled, results[i].Effects)
 		}
 		h.dropFiredTimers()
@@ -1862,7 +1872,11 @@ func replayRecord[S comparable, E comparable, C any](
 			replayArm(ctx, sched, nil, effects, mirror)
 		}
 	case rec.Tick:
-		mirrorTick(mirror, sched, sched.Tick(ctx))
+		var mark int
+		if mirror != nil {
+			mark = mirror.clock.mark()
+		}
+		mirrorTick(mirror, sched, sched.Tick(ctx), mark)
 	}
 	// The rest are a delivery's parent Fires, or the ones a Fire's or settle's absorb
 	// drove after it, such as a spawned actor's onError.
@@ -1969,14 +1983,25 @@ func (m *armMirror) arm(effects []state.Effect) {
 // mirrorTick arms in m any timer a replayed tick's chained transition scheduled, at the
 // tick's last read, as the live Tick does, then drops the timers the tick fired: the ones
 // sched no longer holds.
-func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Scheduler[S, E, C], results []state.FireResult[S]) {
+func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Scheduler[S, E, C], results []state.FireResult[S], mark int) {
 	if m == nil {
 		return
 	}
 	now := m.clock.lastRead()
 	for i := range results {
-		mirrorArmed(m.armed, results[i].Effects, now)
+		at, ok := m.clock.readingAt(mark + tickArmRead(i))
+		if !ok {
+			at = now
+		}
+		mirrorArmed(m.armed, results[i].Effects, at)
 		m.forget(results[i].Effects)
 	}
 	dropUnscheduled(m.armed, sched)
 }
+
+// tickArmRead is the index, past the tick's first read, of the clock read the
+// scheduler armed the timers of the i-th timer a Tick fired at: Scheduler.Tick reads
+// the clock to find each due timer, fires it, and reads again to absorb its effects,
+// so the i-th fire's absorb read is the (2i+1)th. state pins that order
+// (TestScheduler_Tick_ReadsTheClockOncePerCheckAndAbsorb).
+func tickArmRead(i int) int { return 2*i + 1 }
