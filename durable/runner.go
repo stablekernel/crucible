@@ -719,13 +719,14 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
-	// A spawn whose declared onError applied, or was refused for a reason other than
-	// a context ending, such as a failing guard, is handled: the journal holds the
-	// onError or its refusal, and a retry would run the behavior again. One a context's
-	// ending refused isn't: the step that drove it recorded nothing. Nor is one that
-	// declared no onError (NoOnError), whose zero event the parent refuses: nothing
-	// caught the failure, so a retry is right.
-	if pf.SpawnFailed && !pf.NoOnError && (pf.Result.Err == nil || !isContextErr(pf.Result.Err)) {
+	// A spawn whose onError Fire applied is handled: the journal holds it, and a retry
+	// would run the behavior and apply it again. That holds for the zero event a spawn
+	// with no onError declared routes, when the parent handles it. A declared onError
+	// refused for a reason other than a context ending, such as a failing guard, is
+	// handled too: the journal holds the refusal. One a context's ending refused isn't:
+	// the step that drove it recorded nothing. Nor is a refused zero event (NoOnError):
+	// nothing caught the failure, so a retry is right.
+	if pf.SpawnFailed && (pf.Result.Err == nil || (!pf.NoOnError && !isContextErr(pf.Result.Err))) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
