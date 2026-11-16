@@ -446,7 +446,9 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 		ra.onDone = d
 		ra.hasDone = true
 	}
-	if er, ok := e.OnError.(E); ok {
+	// An invoked actor that declared no onError carries the zero event; its failure
+	// escalates, as a spawned actor's with none does (G3).
+	if er, ok := e.OnError.(E); ok && !e.NoOnError {
 		ra.onError = er
 		ra.hasError = true
 	}
@@ -481,7 +483,9 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	ev, ok := e.OnError.(E)
-	if !ok {
+	// An invoked actor with no onError declared carries the zero event in OnError; it
+	// escalates, as a spawn with none does (G3), rather than firing that event.
+	if !ok || e.NoOnError {
 		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}
@@ -490,7 +494,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		defer s.setQuiet(prev)
 	}
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true, NoOnError: e.NoOnError})
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -918,11 +922,6 @@ type ParentFire[S comparable] struct {
 	// SpawnFailed reports that the Fire routed the onError of a spawn that couldn't
 	// start (an unbound Src, or a behavior that returned an error).
 	SpawnFailed bool
-	// NoOnError reports, with SpawnFailed, that the spawn declared no onError: the Fire
-	// carried the zero event an invoked actor with no WithInvokeOnError routes (see
-	// SpawnActor.NoOnError), so its refusal says nothing was declared to catch the
-	// failure, not that a declared onError was refused.
-	NoOnError bool
 	// Settle reports that the Fire routed a settled actor's onDone or onError, which
 	// carried the actor's outcome as its event data (WithEventData): Err for an onError,
 	// Output for an onDone. A message the actor sent the parent, or the onError of a

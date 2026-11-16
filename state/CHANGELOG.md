@@ -19,14 +19,11 @@ counts as an additive (minor) versus breaking (major) change. Use the
   the onError of a spawn that couldn't start), so a host that records a delivery or spawn
   can tell a parent transition refused because its context ended from one that applied,
   and which Fire carried the actor's output. It's additive, within v1.1.0.
-- **`SpawnActor.NoOnError` and `ParentFire.NoOnError`** report that an invoked actor
-  declared no onError. Such an actor's `OnError` holds the zero event, which the system
-  still fires at the parent when the actor can't start, as before, so its refusal looks
-  like a declared onError the parent refused. The flags tell them apart without
-  matching the refusal's reason. An onError that is itself the zero event, such as the
-  first constant of an `iota` enum, counts as declared when the machine was built with
-  `WithInvokeOnError`; an invocation loaded from JSON counts one as declared only when
-  it isn't the zero event. It's additive, within v1.1.0.
+- **`SpawnActor.NoOnError`** reports that an invoked actor declared no onError, so its
+  `OnError` holds only the zero event. An onError that is itself the zero event, such as
+  the first constant of an `iota` enum, counts as declared when the machine was built
+  with `WithInvokeOnError`; an invocation loaded from JSON counts one as declared only
+  when it isn't the zero event. It's additive, within v1.1.0.
 - **`ActorSystem.AbsorbRespawn`** is `Absorb` for actors a host spawns again after
   rebuilding the parent from a record that already holds every parent Fire their
   earlier start drove: an actor it spawns starts as under `Absorb`, but its start
@@ -69,6 +66,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Fixed
 
+- **An invoked actor with no onError escalates its failure.** When an `InvokeActor`
+  actor with no `WithInvokeOnError` couldn't start, or failed after it ran, the actor
+  system fired the zero event at the parent, which a wildcard or a transition on that
+  event could take as if an onError had been declared. It now escalates, as a `Spawn`
+  with no onError always has (the G3 default), and fires nothing. A machine that relied
+  on that zero-event Fire changes behavior.
 - **`StartEffects` includes a compound state's invokes.** It looked only at the active
   leaves, so a service or actor declared on a compound state wasn't started while one of
   its children was active: not at a durable `Start` or `Recover`, and not for a child

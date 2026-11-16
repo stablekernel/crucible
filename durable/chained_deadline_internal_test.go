@@ -157,3 +157,24 @@ func TestTick_RecordsEachChainedDeadlineInATwoTimerTick(t *testing.T) {
 		}
 	}
 }
+
+// TestTickArmReads_FailsOnAMissingRead pins that Tick and its replay fail, rather than
+// fall back to another read, when a fired timer's arming read is missing: the
+// scheduler's order of reads changed, and any other deadline would be wrong.
+func TestTickArmReads_FailsOnAMissingRead(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reads := []time.Time{base, base.Add(time.Millisecond), base.Add(2 * time.Millisecond)}
+	reading := func(i int) (time.Time, bool) {
+		if i < 0 || i >= len(reads) {
+			return time.Time{}, false
+		}
+		return reads[i], true
+	}
+	got, err := tickArmReads(reading, 0, 1)
+	if err != nil || len(got) != 1 || !got[0].Equal(reads[1]) {
+		t.Fatalf("one fired timer = %v, %v; want the absorb read %v", got, err, reads[1])
+	}
+	if _, err := tickArmReads(reading, 0, 2); err == nil {
+		t.Fatal("two fired timers with three reads: want an error for the second timer's missing arming read")
+	}
+}

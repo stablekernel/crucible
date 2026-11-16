@@ -148,10 +148,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   persisted the later deadline, so after `Recover` the timer fired late, and the drift
   grew along an `after` chain. `Tick` and its replay now take each fired timer's absorb
   read, and `state` pins the order of reads a `Tick` takes.
-- **A spawn whose zero-event onError applied isn't retried.** A spawn that failed with no
-  onError declared counted as uncaught even when the parent handled the zero event it
-  routes, so `Recover` ran the behavior again. An onError Fire that applied now always
-  counts as caught.
 - **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
   and `DeliverToActor` now advance the next step as soon as the append lands.
 - **A deferred checkpoint survives an unrelated caller's cancel.** A checkpoint that

@@ -87,10 +87,10 @@ type SpawnActor struct {
 	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name rather than by ref. Empty when unset.
 	SystemID string `json:"systemId,omitempty"`
-	// NoOnError reports that an invoked actor declared no onError, so OnError holds the
-	// zero event, which the system still fires at the parent when the actor can't start.
-	// A host that must tell a refused onError from an absent one reads it. A dynamic
-	// spawn with no onError leaves OnError nil instead, and escalates.
+	// NoOnError reports that an invoked actor declared no onError, so OnError holds only
+	// the zero event. The actor system then escalates the actor's failure, to start or
+	// after it ran, as it does for a dynamic spawn with no onError, which leaves OnError
+	// nil, rather than firing the zero event at the parent.
 	NoOnError bool `json:"noOnError,omitempty"`
 }
 

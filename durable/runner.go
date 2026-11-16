@@ -431,10 +431,10 @@ func (h *Handle[S, E, C]) armNow(before int) time.Time {
 }
 
 // armTimersFrom mirrors the ScheduleAfter/CancelScheduled effects a chained timer
-// transition emitted into the Handle's timer table at the tick instant now, so a
-// timer a fired transition re-armed (the next link in an `after` chain) is tracked
-// for the next checkpoint. It is the Tick-side analog of absorbTimers, using the
-// tick's last recorded read rather than reading the clock again.
+// transition emitted into the Handle's timer table at now, the read the scheduler armed
+// them at (tickArmRead), so a timer a fired transition re-armed (the next link in an
+// `after` chain) is tracked for the next checkpoint. It is the Tick-side analog of
+// absorbTimers, reading no clock itself.
 func (h *Handle[S, E, C]) armTimersFrom(effects []state.Effect, now time.Time) {
 	for _, eff := range effects {
 		switch e := eff.(type) {
@@ -719,14 +719,13 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
-	// A spawn whose onError Fire applied is handled: the journal holds it, and a retry
-	// would run the behavior and apply it again. That holds for the zero event a spawn
-	// with no onError declared routes, when the parent handles it. A declared onError
-	// refused for a reason other than a context ending, such as a failing guard, is
-	// handled too: the journal holds the refusal. One a context's ending refused isn't:
-	// the step that drove it recorded nothing. Nor is a refused zero event (NoOnError):
-	// nothing caught the failure, so a retry is right.
-	if pf.SpawnFailed && (pf.Result.Err == nil || (!pf.NoOnError && !isContextErr(pf.Result.Err))) {
+	// A failed spawn routes an onError only when one was declared; with none, the system
+	// escalates and no Fire is noted, so the spawn stays unstarted and Recover retries it.
+	// A spawn whose onError applied, or was refused for a reason other than a context
+	// ending, such as a failing guard, is handled: the journal holds the onError or its
+	// refusal, and a retry would run the behavior again. One a context's ending refused
+	// isn't: the step that drove it recorded nothing.
+	if pf.SpawnFailed && (pf.Result.Err == nil || !isContextErr(pf.Result.Err)) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
@@ -994,16 +993,12 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	// earlier Start's or Recover's spawns, recorded with this step.
 	mark := h.recClock.markBuf()
 	results := h.sched.Tick(h.stepContext(ctx))
-	now, haveNow := h.recClock.lastReadingSince(mark)
 	// Each fired timer's chained timers were armed at its absorb read (tickArmRead);
-	// take those reads now, before the Record drains the buffer.
-	armAt := make([]time.Time, len(results))
-	for i := range results {
-		at, ok := h.recClock.armReadingAt(mark + tickArmRead(i))
-		if !ok {
-			at = now
-		}
-		armAt[i] = at
+	// take those reads now, before the Record drains the buffer. A missing one means the
+	// scheduler's order of reads changed, and any deadline taken would be wrong.
+	armAt, err := tickArmReads(h.recClock.armReadingAt, mark, len(results))
+	if err != nil {
+		return results, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
 	// A context that ended partway can make the kernel refuse a due timer's Fire after
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
@@ -1021,11 +1016,11 @@ func (h *Handle[S, E, C]) Tick(ctx context.Context) ([]state.FireResult[S], erro
 	// after the tick persists exactly the still-pending deadlines. A chained timer's
 	// deadline counts from the read the scheduler armed it at (tickArmRead), as
 	// replay's does.
-	if haveNow {
-		for i := range results {
-			h.armTimersFrom(results[i].Effects, armAt[i])
-			forgetSettled(h.settled, results[i].Effects)
-		}
+	for i := range results {
+		h.armTimersFrom(results[i].Effects, armAt[i])
+		forgetSettled(h.settled, results[i].Effects)
+	}
+	if len(results) > 0 {
 		h.dropFiredTimers()
 	}
 	// A tick that read no clock and fired nothing records nothing: there is no
@@ -1876,7 +1871,9 @@ func replayRecord[S comparable, E comparable, C any](
 		if mirror != nil {
 			mark = mirror.clock.mark()
 		}
-		mirrorTick(mirror, sched, sched.Tick(ctx), mark)
+		if err := mirrorTick(mirror, sched, sched.Tick(ctx), mark); err != nil {
+			return out, fmt.Errorf("at step %d: %w", rec.Step, err)
+		}
 	}
 	// The rest are a delivery's parent Fires, or the ones a Fire's or settle's absorb
 	// drove after it, such as a spawned actor's onError.
@@ -1981,22 +1978,23 @@ func (m *armMirror) arm(effects []state.Effect) {
 }
 
 // mirrorTick arms in m any timer a replayed tick's chained transition scheduled, at the
-// tick's last read, as the live Tick does, then drops the timers the tick fired: the ones
-// sched no longer holds.
-func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Scheduler[S, E, C], results []state.FireResult[S], mark int) {
+// read the scheduler armed it at (tickArmRead), as the live Tick does, then drops the
+// timers the tick fired: the ones sched no longer holds. A missing read means the
+// journal and the scheduler's order of reads disagree.
+func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Scheduler[S, E, C], results []state.FireResult[S], mark int) error {
 	if m == nil {
-		return
+		return nil
 	}
-	now := m.clock.lastRead()
+	armAt, err := tickArmReads(m.clock.readingAt, mark, len(results))
+	if err != nil {
+		return err
+	}
 	for i := range results {
-		at, ok := m.clock.readingAt(mark + tickArmRead(i))
-		if !ok {
-			at = now
-		}
-		mirrorArmed(m.armed, results[i].Effects, at)
+		mirrorArmed(m.armed, results[i].Effects, armAt[i])
 		m.forget(results[i].Effects)
 	}
 	dropUnscheduled(m.armed, sched)
+	return nil
 }
 
 // tickArmRead is the index, past the tick's first read, of the clock read the
@@ -2005,3 +2003,19 @@ func mirrorTick[S comparable, E comparable, C any](m *armMirror, sched *state.Sc
 // so the i-th fire's absorb read is the (2i+1)th. state pins that order
 // (TestScheduler_Tick_ReadsTheClockOncePerCheckAndAbsorb).
 func tickArmRead(i int) int { return 2*i + 1 }
+
+// tickArmReads returns, for each of the n timers a Tick fired, the clock read the
+// scheduler armed its chained timers at, from the reads at index mark on, as
+// reading reports them. It fails when one is missing: the scheduler's order of reads
+// changed, and a deadline taken from any other read would be wrong.
+func tickArmReads(reading func(int) (time.Time, bool), mark, n int) ([]time.Time, error) {
+	out := make([]time.Time, n)
+	for i := range out {
+		at, ok := reading(mark + tickArmRead(i))
+		if !ok {
+			return nil, fmt.Errorf("no clock read for fired timer %d's arming", i)
+		}
+		out[i] = at
+	}
+	return out, nil
+}

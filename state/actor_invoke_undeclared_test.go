@@ -62,29 +62,45 @@ func TestInvokeActor_ZeroValueOnError_IsDeclared(t *testing.T) {
 	}
 }
 
-// TestInvokeActor_NoOnError_ParentFireReportsIt pins that the parent Fire routing a
-// failed spawn's onError reports NoOnError as its SpawnActor did, while the zero event
-// still fires at the parent, as v1 documents.
-func TestInvokeActor_NoOnError_ParentFireReportsIt(t *testing.T) {
+// TestInvokeActor_NoOnError_FailuresEscalate pins that an invoked actor with no onError
+// declared escalates its failure, to start or after it ran, as a spawned actor with none
+// does (G3), and fires nothing at the parent; one with an onError routes it.
+func TestInvokeActor_NoOnError_FailuresEscalate(t *testing.T) {
+	ctx := context.Background()
 	for _, declared := range []bool{false, true} {
-		var opts []state.InvokeOption
-		if declared {
-			opts = append(opts, state.WithInvokeOnError("failed"))
-		}
-		parent := invokeParent(opts...).Cast(&trec{}, state.WithInitialState("idle"))
-		var fires []state.ParentFire[string]
-		sys := state.NewActorSystem(parent).
-			Register("child", func(map[string]any) (state.ActorInstance, error) {
-				return nil, errors.New("the child can't start")
-			}).
-			WithParentFireObserver(func(pf state.ParentFire[string]) { fires = append(fires, pf) })
-		ctx := context.Background()
-		sys.Absorb(ctx, parent.Fire(ctx, "start").Effects)
-		if len(fires) != 1 || !fires[0].SpawnFailed {
-			t.Fatalf("declared=%v: parent Fires = %+v, want the failed spawn's onError", declared, fires)
-		}
-		if fires[0].NoOnError == declared {
-			t.Fatalf("declared=%v: ParentFire.NoOnError = %v", declared, fires[0].NoOnError)
+		for _, when := range []string{"at spawn", "after it ran"} {
+			var opts []state.InvokeOption
+			if declared {
+				opts = append(opts, state.WithInvokeOnError("failed"))
+			}
+			parent := invokeParent(opts...).Cast(&trec{}, state.WithInitialState("idle"))
+			var fires []state.ParentFire[string]
+			cause := errors.New("the child failed")
+			sys := state.NewActorSystem(parent).
+				WithParentFireObserver(func(pf state.ParentFire[string]) { fires = append(fires, pf) })
+			if when == "at spawn" {
+				sys.Register("child", func(map[string]any) (state.ActorInstance, error) { return nil, cause })
+			} else {
+				sys.Register("child", childBehavior())
+			}
+			sys.Absorb(ctx, parent.Fire(ctx, "start").Effects)
+			if when == "after it ran" {
+				ids := sys.IDs()
+				if len(ids) != 1 {
+					t.Fatalf("declared=%v %s: running %v, want the child", declared, when, ids)
+				}
+				sys.SettleError(ctx, ids[0], cause)
+			}
+			esc := sys.LastEscalation()
+			if declared {
+				if len(fires) != 1 || esc != nil {
+					t.Fatalf("declared=%v %s: parent Fires %d, escalation %v; want the onError routed, no escalation", declared, when, len(fires), esc)
+				}
+				continue
+			}
+			if len(fires) != 0 || esc == nil || !errors.Is(esc, cause) {
+				t.Fatalf("declared=%v %s: parent Fires %d, escalation %v; want no Fire and the failure escalated", declared, when, len(fires), esc)
+			}
 		}
 	}
 }
