@@ -140,13 +140,16 @@ type Handle[S comparable, E comparable, C any] struct {
 	// that declares them, so a checkpoint records them and Recover doesn't start them.
 	settled map[string]bool
 
-	actors     *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
-	ended      recordedSet                 // the ended actors the journal last recorded
-	unstarted  recordedSet                 // the unstarted actors the journal last recorded
-	seen       map[string]bool             // declared actors seen running, so a stopped one counts as ended
-	sets       actorSetsCache[S]           // the last actorSets result, reused while nothing it reads changed
-	pending    []state.ParentFire[S]       // parent Fires Start's or Recover's spawns drove, journaled with the next step
-	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
+	actors    *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
+	ended     recordedSet                 // the ended actors the journal last recorded
+	unstarted recordedSet                 // the unstarted actors the journal last recorded
+	seen      map[string]bool             // declared actors seen running, so a stopped one counts as ended
+	// respawnFailed holds the declared actors that aren't running because a respawn of
+	// them failed: the journal holds their start, so they stay out of the unstarted set.
+	respawnFailed map[string]bool
+	sets          actorSetsCache[S]     // the last actorSets result, reused while nothing it reads changed
+	pending       []state.ParentFire[S] // parent Fires Start's or Recover's spawns drove, journaled with the next step
+	actorFires    *parentFires[S]       // the parent Fires the actor system drove, taken per step
 
 	out outbox // what a step leaves behind once it releases the step lock
 }
@@ -638,6 +641,19 @@ type parentFires[S comparable] struct {
 	spawned   map[string]bool // actors whose latest spawn this step started
 	attempted map[string]bool // actors the system was asked to spawn this step
 	failed    map[string]bool // actors whose latest spawn failed and whose declared onError applied, or was refused for a reason other than a context ending
+	respawned map[string]bool // actors whose latest spawn was a respawn of one running at the journal's end, whose start the journal holds
+}
+
+// actorLifecycle is what a step did to the actors: the ones it asked the system to
+// spawn, and of those, the ones that started, failed with an onError the journal holds,
+// or were respawned, so the journal already holds their start.
+type actorLifecycle struct {
+	spawned, attempted, failed, respawned map[string]bool
+}
+
+// empty reports whether the step did nothing to the actors.
+func (l actorLifecycle) empty() bool {
+	return len(l.attempted) == 0 && len(l.spawned) == 0 && len(l.failed) == 0 && len(l.respawned) == 0
 }
 
 // attempt notes the actors effects ask the system to spawn.
@@ -656,21 +672,41 @@ func (p *parentFires[S]) attempt(effects []state.Effect) {
 			// The latest attempt decides: until it starts, the actor hasn't run again.
 			delete(p.spawned, sp.ID)
 			delete(p.failed, sp.ID)
+			delete(p.respawned, sp.ID)
 		}
 	}
 }
 
-// takeLifecycle returns the actors spawned and the actors asked to spawn since the
-// last call, and forgets them. It's safe on a nil collector, which has none.
-func (p *parentFires[S]) takeLifecycle() (spawned, attempted, failed map[string]bool) {
+// respawning notes the actors effects respawn: each was running at the journal's end,
+// so the journal holds every parent Fire its start drove, even if this spawn fails.
+// Call it after attempt, which forgets the mark. It's safe on a nil collector.
+func (p *parentFires[S]) respawning(effects []state.Effect) {
 	if p == nil {
-		return nil, nil, nil
+		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	spawned, attempted, failed = p.spawned, p.attempted, p.failed
-	p.spawned, p.attempted, p.failed = nil, nil, nil
-	return spawned, attempted, failed
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok {
+			if p.respawned == nil {
+				p.respawned = map[string]bool{}
+			}
+			p.respawned[sp.ID] = true
+		}
+	}
+}
+
+// takeLifecycle returns what the steps since the last call did to the actors, and
+// forgets it. It's safe on a nil collector, which has none.
+func (p *parentFires[S]) takeLifecycle() actorLifecycle {
+	if p == nil {
+		return actorLifecycle{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	lc := actorLifecycle{spawned: p.spawned, attempted: p.attempted, failed: p.failed, respawned: p.respawned}
+	p.spawned, p.attempted, p.failed, p.respawned = nil, nil, nil, nil
+	return lc
 }
 
 // inspect notes each actor the system spawned. The system reports a spawn only once
@@ -1165,19 +1201,21 @@ func (r *recordedSet) note(now *ActorSet) {
 // also counts as ended, since the journal holds that onError, or the refusal replay
 // meets again. So an actor whose spawn failed with no onError declared, or whose
 // onError a context's ending refused, which left the step that drove it recording
-// nothing, hasn't ended: it's unstarted, and Recover tries it again. Both are
-// nil with no actor palette.
+// nothing, hasn't ended: it's unstarted, and Recover tries it again. One whose
+// respawn of a running actor failed is in neither set, as it was while running, until
+// a later spawn of it: the journal holds its start, so Recover respawns it again. Both
+// are nil with no actor palette.
 func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	if h.actors == nil {
 		return nil, nil
 	}
-	spawned, attempted, failed := h.actorFires.takeLifecycle()
+	lc := h.actorFires.takeLifecycle()
 	running := h.actors.IDs()
 	// The sets depend on the declared actors, so on the configuration, on which are
 	// running, and on this step's spawns. A step that changed none of them, as most
 	// steps that touch no actor don't, gets the last result back.
 	config := h.inst.Configuration()
-	if h.sets.valid && len(attempted) == 0 && len(spawned) == 0 && len(failed) == 0 &&
+	if h.sets.valid && lc.empty() &&
 		slices.Equal(config, h.sets.config) && slices.Equal(running, h.sets.running) {
 		return h.sets.ended, h.sets.unstarted
 	}
@@ -1185,24 +1223,34 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 		h.sets = actorSetsCache[S]{valid: true, config: config, running: running, ended: ended, unstarted: unstarted}
 	}()
 	endedIDs, unstartedIDs := []string{}, []string{}
+	respawnFailed := map[string]bool{}
 	for _, id := range declaredActors(h.inst.StartEffects()) {
 		if slices.Contains(running, id) {
 			continue
 		}
 		_, ran := h.actors.Ref(id)
+		journaled := false // whether the journal holds its start though it isn't running
 		switch {
 		case ran:
-		case attempted[id]:
-			ran = spawned[id] || failed[id]
+		case lc.attempted[id]:
+			ran = lc.spawned[id] || lc.failed[id]
+			journaled = lc.respawned[id]
 		default:
 			ran = h.seen[id]
+			journaled = h.respawnFailed[id]
 		}
-		if ran {
+		switch {
+		case ran:
 			endedIDs = append(endedIDs, id)
-		} else {
+		case journaled:
+			// Its respawn failed, but the journal holds its start: it's in neither set,
+			// as when it was running, so Recover respawns it again rather than as new.
+			respawnFailed[id] = true
+		default:
 			unstartedIDs = append(unstartedIDs, id)
 		}
 	}
+	h.respawnFailed = respawnFailed
 	slices.Sort(endedIDs)
 	endedIDs = slices.Compact(endedIDs)
 	slices.Sort(unstartedIDs)
@@ -1277,8 +1325,9 @@ func startsExcept[T state.Effect](effects []state.Effect, ids []string, id func(
 // when the journal recorded no set, spawns as new. The running actors spawn first, in
 // order, then the rest: a message a new actor sends the parent can enter a state that
 // spawns a running actor, which must already be running, or its start would reach the
-// parent a second time.
-func respawn[S comparable, E comparable, C any](ctx context.Context, actors *state.ActorSystem[S, E, C], effects []state.Effect, unstarted *ActorSet) {
+// parent a second time. It notes the running ones on fires, so one whose spawn fails
+// still counts as having started.
+func respawn[S comparable, E comparable, C any](ctx context.Context, actors *state.ActorSystem[S, E, C], fires *parentFires[S], effects []state.Effect, unstarted *ActorSet) {
 	var running, fresh []state.Effect
 	for _, eff := range effects {
 		if sp, ok := eff.(state.SpawnActor); ok && unstarted != nil && !slices.Contains(unstarted.IDs, sp.ID) {
@@ -1287,6 +1336,7 @@ func respawn[S comparable, E comparable, C any](ctx context.Context, actors *sta
 		}
 		fresh = append(fresh, eff)
 	}
+	fires.respawning(running)
 	actors.AbsorbRespawn(ctx, running)
 	actors.Absorb(ctx, fresh)
 }
@@ -1525,7 +1575,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		actorFires.attempt(spawns)
 		func() {
 			defer actorFires.driving(ctx)()
-			respawn(ctx, actors, spawns, unstarted)
+			respawn(ctx, actors, actorFires, spawns, unstarted)
 		}()
 	}
 	// A parent Fire a newly started actor drove (a message it sent as it started, or a

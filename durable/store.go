@@ -103,9 +103,9 @@ type Record struct {
 	// context ended, which
 	// left the step that drove it recording nothing. Recover
 	// spawns them as new, so the messages they send the parent as they start apply and
-	// are journaled. A declared actor in neither set was running, and the journal holds
-	// every parent Fire its start drove, so Recover spawns it again without letting
-	// those reach the parent. It's
+	// are journaled. A declared actor in neither set was running, or a Recover's respawn
+	// of it failed, and the journal holds every parent Fire its start drove, so Recover
+	// spawns it again without letting those reach the parent. It's
 	// recorded as EndedActors is: with the first step after Start, then when a step
 	// changes it, and an empty set is not nil. When the journal holds none, as on a
 	// Record from before this field, Recover lets every spawn reach the parent.

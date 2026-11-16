@@ -149,6 +149,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A step that touches no actor doesn't recompute the actor sets.** Each append rebuilt
   the declared actors from every active state; it now reuses the last sets while the
   configuration, the running actors and the step's spawns are unchanged.
+- **A running actor whose respawn fails isn't recorded as unstarted.** A failed `Recover`
+  respawn with no onError to catch it made the next `Recover` spawn the actor as new, so
+  its start message applied twice. It now stays out of both sets and respawns quietly.
 - **A chained timer's deadline is the one the scheduler armed it at.** A `Tick` recorded
   the deadline of a timer its fired transition chained from the tick's last clock read,
   which is later than the read the scheduler armed it at. With a real clock, a checkpoint
