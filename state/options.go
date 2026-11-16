@@ -105,9 +105,7 @@ func WithInvokeOnDone[E comparable](onDone E) InvokeOption {
 // WithInvokeOnError sets the event the host re-fires through Fire when an invoked
 // service fails (or, for InvokeActor, when the child machine fails), routing the
 // error through an ordinary transition from the owning state. Omitting it leaves
-// the invocation's OnError at the zero event; for InvokeActor, the child's failure then
-// escalates, as a Spawn with no onError does, and no event is fired. It mirrors
-// WithSpawnOnError.
+// the invocation's OnError at the zero event. It mirrors WithSpawnOnError.
 func WithInvokeOnError[E comparable](onError E) InvokeOption {
 	return func(c *invokeConfig) {
 		c.onError = onError

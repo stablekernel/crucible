@@ -241,7 +241,7 @@ func (i *Instance[S, E, C]) actorEffectsOnEntry(entries []S, tr *Trace) []Effect
 				Src:      inv.Src,
 				Input:    inv.Input,
 				OnDone:   inv.OnDone,
-				OnError:  inv.declaredOnError(),
+				OnError:  inv.OnError,
 				State:    fmtState(s),
 				SystemID: inv.SystemID,
 			})

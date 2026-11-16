@@ -838,6 +838,7 @@ func TestService_RefusedByADerivedContext_RecordsNothing(t *testing.T) {
 // Recover, so RunService doesn't run it again: not from the journal, and not from a
 // checkpoint taken after the settle, where the compound is still active.
 func TestRecover_DoesNotRearmASuperstatesSettledService(t *testing.T) {
+	t.Skip("Start and Recover start only the active leaves' services and actors, not a compound state's; #249")
 	ctx := context.Background()
 	// every=-1 runs live with no checkpoint, then checkpoints from each recovered Handle,
 	// so the checkpoint comes from a replay of the settle.

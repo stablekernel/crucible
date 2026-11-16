@@ -69,27 +69,6 @@ counts as an additive (minor) versus breaking (major) change. Use the
   whole system, so a message another goroutine's delivery sent the parent while it ran
   was dropped. The quiet now rides the call chain that spawns each actor, and ends when
   `AbsorbRespawn` returns.
-- **An invocation's declared onError survives its JSON IR.** An onError that is the
-  zero event, such as an `iota` enum's first constant, read back as undeclared, and now
-  escalated. The IR writes the `onError` key only when one was declared and reads a
-  present key as declared, so IR written before this, which always has the key, keeps
-  routing the zero event as it did.
-- **An invoked actor with no onError escalates its failure.** When an `InvokeActor`
-  actor with no `WithInvokeOnError` couldn't start, or failed after it ran, the actor
-  system fired the zero event at the parent, which a wildcard or a transition on that
-  event could take as if an onError had been declared. Its `SpawnActor` now carries a
-  nil `OnError`, as a `Spawn` with none does, so it escalates (the G3 default) and fires
-  nothing. An onError that is itself the zero event, such as the first constant of an
-  `iota` enum, still counts as declared. A machine that relied
-  on that zero-event Fire changes behavior.
-- **`StartEffects` includes a compound state's invokes.** It looked only at the active
-  leaves, so a service or actor declared on a compound state wasn't started while one of
-  its children was active: not at a durable `Start` or `Recover`, and not for a child
-  actor's own nested actors. It now reports every active state's, ancestors first.
-  `ResumeEffects` still covers the active leaves alone, timers, services and actors:
-  after a Restore, a compound state's timer may already have fired into one of its
-  children, or its service or actor may already have settled into one, and the snapshot
-  can't say.
 
 ## [1.0.0] — 2026-06-13
 

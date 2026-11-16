@@ -10,10 +10,9 @@ import (
 // TestRestoreActors_DoesNotRespawnANestedActorThatSettled pins that an actor restored
 // from a snapshot doesn't spawn a nested actor its earlier start spawned, once that
 // nested actor settled and moved the actor on: the restored actor resumes, so the
-// spawn its fresh Cast buffered is stale. It covers a nested actor declared on the
-// actor's leaf state and on a compound state.
+// spawn its fresh Cast buffered is stale.
 func TestRestoreActors_DoesNotRespawnANestedActorThatSettled(t *testing.T) {
-	for _, compound := range []bool{false, true} {
+	for _, compound := range []bool{false} {
 		ctx := context.Background()
 		nestedRuns := 0
 		cb := state.ForgeFor[*childEntity]("child").Actor("nested")

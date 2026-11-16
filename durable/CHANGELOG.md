@@ -142,12 +142,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
-- **`Recover` from an older checkpoint doesn't rerun a compound state's settled service
-  or actor.** This version starts a compound state's services and actors at `Start` and
-  `Recover`, which an older one didn't, so it recorded none of them as settled or ended.
-  `Recover` from a checkpoint an older version wrote put such a service back in flight,
-  or spawned such an actor, even when it had settled into one of the state's children.
-  It now counts them as settled or ended, as that version left them.
 - **`Recover` and `StateAt` fail when a Store loses `Record.Format`.** The Start baseline
   and every checkpoint record the journal format too, and a Record after one with a lower
   format fails replay, where it used to replay as an older journal's and silently skip
@@ -232,8 +226,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   already records it, and replay meets it again — so the actor counts as ended and
   `Recover` leaves it alone. A spawn whose onError a context's ending refused still
   retries, since the step that drove it records nothing, as does one with no onError
-  declared, as before. A declared onError the parent has no transition for counts as
-  refused, so the actor is done.
+  declared, as before. An invoked actor with no onError fires the zero event, which the
+  parent refuses as having no transition, and `durable` reads that refusal as "none
+  declared". So a declared onError the parent has no transition for retries too, and a
+  wildcard or a transition that takes the zero event counts as caught; #250 tracks a
+  better way to tell them apart.
 - **A message an actor sends its parent as it spawns applies once.** A `Fire`,
   `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor
   again to send it again: it landed after the steps that followed it live, or never, if
@@ -263,16 +260,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A delivery journals each parent Fire under the actor that drove it,** where it used to
   record every one under the actor delivered to. It no longer copies the instance's
   history twice per delivery to do it.
-- **A compound state's services and actors start.** `Start` and `Recover` armed only
-  those declared on the active leaves, so a service or actor on a compound state didn't
-  run while one of its children was active. They come from `state.StartEffects`, which
-  now covers every active state. A journal from before this records no ended actors,
-  so `Recover` from it also spawns a compound state's actor that had settled, as it
-  already did for a leaf's. Restoring a checkpoint's timers before the replay walk is
-  left to a follow-up.
 - **`Recover` doesn't start a service that settled while its state stayed active.** A
-  checkpoint taken after such a settle, on a compound state whose onDone went to a child,
-  or on a leaf state that stayed put, left the service in flight again on recovery, so
+  checkpoint taken after such a settle, on a state that stayed put, left the service in flight again on recovery, so
   `RunService` ran it a second time. A checkpoint now records the declared services that
   settled while their state stayed active, and `Recover` doesn't start them. One that
   never settled, such as one whose state a `Tick` entered or re-entered (a `Tick`

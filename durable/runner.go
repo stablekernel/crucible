@@ -690,13 +690,14 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	p.fires = append(p.fires, pf)
-	// A failed spawn routes an onError only when one was declared; with none, the system
-	// escalates and no Fire is noted, so the spawn stays unstarted and Recover retries it.
 	// A spawn whose onError applied, or was refused for a reason other than a context
 	// ending, such as a failing guard, is handled: the journal holds the onError or its
 	// refusal, and a retry would run the behavior again. One a context's ending refused
-	// isn't: the step that drove it recorded nothing.
-	if pf.SpawnFailed && !isContextErr(pf.Result.Err) {
+	// isn't: the step that drove it recorded nothing. Nor is one the parent had no
+	// transition for: an invoked actor with no onError declared routes the zero event,
+	// which the parent refuses that way, and nothing caught the failure. Telling the two
+	// apart by the refusal's reason is a stopgap; see #250.
+	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !isNoTransition(pf.Result.Err) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
@@ -1213,30 +1214,6 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	return &ActorSet{IDs: endedIDs}, &ActorSet{IDs: unstartedIDs}
 }
 
-// compoundStarts returns, of starts (inst's StartEffects), those of its active compound
-// states, the ones that aren't active leaves: what StartEffects covers that an older
-// version's, which covered the active leaves alone, didn't.
-func compoundStarts[S comparable, E comparable, C any](inst *state.Instance[S, E, C], starts []state.Effect) []state.Effect {
-	leaves := map[string]bool{}
-	for _, s := range inst.Configuration() {
-		leaves[fmt.Sprint(s)] = true
-	}
-	var out []state.Effect
-	for _, eff := range starts {
-		switch e := eff.(type) {
-		case state.StartService:
-			if !leaves[e.State] {
-				out = append(out, eff)
-			}
-		case state.SpawnActor:
-			if !leaves[e.State] {
-				out = append(out, eff)
-			}
-		}
-	}
-	return out
-}
-
 // actorSetsCache is the last result actorSets computed, with what it read: the
 // configuration and the running actors.
 type actorSetsCache struct {
@@ -1371,24 +1348,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// step) can be re-settled from its recorded outcome without re-running it. A
 	// service that had settled by the checkpoint while its state stayed active isn't
 	// armed: it would run again.
-	// An older version started only the active leaves' services and actors at Start and
-	// Recover, never a compound state's, so it recorded none of theirs as settled or
-	// ended. For a checkpoint it wrote, count a compound state's as settled or ended, as
-	// that version left them, so Recover doesn't run one that already settled into a
-	// child.
 	restoredStarts := inst.StartEffects()
 	endedServices := env.EndedServices
-	var olderEndedActors []string
-	if env.Format < actorArmsFormat {
-		for _, eff := range compoundStarts(inst, restoredStarts) {
-			switch e := eff.(type) {
-			case state.StartService:
-				endedServices = append(endedServices, e.ID)
-			case state.SpawnActor:
-				olderEndedActors = append(olderEndedActors, e.ID)
-			}
-		}
-	}
 	svcBuf := make([]state.JournalEntry, 0)
 	svc := r.newServiceRunner(inst)
 	if svc != nil {
@@ -1421,14 +1382,6 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the checkpoint's, then each tail Record's that records one. Nil means none was
 	// recorded, so Recover spawns every actor the configuration declares.
 	ended := env.EndedActors
-	if len(olderEndedActors) > 0 {
-		ids := olderEndedActors
-		if ended != nil {
-			ids = append(ids, ended.IDs...)
-		}
-		slices.Sort(ids)
-		ended = &ActorSet{IDs: slices.Compact(ids)}
-	}
 	// unstarted is the latest recorded set of the declared actors that weren't running
 	// and hadn't ended, recorded alongside ended. Nil means none was recorded.
 	unstarted := env.UnstartedActors
@@ -1775,6 +1728,13 @@ func (jsonEventCodec[E]) Decode(payload []byte) (E, error) {
 	}
 	err := json.Unmarshal(payload, &e)
 	return e, err
+}
+
+// isNoTransition reports whether err is the kernel's refusal of an event the state has
+// no transition for, as state's own unexported check reads it.
+func isNoTransition(err error) bool {
+	var it *state.InvalidTransitionError
+	return errors.As(err, &it) && it.Reason == "no transition declared for this state and event"
 }
 
 // isContextErr reports whether err is a context's cancellation or deadline, which a

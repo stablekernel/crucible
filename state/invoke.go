@@ -79,28 +79,6 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// extra preserves unknown JSON keys a newer producer emitted so they survive a
 	// load -> save cycle (forward-compat). Never inspected by the kernel.
 	extra map[string]json.RawMessage
-	// hasOnError records that an onError was declared, since OnError holds the zero
-	// event either way: the builder was given WithInvokeOnError, or the JSON it was
-	// loaded from has the onError key.
-	hasOnError bool
-}
-
-// declaresOnError reports whether the invocation declared an onError: the builder was
-// given WithInvokeOnError, the JSON it was loaded from has the onError key, or, for one
-// built some other way, OnError isn't the zero event.
-func (inv *Invocation[S, E, C]) declaresOnError() bool {
-	var zero E
-	return inv.hasOnError || inv.OnError != zero
-}
-
-// declaredOnError is the onError a SpawnActor for inv carries: nil when inv declared
-// none, as for a Spawn with none, so its failure escalates rather than firing the zero
-// event.
-func (inv *Invocation[S, E, C]) declaredOnError() any {
-	if !inv.declaresOnError() {
-		return nil
-	}
-	return inv.OnError
 }
 
 // invocationKnownKeys is the set of JSON keys Invocation models; anything else is
@@ -111,28 +89,10 @@ var invocationKnownKeys = map[string]struct{}{
 }
 
 // MarshalJSON encodes an Invocation, merging its preserved unknown keys back in
-// with stable key ordering. It writes the onError key only when an onError was
-// declared, so a declared zero event survives the round trip and an undeclared one
-// isn't read back as declared.
+// with stable key ordering.
 func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
-	if inv.declaresOnError() {
-		type alias Invocation[S, E, C]
-		return marshalWithExtra(alias(inv), inv.extra)
-	}
-	// The fields, in Invocation's order, less onError.
-	type undeclared struct {
-		ID       string         `json:"id,omitempty"`
-		Src      Ref            `json:"src"`
-		Input    map[string]any `json:"input,omitempty"`
-		OnDone   E              `json:"onDone"`
-		Kind     ActorKind      `json:"kind,omitempty"`
-		SystemID string         `json:"systemId,omitempty"`
-		Meta     map[string]any `json:"meta,omitempty"`
-	}
-	return marshalWithExtra(undeclared{
-		ID: inv.ID, Src: inv.Src, Input: inv.Input, OnDone: inv.OnDone,
-		Kind: inv.Kind, SystemID: inv.SystemID, Meta: inv.Meta,
-	}, inv.extra)
+	type alias Invocation[S, E, C]
+	return marshalWithExtra(alias(inv), inv.extra)
 }
 
 // UnmarshalJSON decodes an Invocation and captures any unknown keys into extra so
@@ -140,15 +100,12 @@ func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
 func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
 	type alias Invocation[S, E, C]
 	var a alias
-	extra, keys, err := captureExtraKeys(data, &a, invocationKnownKeys)
+	extra, err := captureExtra(data, &a, invocationKnownKeys)
 	if err != nil {
 		return err
 	}
 	*inv = Invocation[S, E, C](a)
 	inv.extra = extra
-	// A document that has the onError key declared one, even as the zero event; one
-	// from before this field always has it, and keeps routing the zero event.
-	_, inv.hasOnError = keys["onError"]
 	return nil
 }
 
@@ -267,43 +224,25 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 	return out
 }
 
-// StartEffects returns the StartService and SpawnActor effects for the invoked
-// services and actors declared on every active state, so a host can arm the services
-// and actors of the state(s) entered at Cast, the entry that Fire never observes
-// because no event drove it. Call it once, right after Cast, and route the effects
-// through the same drivers used for Fire's effects. It is a pure read of the
+// StartEffects returns the StartService effects for the invoked services declared
+// on the instance's initial active configuration, so a host can arm the services
+// of the state(s) entered at Cast — the entry that Fire never observes because no
+// event drove it. Call it once, right after Cast, and route the effects through
+// the same ServiceRunner used for Fire's effects. It is a pure read of the
 // configuration and emits no IO, consistent with the kernel's effects-as-data
-// contract. The active states are each active leaf and its ancestors, outermost
-// first, so a compound state's invokes come before its children's; a parallel
-// configuration reports every active region's.
+// contract. A flat or single-spine instance reports its single starting state's
+// services; a parallel initial configuration reports every active region's.
 //
-// StartEffects recomputes over the live configuration on every call. After a Restore,
-// use ResumeEffects instead: StartEffects includes a compound state's services and
-// actors, which may already have settled into one of its children, so starting them
-// would run them again. The durable runner calls StartEffects after Recover, because it
-// tracks which of them settled or ended, and leaves those out.
+// StartEffects recomputes over the live configuration on every call, so it is
+// correct on both Cast (configuration is the initial leaves) and Restore
+// (configuration is the restored leaves). The durable runner relies on this:
+// after Recover sets up the restored configuration, StartEffects yields exactly
+// the invoke/actor starts of the resumed state(s).
 func (i *Instance[S, E, C]) StartEffects() []Effect {
 	var tr Trace
-	active := i.activeStates()
-	out := i.invokeEffectsOnEntry(active, &tr)
-	out = append(out, i.actorEffectsOnEntry(active, &tr)...)
-	return out
-}
-
-// activeStates returns every active state: each active leaf's ancestors, outermost
-// first, then the leaf, each state once, in the configuration's order.
-func (i *Instance[S, E, C]) activeStates() []S {
-	var out []S
-	seen := map[S]bool{}
-	for _, leaf := range i.Configuration() {
-		chain := i.machine.ancestors(leaf)
-		for k := len(chain) - 1; k >= 0; k-- {
-			if s := chain[k]; !seen[s] {
-				seen[s] = true
-				out = append(out, s)
-			}
-		}
-	}
+	cfg := i.Configuration()
+	out := i.invokeEffectsOnEntry(cfg, &tr)
+	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
 	return out
 }
 
