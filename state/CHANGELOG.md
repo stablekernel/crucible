@@ -19,6 +19,10 @@ counts as an additive (minor) versus breaking (major) change. Use the
   the onError of a spawn that couldn't start), so a host that records a delivery or spawn
   can tell a parent transition refused because its context ended from one that applied,
   and which Fire carried the actor's output. It's additive, within v1.1.0.
+- **`Scheduler.Due`** reports when a pending timer is due, so a host that keeps its own
+  record of armed timers' deadlines, as `durable` does for a checkpoint, reads the one
+  the scheduler holds rather than working it out from a clock read of its own. It's
+  additive, within v1.1.0.
 - **`SpawnActor.NoOnError`** reports that an invoked actor declared no onError, so its
   `OnError` holds only the zero event. An onError that is itself the zero event, such as
   the first constant of an `iota` enum, counts as declared when the machine was built

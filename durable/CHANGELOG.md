@@ -146,8 +146,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the deadline of a timer its fired transition chained from the tick's last clock read,
   which is later than the read the scheduler armed it at. With a real clock, a checkpoint
   persisted the later deadline, so after `Recover` the timer fired late, and the drift
-  grew along an `after` chain. `Tick` and its replay now take each fired timer's absorb
-  read, and `state` pins the order of reads a `Tick` takes.
+  grew along an `after` chain. `Tick` and its replay now take each chained timer's
+  deadline from the scheduler, with `state`'s new `Scheduler.Due`, so a fired
+  transition that reads the clock itself doesn't move it.
 - **A failed checkpoint no longer makes the next step conflict.** `Tick`, `RunService`
   and `DeliverToActor` now advance the next step as soon as the append lands.
 - **A deferred checkpoint survives an unrelated caller's cancel.** A checkpoint that

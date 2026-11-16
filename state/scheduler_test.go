@@ -249,3 +249,34 @@ func assertCancelEffect(t *testing.T, effects []state.Effect, id string) {
 	}
 	t.Fatalf("no CancelScheduled effect for id %q in %v", id, effects)
 }
+
+// TestScheduler_Due_ReportsAPendingTimersDeadline pins Due: the deadline Absorb armed a
+// timer at, and false once it fired or for an unknown id.
+func TestScheduler_Due_ReportsAPendingTimersDeadline(t *testing.T) {
+	m := state.ForgeFor[*trec]("due").
+		State("idle").
+		State("a").
+		State("b").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("a").
+		Transition("a").After(5 * time.Second).On("toB").GoTo("b").
+		Quench()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := state.NewFakeClock(base)
+	inst := m.Cast(&trec{}, state.WithInitialState("idle"), state.WithClock[string](clk))
+	sch := state.NewScheduler(inst)
+	sch.Absorb(context.Background(), inst.Fire(context.Background(), "go").Effects)
+	id := state.ScheduleID("due", "a", 0)
+	due, ok := sch.Due(id)
+	if !ok || !due.Equal(base.Add(5*time.Second)) {
+		t.Fatalf("Due(%q) = %v, %v; want %v", id, due, ok, base.Add(5*time.Second))
+	}
+	if _, ok := sch.Due("nope"); ok {
+		t.Fatal("Due of an unknown id reports a timer")
+	}
+	clk.Advance(5 * time.Second)
+	sch.Tick(context.Background())
+	if _, ok := sch.Due(id); ok {
+		t.Fatal("Due still reports the timer after it fired")
+	}
+}

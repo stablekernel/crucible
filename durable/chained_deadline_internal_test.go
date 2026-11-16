@@ -158,23 +158,52 @@ func TestTick_RecordsEachChainedDeadlineInATwoTimerTick(t *testing.T) {
 	}
 }
 
-// TestTickArmReads_FailsOnAMissingRead pins that Tick and its replay fail, rather than
-// fall back to another read, when a fired timer's arming read is missing: the
-// scheduler's order of reads changed, and any other deadline would be wrong.
-func TestTickArmReads_FailsOnAMissingRead(t *testing.T) {
+// TestTick_AChainedDeadlineHoldsWhenAFiredTransitionReadsTheClock pins that the
+// recorded deadline of a chained timer is still the scheduler's when the fired
+// transition's own action reads the instance's clock, adding a read to the Tick.
+func TestTick_AChainedDeadlineHoldsWhenAFiredTransitionReadsTheClock(t *testing.T) {
+	ctx := context.Background()
+	type cx struct{}
+	var h *Handle[string, string, cx]
+	m := state.ForgeFor[cx]("readingAction").
+		Action("look", func(state.ActionCtx[cx]) (state.Effect, error) {
+			_ = h.inst.Clock().Now()
+			return nil, nil
+		}).
+		State("idle").
+		State("a").
+		State("b").
+		State("c").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("a").
+		Transition("a").After(time.Second).On("toB").GoTo("b").Do("look").
+		Transition("b").After(time.Second).On("toC").GoTo("c").
+		Quench()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	reads := []time.Time{base, base.Add(time.Millisecond), base.Add(2 * time.Millisecond)}
-	reading := func(i int) (time.Time, bool) {
-		if i < 0 || i >= len(reads) {
-			return time.Time{}, false
-		}
-		return reads[i], true
+	clk := &steppingClock{now: base}
+	var err error
+	h, err = NewRunner(m, NewMemStore(), WithRunnerClock[string, string, cx](clk)).
+		Start(ctx, "reading-action", cx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	got, err := tickArmReads(reading, 0, 1)
-	if err != nil || len(got) != 1 || !got[0].Equal(reads[1]) {
-		t.Fatalf("one fired timer = %v, %v; want the absorb read %v", got, err, reads[1])
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
 	}
-	if _, err := tickArmReads(reading, 0, 2); err == nil {
-		t.Fatal("two fired timers with three reads: want an error for the second timer's missing arming read")
+	clk.set(base.Add(2*time.Second), true)
+	if _, err = h.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	var recorded time.Time
+	for _, pt := range h.timers {
+		recorded = pt.due
+	}
+	clk.set(recorded.Add(-time.Millisecond), false)
+	if fired := h.sched.Tick(ctx); len(fired) != 0 {
+		t.Fatalf("the scheduler fired b's timer before the recorded deadline %v", recorded)
+	}
+	clk.set(recorded, false)
+	if fired := h.sched.Tick(ctx); len(fired) != 1 {
+		t.Fatalf("the scheduler didn't fire b's timer at the recorded deadline %v: it holds a different one", recorded)
 	}
 }
