@@ -1317,8 +1317,10 @@ func respawn[S comparable, E comparable, C any](ctx context.Context, actors *sta
 // snapshot (firing nothing, no IO), and replays the tail's recorded driving
 // events through the kernel to reach the instance's live state. The returned
 // Handle continues recording subsequent Fires. Recover reports ErrInstanceNotFound
-// for an instance that was never started, and the context's error if ctx ends or a
-// context's ending refuses a parent Fire an actor it spawned drove.
+// for an instance that was never started, and the context's error if ctx ends before
+// the journal is replayed, or a context's ending refuses a parent Fire an actor it
+// spawned drove. A ctx that ends once the actors are spawned, with no Fire refused,
+// doesn't fail it, as for Start: their behaviors already ran.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -1587,10 +1589,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		}
 	}
 
+	// A context that ended once the spawns ran fails nothing, as for Start: their
+	// behaviors already ran, and failing would make a retry run them again.
 	h.pending = recoverFires
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
-	}
 	return h, nil
 }
 

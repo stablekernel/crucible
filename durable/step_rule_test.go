@@ -855,10 +855,11 @@ func TestStart_FailsWhenItsContextEndsDuringASpawn(t *testing.T) {
 	}
 }
 
-// TestRecover_FailsWhenItsContextEndsAfterReplay proves Recover returns no Handle when
-// its context ends after the journal is replayed, here while it spawns the resume
-// point's actor, though no parent Fire was refused.
-func TestRecover_FailsWhenItsContextEndsAfterReplay(t *testing.T) {
+// TestRecover_SucceedsWhenItsContextEndsAfterReplay proves Recover, like Start, returns
+// its Handle when its context ends after the journal is replayed, here while it spawns
+// the resume point's actor, and no parent Fire was refused: the actor's behavior ran,
+// and failing would make a retry run it again.
+func TestRecover_SucceedsWhenItsContextEndsAfterReplay(t *testing.T) {
 	ctx := context.Background()
 	m := state.ForgeFor[stepCtx]("late").
 		Actor("quiet").
@@ -887,8 +888,8 @@ func TestRecover_FailsWhenItsContextEndsAfterReplay(t *testing.T) {
 	turn, cancel := context.WithCancel(ctx)
 	defer cancel()
 	recovered, err := durable.Recover(turn, m, store, id, quiet(cancel)...)
-	if recovered != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("Recover = Handle %v, %v, want no Handle and context.Canceled", recovered != nil, err)
+	if recovered == nil || err != nil {
+		t.Fatalf("Recover = Handle %v, %v, want the Handle and no error", recovered != nil, err)
 	}
 }
 

@@ -111,9 +111,10 @@ type actorMessagePayload struct {
 // actor (already settled, stopped, or never spawned), or false and an error when no
 // palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
 // actor ran it returns true with any error. A result that won't encode, a ctx that ended
-// during a delivery that drove a parent Fire, or a parent Fire refused because a context
-// ended (ctx, or one middleware derived from it) returns ErrHandleFailed and records
-// nothing; a delivery that drove no parent Fire records as usual. On a
+// by the end of the delivery, or a parent Fire refused because a context ended (ctx, or
+// one middleware derived from it) returns ErrHandleFailed and records nothing: a ctx
+// that ended before the actor handled the event made the kernel refuse the actor's own
+// Fire, and the event was lost. On a
 // recovered Handle an InvokeActor actor restarts from its initial state, and a Spawn
 // actor doesn't return. A failed Append also returns ErrHandleFailed, but the write may
 // have landed anyway, and Recover finds out which. If another goroutine failed the Handle while this step was
@@ -141,13 +142,11 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	if !delivered {
 		return false, nil
 	}
-	// A context that ended during the delivery can make the kernel refuse a parent
-	// Fire it drove. The refused Fire rolls back, so live never applied it, but
-	// journaling the delivery would replay it under a live context, where it applies.
-	// Record nothing.
-	// A delivery that drove no parent Fire changed nothing the journal holds, so an ended
-	// ctx can't have cost it anything.
-	if err := consumedCanceled(ctx, len(fires) > 0, parentFireErrs(fires)...); err != nil {
+	// A context that ended during the delivery can make the kernel refuse the actor's
+	// own Fire, losing the event, or a parent Fire it drove. A refused Fire rolls back,
+	// so live never applied it, but journaling the delivery would replay it under a live
+	// context, where it applies. Record nothing.
+	if err := stepCanceled(ctx, parentFireErrs(fires)...); err != nil {
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 

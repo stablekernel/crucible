@@ -307,8 +307,9 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 // start. A nested actor's failure with no onError doesn't escalate again either, while
 // one in effects that fails now does. The effects such a Fire drives absorb as under
 // Absorb: an actor its state spawns, or one it sends to, reaches the parent. Its other
-// effects absorb as under Absorb. Don't drive the system from another goroutine while
-// AbsorbRespawn runs: a parent Fire that one drives would be dropped too.
+// effects absorb as under Absorb. The quiet rides the call chain that spawns each actor,
+// so a delivery another goroutine makes while AbsorbRespawn runs reaches the parent as
+// usual, and it ends when AbsorbRespawn returns.
 func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
 	respawned := map[string]bool{}
 	for _, eff := range effects {

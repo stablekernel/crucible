@@ -130,7 +130,7 @@ func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
 func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
 	type alias Invocation[S, E, C]
 	var a alias
-	extra, err := captureExtra(data, &a, invocationKnownKeys)
+	extra, keys, err := captureExtraKeys(data, &a, invocationKnownKeys)
 	if err != nil {
 		return err
 	}
@@ -138,10 +138,6 @@ func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
 	inv.extra = extra
 	// A document that has the onError key declared one, even as the zero event; one
 	// from before this field always has it, and keeps routing the zero event.
-	var keys map[string]json.RawMessage
-	if err := json.Unmarshal(data, &keys); err != nil {
-		return err
-	}
 	_, inv.hasOnError = keys["onError"]
 	return nil
 }

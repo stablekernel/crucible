@@ -39,14 +39,20 @@ func TestStartEffects_IncludesTheSuperstatesInvokes(t *testing.T) {
 	if len(actors) != 1 || actors[0] != "outerActor" {
 		t.Fatalf("actors = %v, want [outerActor]", actors)
 	}
+	// ResumeEffects, after a Restore, covers the active leaves alone: a compound state's
+	// service or actor may already have settled into a child, which a snapshot can't
+	// tell (TestResumeEffects_DoesNotRestartACompoundServiceThatSettledIntoAChild).
 	var resumed []string
 	for _, eff := range inst.ResumeEffects() {
-		if e, ok := eff.(state.SpawnActor); ok {
+		switch e := eff.(type) {
+		case state.StartService:
+			resumed = append(resumed, e.Src.Name)
+		case state.SpawnActor:
 			resumed = append(resumed, e.Src.Name)
 		}
 	}
-	if len(resumed) != 1 || resumed[0] != "outerActor" {
-		t.Fatalf("ResumeEffects actors = %v, want [outerActor]", resumed)
+	if len(resumed) != 1 || resumed[0] != "innerSvc" {
+		t.Fatalf("ResumeEffects starts %v, want the leaf's [innerSvc]", resumed)
 	}
 }
 

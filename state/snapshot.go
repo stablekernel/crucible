@@ -417,12 +417,14 @@ func (i *Instance[S, E, C]) pendingRefs(cfg []S) PendingRefs {
 // post-1.0 ADDITIVE item, not a v1.0 contract.
 func (i *Instance[S, E, C]) ResumeEffects() []Effect {
 	var tr Trace
-	// Timers come from the active leaves only: a compound state's `after` timer may
-	// already have fired into one of its children, and re-arming it would fire it again.
-	out := i.afterEffectsOnEntry(i.Configuration(), &tr)
-	active := i.activeStates()
-	out = append(out, i.invokeEffectsOnEntry(active, &tr)...)
-	out = append(out, i.actorEffectsOnEntry(active, &tr)...)
+	// Everything comes from the active leaves only: a compound state's `after` timer
+	// may already have fired into one of its children, and its service or actor may
+	// already have settled into one, and a snapshot can't say which, so re-arming or
+	// starting it again would fire or run it a second time.
+	leaves := i.Configuration()
+	out := i.afterEffectsOnEntry(leaves, &tr)
+	out = append(out, i.invokeEffectsOnEntry(leaves, &tr)...)
+	out = append(out, i.actorEffectsOnEntry(leaves, &tr)...)
 	return out
 }
 

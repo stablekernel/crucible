@@ -185,8 +185,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   replay now meets the same refusal instead of failing Recover on it. After `Recover`
   the service stays in flight and must tolerate running again, the timer is re-armed, an
   `InvokeActor` actor restarts from its initial state, and a `Spawn` actor doesn't
-  return. `Recover` and `StateAt` now fail on a canceled context, rather than returning
-  state short of the journal.
+  return. `Recover` and `StateAt` now fail on a context that ends before the journal is
+  replayed, rather than returning state short of the journal. A context that ends once
+  `Recover` has spawned its actors, with no parent Fire refused, doesn't fail it, as for
+  `Start`, since their behaviors already ran. A `DeliverToActor` whose context ended by
+  the end of the delivery records nothing, even when it drove no parent Fire: the
+  ending may have made the kernel refuse the actor's own Fire, losing the event.
 - **`Fire` follows the same rule for the actors it spawns.** When an actor a Fire's
   state spawned failed to start and a context's ending refused its onError, the Fire was
   recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns

@@ -132,16 +132,22 @@ func marshalWithExtra(known any, extra map[string]json.RawMessage) ([]byte, erro
 // target struct owns; any key outside it is captured. A nil result means there
 // were no unknown keys.
 func captureExtra(data []byte, knownTarget any, knownKeys map[string]struct{}) (map[string]json.RawMessage, error) {
+	extra, _, err := captureExtraKeys(data, knownTarget, knownKeys)
+	return extra, err
+}
+
+// captureExtraKeys is captureExtra that also returns every top-level key data has,
+// known or not, so a caller can tell a key that is present from one that is absent
+// without parsing data again. The keys are nil when data is not a JSON object.
+func captureExtraKeys(data []byte, knownTarget any, knownKeys map[string]struct{}) (extra, all map[string]json.RawMessage, err error) {
 	if err := json.Unmarshal(data, knownTarget); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var all map[string]json.RawMessage
 	if err := json.Unmarshal(data, &all); err != nil {
 		// data was valid for the typed target but is not a JSON object (e.g. null):
 		// there are no extra keys to capture.
-		return nil, nil //nolint:nilerr // a non-object body simply carries no extras.
+		return nil, nil, nil //nolint:nilerr // a non-object body simply carries no extras.
 	}
-	var extra map[string]json.RawMessage
 	for k, v := range all {
 		if _, known := knownKeys[k]; known {
 			continue
@@ -151,7 +157,7 @@ func captureExtra(data []byte, knownTarget any, knownKeys map[string]struct{}) (
 		}
 		extra[k] = v
 	}
-	return extra, nil
+	return extra, all, nil
 }
 
 // cloneRawExtra deep-copies a preserved-unknown map so a deep-copied IR node never
