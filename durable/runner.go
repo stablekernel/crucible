@@ -538,10 +538,11 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// the first RunService. The service buffer journals each settled outcome for
 	// replay. A machine with no service registry wired runs no services and records
 	// no service entries.
+	starts := inst.StartEffects()
 	svcBuf := make([]state.JournalEntry, 0)
 	svc := r.newServiceRunner(inst)
 	if svc != nil {
-		svc.Absorb(ctx, inst.StartEffects())
+		svc.Absorb(ctx, starts)
 	}
 
 	// Install the child-machine actor host driver and spawn the initial
@@ -568,10 +569,11 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	}
 	if actors != nil {
 		actorFires.arm = h.absorbParentFire
-		actorFires.attempt(inst.StartEffects())
-		restore := actorFires.driving(ctx)
-		actors.Absorb(ctx, inst.StartEffects())
-		restore()
+		actorFires.attempt(starts)
+		func() {
+			defer actorFires.driving(ctx)()
+			actors.Absorb(ctx, starts)
+		}()
 	}
 	// A parent Fire a starting actor drove (a message it sent as it started, or a failed
 	// spawn's onError) applied to the instance after its baseline, so the first step
@@ -1211,16 +1213,16 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	return &ActorSet{IDs: endedIDs}, &ActorSet{IDs: unstartedIDs}
 }
 
-// compoundStarts returns the StartEffects of inst's active compound states, the ones
-// that aren't active leaves: what StartEffects covers that an older version's, which
-// covered the active leaves alone, didn't.
-func compoundStarts[S comparable, E comparable, C any](inst *state.Instance[S, E, C]) []state.Effect {
+// compoundStarts returns, of starts (inst's StartEffects), those of its active compound
+// states, the ones that aren't active leaves: what StartEffects covers that an older
+// version's, which covered the active leaves alone, didn't.
+func compoundStarts[S comparable, E comparable, C any](inst *state.Instance[S, E, C], starts []state.Effect) []state.Effect {
 	leaves := map[string]bool{}
 	for _, s := range inst.Configuration() {
 		leaves[fmt.Sprint(s)] = true
 	}
 	var out []state.Effect
-	for _, eff := range inst.StartEffects() {
+	for _, eff := range starts {
 		switch e := eff.(type) {
 		case state.StartService:
 			if !leaves[e.State] {
@@ -1374,10 +1376,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// ended. For a checkpoint it wrote, count a compound state's as settled or ended, as
 	// that version left them, so Recover doesn't run one that already settled into a
 	// child.
+	restoredStarts := inst.StartEffects()
 	endedServices := env.EndedServices
 	var olderEndedActors []string
 	if env.Format < actorArmsFormat {
-		for _, eff := range compoundStarts(inst) {
+		for _, eff := range compoundStarts(inst, restoredStarts) {
 			switch e := eff.(type) {
 			case state.StartService:
 				endedServices = append(endedServices, e.ID)
@@ -1389,7 +1392,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	svcBuf := make([]state.JournalEntry, 0)
 	svc := r.newServiceRunner(inst)
 	if svc != nil {
-		svc.Absorb(ctx, startsExcept(inst.StartEffects(), endedServices, func(sv state.StartService) string { return sv.ID }))
+		svc.Absorb(ctx, startsExcept(restoredStarts, endedServices, func(sv state.StartService) string { return sv.ID }))
 	}
 
 	// Build the child-machine actor host driver, but DO NOT spawn the restored
@@ -1462,6 +1465,12 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 				return nil, err
 			}
 		}
+	}
+
+	// A canceled context can stop the last replayed settle or tick with no error too, so
+	// check it once more, now that the walk is done, before any actor spawns.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 	}
 
 	// Drain any clock readings the replay re-recorded after the cursor exhausted
@@ -1561,9 +1570,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		spawns := startsExcept(inst.StartEffects(), endedIDs, func(sp state.SpawnActor) string { return sp.ID })
 		actorFires.arm = h.absorbParentFire
 		actorFires.attempt(spawns)
-		restore := actorFires.driving(ctx)
-		respawn(ctx, actors, spawns, unstarted)
-		restore()
+		func() {
+			defer actorFires.driving(ctx)()
+			respawn(ctx, actors, spawns, unstarted)
+		}()
 	}
 	// A parent Fire a newly started actor drove (a message it sent as it started, or a
 	// failed spawn's onError) applied to the instance past its journal, so the next step

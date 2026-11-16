@@ -93,6 +93,16 @@ func (inv *Invocation[S, E, C]) declaresOnError() bool {
 	return inv.hasOnError || inv.OnError != zero
 }
 
+// declaredOnError is the onError a SpawnActor for inv carries: nil when inv declared
+// none, as for a Spawn with none, so its failure escalates rather than firing the zero
+// event.
+func (inv *Invocation[S, E, C]) declaredOnError() any {
+	if !inv.declaresOnError() {
+		return nil
+	}
+	return inv.OnError
+}
+
 // invocationKnownKeys is the set of JSON keys Invocation models; anything else is
 // captured into extra and preserved verbatim on round-trip.
 var invocationKnownKeys = map[string]struct{}{
@@ -267,11 +277,11 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 // first, so a compound state's invokes come before its children's; a parallel
 // configuration reports every active region's.
 //
-// StartEffects recomputes over the live configuration on every call, so it is
-// correct on both Cast (configuration is the initial leaves) and Restore
-// (configuration is the restored leaves). The durable runner relies on this:
-// after Recover sets up the restored configuration, StartEffects yields exactly
-// the invoke/actor starts of the resumed state(s).
+// StartEffects recomputes over the live configuration on every call. After a Restore,
+// use ResumeEffects instead: StartEffects includes a compound state's services and
+// actors, which may already have settled into one of its children, so starting them
+// would run them again. The durable runner calls StartEffects after Recover, because it
+// tracks which of them settled or ended, and leaves those out.
 func (i *Instance[S, E, C]) StartEffects() []Effect {
 	var tr Trace
 	active := i.activeStates()

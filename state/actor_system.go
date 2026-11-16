@@ -448,9 +448,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 		ra.onDone = d
 		ra.hasDone = true
 	}
-	// An invoked actor that declared no onError carries the zero event; its failure
-	// escalates, as a spawned actor's with none does (G3).
-	if er, ok := e.OnError.(E); ok && !e.NoOnError {
+	if er, ok := e.OnError.(E); ok {
 		ra.onError = er
 		ra.hasError = true
 	}
@@ -483,9 +481,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	ev, ok := e.OnError.(E)
-	// An invoked actor with no onError declared carries the zero event in OnError; it
-	// escalates, as a spawn with none does (G3), rather than firing that event.
-	if !ok || e.NoOnError {
+	if !ok {
 		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}

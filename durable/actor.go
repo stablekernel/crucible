@@ -135,9 +135,12 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	}
 
 	stepCtx := h.stepContext(ctx)
-	restore := h.actorFires.driving(stepCtx)
-	delivered := h.actors.Deliver(stepCtx, ref, event)
-	restore()
+	// Restore in a defer, so a panic out of host code doesn't leave the collector driving
+	// under this step's context.
+	delivered := func() bool {
+		defer h.actorFires.driving(stepCtx)()
+		return h.actors.Deliver(stepCtx, ref, event)
+	}()
 	fires := h.actorFires.take()
 	if !delivered {
 		return false, nil

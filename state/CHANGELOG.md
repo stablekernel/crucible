@@ -23,11 +23,6 @@ counts as an additive (minor) versus breaking (major) change. Use the
   record of armed timers' deadlines, as `durable` does for a checkpoint, reads the one
   the scheduler holds rather than working it out from a clock read of its own. It's
   additive, within v1.1.0.
-- **`SpawnActor.NoOnError`** reports that an invoked actor declared no onError, so its
-  `OnError` holds only the zero event. An onError that is itself the zero event, such as
-  the first constant of an `iota` enum, counts as declared when the machine was built
-  with `WithInvokeOnError`; an invocation loaded from JSON counts one as declared only
-  when it isn't the zero event. It's additive, within v1.1.0.
 - **`ActorSystem.AbsorbRespawn`** is `Absorb` for actors a host spawns again after
   rebuilding the parent from a record that already holds every parent Fire their
   earlier start drove: an actor it spawns starts as under `Absorb`, but its start
@@ -82,8 +77,10 @@ counts as an additive (minor) versus breaking (major) change. Use the
 - **An invoked actor with no onError escalates its failure.** When an `InvokeActor`
   actor with no `WithInvokeOnError` couldn't start, or failed after it ran, the actor
   system fired the zero event at the parent, which a wildcard or a transition on that
-  event could take as if an onError had been declared. It now escalates, as a `Spawn`
-  with no onError always has (the G3 default), and fires nothing. A machine that relied
+  event could take as if an onError had been declared. Its `SpawnActor` now carries a
+  nil `OnError`, as a `Spawn` with none does, so it escalates (the G3 default) and fires
+  nothing. An onError that is itself the zero event, such as the first constant of an
+  `iota` enum, still counts as declared. A machine that relied
   on that zero-event Fire changes behavior.
 - **`StartEffects` includes a compound state's invokes.** It looked only at the active
   leaves, so a service or actor declared on a compound state wasn't started while one of

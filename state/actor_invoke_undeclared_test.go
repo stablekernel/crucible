@@ -31,17 +31,6 @@ func invokeParent(opts ...state.InvokeOption) *state.Machine[string, string, *tr
 		Quench()
 }
 
-// TestInvokeActor_NoOnError_Flags pins SpawnActor.NoOnError: set when the invoke
-// declared no onError, clear when it declared one.
-func TestInvokeActor_NoOnError_Flags(t *testing.T) {
-	if sp := spawnEffect(t, invokeParent(), "start"); !sp.NoOnError {
-		t.Fatal("NoOnError = false for an invoke with no onError")
-	}
-	if sp := spawnEffect(t, invokeParent(state.WithInvokeOnError("failed")), "start"); sp.NoOnError {
-		t.Fatal("NoOnError = true for an invoke with an onError")
-	}
-}
-
 // TestInvokeActor_ZeroValueOnError_IsDeclared pins that an onError that is the zero
 // event, as the first constant of an iota enum is, still counts as declared.
 func TestInvokeActor_ZeroValueOnError_IsDeclared(t *testing.T) {
@@ -57,8 +46,8 @@ func TestInvokeActor_ZeroValueOnError_IsDeclared(t *testing.T) {
 		CurrentStateFn(func(*trec) string { return "idle" }).
 		Transition("idle").On(start).GoTo("supervising").
 		Quench()
-	if sp := spawnEffect(t, m, start); sp.NoOnError {
-		t.Fatal("NoOnError = true for an onError that is the zero event")
+	if sp := spawnEffect(t, m, start); sp.OnError != failed {
+		t.Fatalf("SpawnActor.OnError = %#v, want the declared zero-valued onError", sp.OnError)
 	}
 }
 
@@ -130,7 +119,20 @@ func TestInvokeActor_ZeroValueOnError_SurvivesJSON(t *testing.T) {
 		t.Fatalf("LoadFromJSON: %v", err)
 	}
 	loaded := ir.Provide(state.NewRegistry[*trec]()).CurrentStateFn(func(*trec) string { return "idle" }).Quench()
-	if sp := spawnEffect(t, loaded, start); sp.NoOnError {
-		t.Fatal("NoOnError = true after the JSON round trip, for an onError that is the zero event")
+	if sp := spawnEffect(t, loaded, start); sp.OnError != failed {
+		t.Fatalf("SpawnActor.OnError = %#v after the JSON round trip, want the declared zero-valued onError", sp.OnError)
+	}
+}
+
+// TestInvokeActor_NoOnError_CarriesNoOnErrorEvent pins that the SpawnActor an invoked
+// actor with no onError emits carries no OnError, as a Spawn with none does, so a host
+// that consumes SpawnActor effects and reads OnError, as its docs describe, escalates
+// rather than firing the zero event.
+func TestInvokeActor_NoOnError_CarriesNoOnErrorEvent(t *testing.T) {
+	if sp := spawnEffect(t, invokeParent(), "start"); sp.OnError != nil {
+		t.Fatalf("SpawnActor.OnError = %#v, want nil for an invoke with no onError", sp.OnError)
+	}
+	if sp := spawnEffect(t, invokeParent(state.WithInvokeOnError("failed")), "start"); sp.OnError != "failed" {
+		t.Fatalf("SpawnActor.OnError = %#v, want the declared failed", sp.OnError)
 	}
 }
