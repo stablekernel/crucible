@@ -257,7 +257,7 @@ func TestFire_ADeadlineHoldsWhenTheTransitionReadsTheClock(t *testing.T) {
 // the step's own, but Recover can't run that host read against the replay clock, so
 // replay's reads shift by one and the timer comes back at another deadline.
 func TestRecover_ReplaysAStepWhoseHostCodeReadTheInstanceClock(t *testing.T) {
-	t.Skip("a host read of Instance().Clock() during a step is journaled but can't be replayed; awaiting a ruling")
+	t.Skip("a host read of Instance().Clock() during a step is journaled but can't be replayed; #247")
 	ctx := context.Background()
 	type cx struct{}
 	var h *Handle[string, string, cx]

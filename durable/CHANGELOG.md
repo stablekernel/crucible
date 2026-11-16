@@ -142,6 +142,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **`Recover` from an older checkpoint doesn't rerun a compound state's settled service
+  or actor.** This version starts a compound state's services and actors at `Start` and
+  `Recover`, which an older one didn't, so it recorded none of them as settled or ended.
+  `Recover` from a checkpoint an older version wrote put such a service back in flight,
+  or spawned such an actor, even when it had settled into one of the state's children.
+  It now counts them as settled or ended, as that version left them.
 - **`Recover` and `StateAt` fail when a Store loses `Record.Format`.** The Start baseline
   and every checkpoint record the journal format too, and a Record after one with a lower
   format fails replay, where it used to replay as an older journal's and silently skip

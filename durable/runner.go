@@ -1211,6 +1211,30 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	return &ActorSet{IDs: endedIDs}, &ActorSet{IDs: unstartedIDs}
 }
 
+// compoundStarts returns the StartEffects of inst's active compound states, the ones
+// that aren't active leaves: what StartEffects covers that an older version's, which
+// covered the active leaves alone, didn't.
+func compoundStarts[S comparable, E comparable, C any](inst *state.Instance[S, E, C]) []state.Effect {
+	leaves := map[string]bool{}
+	for _, s := range inst.Configuration() {
+		leaves[fmt.Sprint(s)] = true
+	}
+	var out []state.Effect
+	for _, eff := range inst.StartEffects() {
+		switch e := eff.(type) {
+		case state.StartService:
+			if !leaves[e.State] {
+				out = append(out, eff)
+			}
+		case state.SpawnActor:
+			if !leaves[e.State] {
+				out = append(out, eff)
+			}
+		}
+	}
+	return out
+}
+
 // actorSetsCache is the last result actorSets computed, with what it read: the
 // configuration and the running actors.
 type actorSetsCache struct {
@@ -1343,10 +1367,27 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// step) can be re-settled from its recorded outcome without re-running it. A
 	// service that had settled by the checkpoint while its state stayed active isn't
 	// armed: it would run again.
+	// An older version started only the active leaves' services and actors at Start and
+	// Recover, never a compound state's, so it recorded none of theirs as settled or
+	// ended. For a checkpoint it wrote, count a compound state's as settled or ended, as
+	// that version left them, so Recover doesn't run one that already settled into a
+	// child.
+	endedServices := env.EndedServices
+	var olderEndedActors []string
+	if env.Format < actorArmsFormat {
+		for _, eff := range compoundStarts(inst) {
+			switch e := eff.(type) {
+			case state.StartService:
+				endedServices = append(endedServices, e.ID)
+			case state.SpawnActor:
+				olderEndedActors = append(olderEndedActors, e.ID)
+			}
+		}
+	}
 	svcBuf := make([]state.JournalEntry, 0)
 	svc := r.newServiceRunner(inst)
 	if svc != nil {
-		svc.Absorb(ctx, startsExcept(inst.StartEffects(), env.EndedServices, func(sv state.StartService) string { return sv.ID }))
+		svc.Absorb(ctx, startsExcept(inst.StartEffects(), endedServices, func(sv state.StartService) string { return sv.ID }))
 	}
 
 	// Build the child-machine actor host driver, but DO NOT spawn the restored
@@ -1367,7 +1408,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// services that settled in their state's current activation, starting from the ones
 	// the checkpoint recorded.
 	mirror := &armMirror{armed: armed, clock: repClock}
-	for _, sv := range env.EndedServices {
+	for _, sv := range endedServices {
 		mirror.settle(sv)
 	}
 
@@ -1375,6 +1416,14 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// the checkpoint's, then each tail Record's that records one. Nil means none was
 	// recorded, so Recover spawns every actor the configuration declares.
 	ended := env.EndedActors
+	if len(olderEndedActors) > 0 {
+		ids := olderEndedActors
+		if ended != nil {
+			ids = append(ids, ended.IDs...)
+		}
+		slices.Sort(ids)
+		ended = &ActorSet{IDs: slices.Compact(ids)}
+	}
 	// unstarted is the latest recorded set of the declared actors that weren't running
 	// and hadn't ended, recorded alongside ended. Nil means none was recorded.
 	unstarted := env.UnstartedActors
