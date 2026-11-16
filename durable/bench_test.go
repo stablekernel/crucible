@@ -80,3 +80,42 @@ func BenchmarkMemStore_Append(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkHandle_Fire_ActorIdleStep measures what a machine that declares actors pays
+// on a step that touches none: the actor sets the step records come from a cache, so
+// the difference from the no-actor case is the cache check.
+func BenchmarkHandle_Fire_ActorIdleStep(b *testing.B) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		actors bool
+	}{{"noActors", false}, {"threeActors", true}} {
+		b.Run(tc.name, func(b *testing.B) {
+			bl := state.ForgeFor[stepCtx]("cost")
+			if tc.actors {
+				bl = bl.Actor("a").Actor("b").Actor("c")
+			}
+			bl = bl.State("working")
+			if tc.actors {
+				bl = bl.InvokeActor("a").InvokeActor("b").InvokeActor("c")
+			}
+			m := bl.Initial("working").Transition("working").On("poke").GoTo("working").Quench()
+			var opts []stepOption
+			if tc.actors {
+				beh := func(map[string]any) (state.ActorInstance, error) { return &reentryGreeter{sent: true}, nil }
+				opts = append(opts, durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{"a": beh, "b": beh, "c": beh}))
+			}
+			h, err := durable.NewRunner(m, durable.NewMemStore(), opts...).Start(ctx, "cost", stepCtx{}, state.WithInitialState("working"))
+			if err != nil {
+				b.Fatalf("Start: %v", err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := h.Fire(ctx, "poke"); err != nil {
+					b.Fatalf("Fire: %v", err)
+				}
+			}
+		})
+	}
+}

@@ -144,7 +144,7 @@ type Handle[S comparable, E comparable, C any] struct {
 	ended      recordedSet                 // the ended actors the journal last recorded
 	unstarted  recordedSet                 // the unstarted actors the journal last recorded
 	seen       map[string]bool             // declared actors seen running, so a stopped one counts as ended
-	sets       actorSetsCache              // the last actorSets result, reused while nothing it reads changed
+	sets       actorSetsCache[S]           // the last actorSets result, reused while nothing it reads changed
 	pending    []state.ParentFire[S]       // parent Fires Start's or Recover's spawns drove, journaled with the next step
 	actorFires *parentFires[S]             // the parent Fires the actor system drove, taken per step
 
@@ -1176,13 +1176,13 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 	// The sets depend on the declared actors, so on the configuration, on which are
 	// running, and on this step's spawns. A step that changed none of them, as most
 	// steps that touch no actor don't, gets the last result back.
-	config := fmt.Sprint(h.inst.Configuration())
+	config := h.inst.Configuration()
 	if h.sets.valid && len(attempted) == 0 && len(spawned) == 0 && len(failed) == 0 &&
-		config == h.sets.config && slices.Equal(running, h.sets.running) {
+		slices.Equal(config, h.sets.config) && slices.Equal(running, h.sets.running) {
 		return h.sets.ended, h.sets.unstarted
 	}
 	defer func() {
-		h.sets = actorSetsCache{valid: true, config: config, running: running, ended: ended, unstarted: unstarted}
+		h.sets = actorSetsCache[S]{valid: true, config: config, running: running, ended: ended, unstarted: unstarted}
 	}()
 	endedIDs, unstartedIDs := []string{}, []string{}
 	for _, id := range declaredActors(h.inst.StartEffects()) {
@@ -1216,9 +1216,9 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 
 // actorSetsCache is the last result actorSets computed, with what it read: the
 // configuration and the running actors.
-type actorSetsCache struct {
+type actorSetsCache[S comparable] struct {
 	valid            bool
-	config           string
+	config           []S
 	running          []string
 	ended, unstarted *ActorSet
 }
