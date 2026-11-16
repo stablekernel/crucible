@@ -138,7 +138,7 @@ func StateAt[S comparable, E comparable, C any](
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded); err != nil {
+	if err := replayThrough(ctx, inst, &cfg, bounded, unmarshalCheckpoint(baseline).Format); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -229,6 +229,7 @@ func replayThrough[S comparable, E comparable, C any](
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
 	bounded []Record,
+	format int,
 ) error {
 	sched := state.NewScheduler(inst)
 
@@ -245,6 +246,9 @@ func replayThrough[S comparable, E comparable, C any](
 		}
 		// A domain effect is never dispatched here: a time-travel read applies no
 		// side effect.
+		if err := checkFormat(format, &bounded[i]); err != nil {
+			return err
+		}
 		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
 			return err
 		}

@@ -70,6 +70,15 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Fixed
 
+- **`AbsorbRespawn` quiets only the actors it spawns.** Its quiet was one flag for the
+  whole system, so a message another goroutine's delivery sent the parent while it ran
+  was dropped. The quiet now rides the call chain that spawns each actor, and ends when
+  `AbsorbRespawn` returns.
+- **An invocation's declared onError survives its JSON IR.** An onError that is the
+  zero event, such as an `iota` enum's first constant, read back as undeclared, and now
+  escalated. The IR writes the `onError` key only when one was declared and reads a
+  present key as declared, so IR written before this, which always has the key, keeps
+  routing the zero event as it did.
 - **An invoked actor with no onError escalates its failure.** When an `InvokeActor`
   actor with no `WithInvokeOnError` couldn't start, or failed after it ran, the actor
   system fired the zero event at the parent, which a wildcard or a transition on that

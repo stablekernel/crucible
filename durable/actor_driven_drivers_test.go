@@ -2,6 +2,7 @@ package durable_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -394,6 +395,15 @@ func TestRecover_ReplaysAnOlderJournalsActorFireWithoutArming(t *testing.T) {
 		t.Fatalf("journal holds %d Records, want the delivery, the leave and the tick", len(tail))
 	}
 	older := durable.NewMemStore()
+	// An older version's baseline records no journal format.
+	var env map[string]json.RawMessage
+	if err = json.Unmarshal(baseline, &env); err != nil {
+		t.Fatalf("decoding the baseline: %v", err)
+	}
+	delete(env, "format")
+	if baseline, err = json.Marshal(env); err != nil {
+		t.Fatalf("encoding the baseline: %v", err)
+	}
 	if err = older.Checkpoint(ctx, id, baseline, durable.BaselineStep); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}

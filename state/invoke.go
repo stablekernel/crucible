@@ -79,15 +79,15 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// extra preserves unknown JSON keys a newer producer emitted so they survive a
 	// load -> save cycle (forward-compat). Never inspected by the kernel.
 	extra map[string]json.RawMessage
-	// hasOnError records that the builder was given WithInvokeOnError, since OnError
-	// holds the zero event either way. It doesn't serialize, so an invocation loaded
-	// from JSON falls back to OnError not being the zero event (declaresOnError).
+	// hasOnError records that an onError was declared, since OnError holds the zero
+	// event either way: the builder was given WithInvokeOnError, or the JSON it was
+	// loaded from has the onError key.
 	hasOnError bool
 }
 
-// declaresOnError reports whether the invocation declared an onError: the builder
-// was given WithInvokeOnError, or, for one loaded from JSON, OnError isn't the zero
-// event.
+// declaresOnError reports whether the invocation declared an onError: the builder was
+// given WithInvokeOnError, the JSON it was loaded from has the onError key, or, for one
+// built some other way, OnError isn't the zero event.
 func (inv *Invocation[S, E, C]) declaresOnError() bool {
 	var zero E
 	return inv.hasOnError || inv.OnError != zero
@@ -101,10 +101,28 @@ var invocationKnownKeys = map[string]struct{}{
 }
 
 // MarshalJSON encodes an Invocation, merging its preserved unknown keys back in
-// with stable key ordering.
+// with stable key ordering. It writes the onError key only when an onError was
+// declared, so a declared zero event survives the round trip and an undeclared one
+// isn't read back as declared.
 func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
-	type alias Invocation[S, E, C]
-	return marshalWithExtra(alias(inv), inv.extra)
+	if inv.declaresOnError() {
+		type alias Invocation[S, E, C]
+		return marshalWithExtra(alias(inv), inv.extra)
+	}
+	// The fields, in Invocation's order, less onError.
+	type undeclared struct {
+		ID       string         `json:"id,omitempty"`
+		Src      Ref            `json:"src"`
+		Input    map[string]any `json:"input,omitempty"`
+		OnDone   E              `json:"onDone"`
+		Kind     ActorKind      `json:"kind,omitempty"`
+		SystemID string         `json:"systemId,omitempty"`
+		Meta     map[string]any `json:"meta,omitempty"`
+	}
+	return marshalWithExtra(undeclared{
+		ID: inv.ID, Src: inv.Src, Input: inv.Input, OnDone: inv.OnDone,
+		Kind: inv.Kind, SystemID: inv.SystemID, Meta: inv.Meta,
+	}, inv.extra)
 }
 
 // UnmarshalJSON decodes an Invocation and captures any unknown keys into extra so
@@ -118,6 +136,13 @@ func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
 	}
 	*inv = Invocation[S, E, C](a)
 	inv.extra = extra
+	// A document that has the onError key declared one, even as the zero event; one
+	// from before this field always has it, and keeps routing the zero event.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	_, inv.hasOnError = keys["onError"]
 	return nil
 }
 

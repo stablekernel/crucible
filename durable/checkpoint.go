@@ -98,6 +98,10 @@ type checkpointEnvelope struct {
 	// settled isn't one. None, as in a Start baseline or an older checkpoint, means
 	// Recover starts every declared service.
 	EndedServices []string `json:"endedServices,omitempty"`
+	// Format is the journal format of the version that wrote the checkpoint, as
+	// Record.Format is. Zero means a checkpoint from before this field. A Record after
+	// it with a lower Format means the Store lost the field, and replay fails.
+	Format int `json:"format,omitempty"`
 }
 
 // marshalCheckpoint adds the armed pending timers to env, which carries the marshaled

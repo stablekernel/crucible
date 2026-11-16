@@ -207,3 +207,97 @@ func TestTick_AChainedDeadlineHoldsWhenAFiredTransitionReadsTheClock(t *testing.
 		t.Fatalf("the scheduler didn't fire b's timer at the recorded deadline %v: it holds a different one", recorded)
 	}
 }
+
+// TestFire_ADeadlineHoldsWhenTheTransitionReadsTheClock pins that a timer a Fire arms is
+// recorded at the scheduler's deadline when the transition's action reads the instance
+// clock first, live and after Recover's replay.
+func TestFire_ADeadlineHoldsWhenTheTransitionReadsTheClock(t *testing.T) {
+	ctx := context.Background()
+	type cx struct{}
+	var h *Handle[string, string, cx]
+	look := func(state.ActionCtx[cx]) (state.Effect, error) {
+		if h != nil {
+			_ = h.inst.Clock().Now()
+		}
+		return nil, nil
+	}
+	m := state.ForgeFor[cx]("fireReads").
+		Action("look", look).
+		State("idle").
+		State("a").
+		State("b").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("a").Do("look").
+		Transition("a").After(time.Second).On("toB").GoTo("b").
+		Quench()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := &steppingClock{now: base, stepping: true}
+	store := NewMemStore()
+	var err error
+	h, err = NewRunner(m, store, WithRunnerClock[string, string, cx](clk)).
+		Start(ctx, "fire-reads", cx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
+	}
+	id := state.ScheduleID("fireReads", "a", 0)
+	want, ok := h.sched.Due(id)
+	if !ok {
+		t.Fatalf("no timer pending under %s", id)
+	}
+	if got := h.timers[id].due; !got.Equal(want) {
+		t.Fatalf("live recorded deadline %v, scheduler %v", got, want)
+	}
+}
+
+// TestRecover_ReplaysAStepWhoseHostCodeReadTheInstanceClock pins what Recover does with
+// a step whose host code read the Handle's instance clock: the read is journaled with
+// the step's own, but Recover can't run that host read against the replay clock, so
+// replay's reads shift by one and the timer comes back at another deadline.
+func TestRecover_ReplaysAStepWhoseHostCodeReadTheInstanceClock(t *testing.T) {
+	t.Skip("a host read of Instance().Clock() during a step is journaled but can't be replayed; awaiting a ruling")
+	ctx := context.Background()
+	type cx struct{}
+	var h *Handle[string, string, cx]
+	look := func(state.ActionCtx[cx]) (state.Effect, error) {
+		if h != nil {
+			_ = h.inst.Clock().Now()
+		}
+		return nil, nil
+	}
+	m := state.ForgeFor[cx]("fireReads").
+		Action("look", look).
+		State("idle").
+		State("a").
+		State("b").
+		Initial("idle").
+		Transition("idle").On("go").GoTo("a").Do("look").
+		Transition("a").After(time.Second).On("toB").GoTo("b").
+		Quench()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := NewMemStore()
+	var err error
+	h, err = NewRunner(m, store, WithRunnerClock[string, string, cx](&steppingClock{now: base, stepping: true})).
+		Start(ctx, "fire-reads", cx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "go"); err != nil {
+		t.Fatalf("Fire(go): %v", err)
+	}
+	id := state.ScheduleID("fireReads", "a", 0)
+	want, _ := h.sched.Due(id)
+	h = nil
+	recovered, err := Recover(ctx, m, store, "fire-reads", WithRunnerClock[string, string, cx](&steppingClock{now: base.Add(time.Hour)}))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.timers[id].due; !got.Equal(want) {
+		t.Fatalf("recovered deadline %v, want the live %v", got, want)
+	}
+	if got, _ := recovered.sched.Due(id); !got.Equal(want) {
+		t.Fatalf("recovered scheduler holds %v, want the live %v", got, want)
+	}
+}

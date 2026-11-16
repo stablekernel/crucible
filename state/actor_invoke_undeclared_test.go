@@ -104,3 +104,33 @@ func TestInvokeActor_NoOnError_FailuresEscalate(t *testing.T) {
 		}
 	}
 }
+
+// TestInvokeActor_ZeroValueOnError_SurvivesJSON pins that an InvokeActor whose onError is
+// the zero event, such as an iota enum's first constant, still counts as declared after
+// the machine goes through its JSON IR, as it does when built.
+func TestInvokeActor_ZeroValueOnError_SurvivesJSON(t *testing.T) {
+	const (
+		failed = iota
+		start
+	)
+	built := state.Forge[string, int, *trec]("parent").
+		Actor("child").
+		State("idle").
+		State("supervising").InvokeActor("child", state.WithInvokeOnError(failed)).
+		Initial("idle").
+		CurrentStateFn(func(*trec) string { return "idle" }).
+		Transition("idle").On(start).GoTo("supervising").
+		Quench()
+	raw, err := built.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON: %v", err)
+	}
+	ir, err := state.LoadFromJSON[string, int, *trec](raw)
+	if err != nil {
+		t.Fatalf("LoadFromJSON: %v", err)
+	}
+	loaded := ir.Provide(state.NewRegistry[*trec]()).CurrentStateFn(func(*trec) string { return "idle" }).Quench()
+	if sp := spawnEffect(t, loaded, start); sp.NoOnError {
+		t.Fatal("NoOnError = true after the JSON round trip, for an onError that is the zero event")
+	}
+}

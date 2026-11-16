@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // This file ships the reusable host-driver harness for the actor model. The
@@ -178,14 +179,6 @@ type ActorSystem[S comparable, E comparable, C any] struct {
 	// the per-instance Inspector wired with WithInspector: the ActorSystem owns
 	// spawning, stopping, and message delivery, which the pure Fire step never sees.
 	inspector Inspector
-
-	// quiet is set while AbsorbRespawn spawns an actor: a message to the parent is
-	// dropped, and so is a nested actor's onDone or onError. A parent Fire it lets
-	// through clears it until that Fire's effects are absorbed. Guarded by mu.
-	quiet bool
-	// respawned holds the ids of the actors AbsorbRespawn is spawning, whose failed
-	// spawn or settle fires the parent even while it's quiet. Guarded by mu.
-	respawned map[string]bool
 }
 
 // WithActorInspector wires a live observer sink fed the ActorSystem's
@@ -323,59 +316,67 @@ func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effe
 			respawned[e.ID] = true
 		}
 	}
-	s.mu.Lock()
-	prev := s.respawned
-	s.respawned = respawned
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.respawned = prev
-		s.mu.Unlock()
-	}()
+	q := &respawnQuiet{respawned: respawned}
+	// The quiet ends with AbsorbRespawn, even for a context an actor's behavior kept.
+	defer q.ended.Store(true)
 	for _, eff := range effects {
 		if e, ok := eff.(SpawnActor); ok {
-			s.respawnOne(ctx, e)
+			s.respawnOne(ctx, q, e)
 			continue
 		}
 		s.absorb(ctx, []Effect{eff}, nil)
 	}
 }
 
-// respawnOne spawns e with the parent quiet, so its start doesn't reach the parent.
-func (s *ActorSystem[S, E, C]) respawnOne(ctx context.Context, e SpawnActor) {
-	prev := s.setQuiet(true)
-	defer s.setQuiet(prev)
-	s.spawn(ctx, e)
+// respawnQuiet is the quiet of one AbsorbRespawn: it rides the context of the call
+// chain that spawns each actor, so only that chain's messages to the parent are dropped,
+// and a delivery another goroutine makes meanwhile is heard.
+type respawnQuiet struct {
+	// respawned holds the ids of the actors AbsorbRespawn was given, whose failed spawn
+	// or settle fires the parent even while it's quiet.
+	respawned map[string]bool
+	// ended is set when AbsorbRespawn returns, ending the quiet.
+	ended atomic.Bool
 }
 
-// setQuiet sets whether the parent is quiet, as it is while AbsorbRespawn spawns an
-// actor, and returns the previous setting.
-func (s *ActorSystem[S, E, C]) setQuiet(quiet bool) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	prev := s.quiet
-	s.quiet = quiet
-	return prev
+// quietKey is the context key a respawnQuiet rides under.
+type quietKey struct{}
+
+// quietOf returns the quiet ctx carries, or nil when ctx carries none or AbsorbRespawn
+// has returned.
+func quietOf(ctx context.Context) *respawnQuiet {
+	q, _ := ctx.Value(quietKey{}).(*respawnQuiet)
+	if q == nil || q.ended.Load() {
+		return nil
+	}
+	return q
 }
 
-// isQuiet reports whether a message to the parent is dropped, as AbsorbRespawn drops
-// one an actor's start sends.
-func (s *ActorSystem[S, E, C]) isQuiet() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.quiet
+// heard returns ctx with the quiet lifted, for a parent Fire that's new and so is all
+// it drives.
+func heard(ctx context.Context) context.Context {
+	if quietOf(ctx) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, quietKey{}, (*respawnQuiet)(nil))
 }
 
-// hearingLocked reports how a parent Fire for actor id's failed spawn or settle goes
-// while the parent may be quiet: dropped, when it's part of the start AbsorbRespawn is
-// repeating, or fired with the parent heard again, when id is an actor AbsorbRespawn was
-// given, which was running, so the Fire is new and so is all it drives. s.mu must be
-// held.
-func (s *ActorSystem[S, E, C]) hearingLocked(id string) (drop, lift bool) {
-	if !s.quiet {
+// respawnOne spawns e with the parent quiet on its call chain, so its start doesn't
+// reach the parent.
+func (s *ActorSystem[S, E, C]) respawnOne(ctx context.Context, q *respawnQuiet, e SpawnActor) {
+	s.spawn(context.WithValue(ctx, quietKey{}, q), e)
+}
+
+// hearing reports how a parent Fire for actor id's failed spawn or settle goes on ctx's
+// call chain: dropped, when it's part of the start AbsorbRespawn is repeating, or fired
+// with the parent heard again, when id is an actor AbsorbRespawn was given, which was
+// running, so the Fire is new and so is all it drives.
+func hearing(ctx context.Context, id string) (drop, lift bool) {
+	q := quietOf(ctx)
+	if q == nil {
 		return false, false
 	}
-	if s.respawned[id] {
+	if q.respawned[id] {
 		return false, true
 	}
 	return true, false
@@ -474,9 +475,7 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 // failure escalates to the parent as a typed ActorEscalation rather than being
 // silently swallowed (the G3 default), so a spawn that cannot start is never lost.
 func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
-	s.mu.Lock()
-	drop, lift := s.hearingLocked(e.ID)
-	s.mu.Unlock()
+	drop, lift := hearing(ctx, e.ID)
 	// A failure the start AbsorbRespawn is repeating was routed or escalated when it
 	// first happened.
 	if drop {
@@ -490,8 +489,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		return
 	}
 	if lift {
-		prev := s.setQuiet(false)
-		defer s.setQuiet(prev)
+		ctx = heard(ctx)
 	}
 	res := s.parent.Fire(ctx, ev)
 	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
@@ -750,7 +748,7 @@ func (s *ActorSystem[S, E, C]) resolveTarget(targetID, systemID string) (string,
 // drains it. This is the single path every routed message flows through, so parent
 // and child delivery share their sender bookkeeping.
 func (s *ActorSystem[S, E, C]) dispatch(ctx context.Context, targetID string, event any, senderID string) {
-	if targetID == parentActorID && s.isQuiet() {
+	if targetID == parentActorID && quietOf(ctx) != nil {
 		return
 	}
 	s.inspectMessage(senderID, targetID, MessageSent, event)
@@ -814,8 +812,8 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		ev, route = ra.onDone, ra.hasDone
 	}
 	s.lastOutcome = actorOutcome{output: output, err: err, set: true}
-	drop, lift := s.hearingLocked(id)
 	s.mu.Unlock()
+	drop, lift := hearing(ctx, id)
 
 	// A completed actor's children are torn down with it.
 	for _, c := range children {
@@ -836,8 +834,7 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 		return FireResult[S]{}, false
 	}
 	if lift {
-		prev := s.setQuiet(false)
-		defer s.setQuiet(prev)
+		ctx = heard(ctx)
 	}
 	// Deliver the child's output/error to the parent's onDone/onError transition's
 	// Assign through the done-event payload (AssignCtx.Event), not a side channel:
