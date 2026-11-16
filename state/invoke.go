@@ -79,6 +79,18 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// extra preserves unknown JSON keys a newer producer emitted so they survive a
 	// load -> save cycle (forward-compat). Never inspected by the kernel.
 	extra map[string]json.RawMessage
+	// hasOnError records that the builder was given WithInvokeOnError, since OnError
+	// holds the zero event either way. It doesn't serialize, so an invocation loaded
+	// from JSON falls back to OnError not being the zero event (declaresOnError).
+	hasOnError bool
+}
+
+// declaresOnError reports whether the invocation declared an onError: the builder
+// was given WithInvokeOnError, or, for one loaded from JSON, OnError isn't the zero
+// event.
+func (inv *Invocation[S, E, C]) declaresOnError() bool {
+	var zero E
+	return inv.hasOnError || inv.OnError != zero
 }
 
 // invocationKnownKeys is the set of JSON keys Invocation models; anything else is

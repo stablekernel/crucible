@@ -1,7 +1,6 @@
 package durable
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -82,91 +81,59 @@ func TestUnmarshalCheckpoint_Garbage(t *testing.T) {
 	}
 }
 
-// armingMachine is a minimal machine for the arming tests: idle -elapsed-> fired,
-// so a Tick that fires an armed timer moves the instance.
-func armingMachine() *state.Machine[string, string, int] {
-	return state.ForgeFor[int]("arming").
-		State("idle").
-		State("fired").
-		Initial("idle").
-		Transition("idle").On("elapsed").GoTo("fired").
-		// fired keeps a self-loop, so a second armed timer fires cleanly once the
-		// first has moved the instance there.
-		Transition("fired").On("elapsed").GoTo("fired").
-		Quench()
-}
-
-// readCountClock wraps a Clock and counts its Now() readings, so a test can prove
-// an arming took none.
-type readCountClock struct {
-	state.Clock
-	reads int
-}
-
-func (c *readCountClock) Now() time.Time {
-	c.reads++
-	return c.Clock.Now()
-}
-
-func (c *readCountClock) Advance(d time.Duration) {
-	c.Clock.(interface{ Advance(time.Duration) }).Advance(d)
-}
-
-// TestArmPersistedTimers_ArmsAtTheDeadlineWithoutReadingTheClock confirms the
-// pre-walk arming arms each persisted timer into the scheduler at its recorded
-// absolute deadline and seeds the mirror's table, taking no clock reading: a read
-// there would consume the recorded reading the first tail Record owns. A deadline
-// already in the past fires on the next Tick, and a later one when the clock
-// reaches it.
-func TestArmPersistedTimers_ArmsAtTheDeadlineWithoutReadingTheClock(t *testing.T) {
-	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	clk := &readCountClock{Clock: state.NewFakeClock(base)}
-	inst := armingMachine().Cast(0, state.WithInitialState("idle"), state.WithClock[string](clk))
-	sched := state.NewScheduler(inst)
-	past := base.Add(-3 * time.Second)
-	future := base.Add(8 * time.Second)
+// TestReArmEffects_SkipsAlreadyArmed confirms a persisted timer already armed by
+// tail replay is not re-armed (no double-arm), while an un-armed one is re-armed at
+// its remaining delay.
+func TestReArmEffects_SkipsAlreadyArmed(t *testing.T) {
+	now := time.Unix(0, 1_000_000_000).UTC()
 	wires := []pendingTimerWire{
-		{ID: "past", DueUnixNano: past.UnixNano(), Event: json.RawMessage(`"elapsed"`)},
-		{ID: "future", DueUnixNano: future.UnixNano(), Event: json.RawMessage(`"elapsed"`)},
+		{ID: "armed", DueUnixNano: now.Add(5 * time.Second).UnixNano(), Event: json.RawMessage(`"x"`)},
+		{ID: "compacted", DueUnixNano: now.Add(8 * time.Second).UnixNano(), Event: json.RawMessage(`"y"`)},
 	}
-	armed := map[string]pendingTimer{}
-	if err := armPersistedTimers[string, string, int](jsonEventCodec[string]{}, sched, wires, armed); err != nil {
-		t.Fatalf("armPersistedTimers: %v", err)
+	already := map[string]pendingTimer{"armed": {id: "armed"}}
+	effects, seeded, err := reArmEffects[string](jsonEventCodec[string]{}, wires, already, now)
+	if err != nil {
+		t.Fatalf("reArmEffects: %v", err)
 	}
-	if clk.reads != 0 {
-		t.Fatalf("arming took %d clock readings, want none", clk.reads)
+	if len(effects) != 1 || len(seeded) != 1 {
+		t.Fatalf("want exactly the compacted timer re-armed, got effects=%d seeded=%d", len(effects), len(seeded))
 	}
-	for id, due := range map[string]time.Time{"past": past, "future": future} {
-		if !sched.HasPending(id) {
-			t.Fatalf("timer %q not armed", id)
-		}
-		if got := armed[id]; got.id != id || !got.due.Equal(due) {
-			t.Fatalf("armed table for %q = %+v, want due %v", id, got, due)
-		}
+	sa, ok := effects[0].(state.ScheduleAfter)
+	if !ok || sa.ID != "compacted" {
+		t.Fatalf("want compacted ScheduleAfter, got %+v", effects[0])
 	}
-	// The elapsed deadline fires on the next Tick; the future one stays armed.
-	fired := sched.Tick(context.Background())
-	if len(fired) != 1 || inst.Current() != "fired" {
-		t.Fatalf("tick fired %d, state %q, want the elapsed timer alone", len(fired), inst.Current())
-	}
-	if !sched.HasPending("future") {
-		t.Fatal("the future timer should stay armed")
-	}
-	clk.Advance(8 * time.Second)
-	if fired = sched.Tick(context.Background()); len(fired) != 1 {
-		t.Fatalf("tick at the deadline fired %d, want the future timer", len(fired))
+	if sa.Delay != 8*time.Second {
+		t.Fatalf("remaining delay: want 8s, got %s", sa.Delay)
 	}
 }
 
-// TestArmPersistedTimers_BadEventErrors surfaces a decode failure for a corrupt
-// persisted timer event rather than silently dropping the timer.
-func TestArmPersistedTimers_BadEventErrors(t *testing.T) {
+// TestReArmEffects_ElapsedDeadlineImmediate confirms a deadline already at or before
+// now yields a non-positive delay (armed as immediately due), so an elapsed-while-
+// down timer fires on the next Tick.
+func TestReArmEffects_ElapsedDeadlineImmediate(t *testing.T) {
+	now := time.Unix(0, 10_000_000_000).UTC()
+	wires := []pendingTimerWire{
+		{ID: "past", DueUnixNano: now.Add(-3 * time.Second).UnixNano(), Event: json.RawMessage(`"z"`)},
+	}
+	effects, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, map[string]pendingTimer{}, now)
+	if err != nil {
+		t.Fatalf("reArmEffects: %v", err)
+	}
+	if len(effects) != 1 {
+		t.Fatalf("want 1 effect, got %d", len(effects))
+	}
+	if sa := effects[0].(state.ScheduleAfter); sa.Delay > 0 {
+		t.Fatalf("elapsed deadline should arm non-positive delay, got %s", sa.Delay)
+	}
+}
+
+// TestReArmEffects_BadEventErrors surfaces a decode failure for a corrupt persisted
+// timer event rather than silently dropping the timer.
+func TestReArmEffects_BadEventErrors(t *testing.T) {
 	wires := []pendingTimerWire{
 		{ID: "bad", DueUnixNano: 1, Event: json.RawMessage(`{not valid`)},
 	}
-	clk := state.NewFakeClock(time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC))
-	inst := armingMachine().Cast(0, state.WithInitialState("idle"), state.WithClock[string](clk))
-	err := armPersistedTimers[string, string, int](jsonEventCodec[string]{}, state.NewScheduler(inst), wires, map[string]pendingTimer{})
+	_, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, map[string]pendingTimer{}, time.Unix(0, 0))
 	if err == nil {
 		t.Fatal("want decode error for corrupt timer event, got nil")
 	}
@@ -203,52 +170,4 @@ func TestCheckpoint_NextStepRoundTrips(t *testing.T) {
 func unmarshalCheckpointParts(b []byte) ([]byte, []pendingTimerWire, int) {
 	env := unmarshalCheckpoint(b)
 	return env.Snapshot, env.Timers, env.NextStep
-}
-
-// TestRecover_SeedsTheTimerTableWithThePersistedDeadline proves the Handle's timer
-// table after a Recover whose tail replays no timer step ends with each
-// still-pending timer at its persisted absolute deadline, so the next checkpoint
-// persists it again and the recovered scheduler holds it armed.
-func TestRecover_SeedsTheTimerTableWithThePersistedDeadline(t *testing.T) {
-	ctx := context.Background()
-	m := state.ForgeFor[int]("seeded").
-		State("idle").
-		State("waiting").
-		State("done").Final().
-		Initial("idle").
-		Transition("idle").On("arm").GoTo("waiting").
-		Transition("waiting").On("poke").GoTo("waiting").
-		Transition("waiting").After(10 * time.Second).On("elapsed").GoTo("done").
-		Quench()
-	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	store, id := NewMemStore(), InstanceID("seeded")
-	h, err := NewRunner(m, store,
-		WithRunnerClock[string, string, int](state.NewFakeClock(base)),
-		WithCheckpointEvery[string, string, int](2)).
-		Start(ctx, id, 0, state.WithInitialState("idle"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	for _, ev := range []string{"arm", "poke"} {
-		if _, err = h.Fire(ctx, ev); err != nil {
-			t.Fatalf("Fire(%q): %v", ev, err)
-		}
-	}
-	rec, err := Recover(ctx, m, store, id,
-		WithRunnerClock[string, string, int](state.NewFakeClock(base.Add(time.Hour))),
-		WithCheckpointEvery[string, string, int](2))
-	if err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	if len(rec.timers) != 1 {
-		t.Fatalf("recovered timer table = %v, want one pending timer", rec.timers)
-	}
-	for id, pt := range rec.timers {
-		if want := base.Add(10 * time.Second); !pt.due.Equal(want) {
-			t.Fatalf("timer %q due %v, want the persisted %v", id, pt.due, want)
-		}
-		if !rec.sched.HasPending(id) {
-			t.Fatalf("timer %q is in the table but not armed on the scheduler", id)
-		}
-	}
 }

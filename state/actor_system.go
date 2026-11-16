@@ -490,7 +490,7 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 		defer s.setQuiet(prev)
 	}
 	res := s.parent.Fire(ctx, ev)
-	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
+	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true, NoOnError: e.NoOnError})
 	s.Absorb(ctx, res.Effects)
 }
 
@@ -918,6 +918,11 @@ type ParentFire[S comparable] struct {
 	// SpawnFailed reports that the Fire routed the onError of a spawn that couldn't
 	// start (an unbound Src, or a behavior that returned an error).
 	SpawnFailed bool
+	// NoOnError reports, with SpawnFailed, that the spawn declared no onError: the Fire
+	// carried the zero event an invoked actor with no WithInvokeOnError routes (see
+	// SpawnActor.NoOnError), so its refusal says nothing was declared to catch the
+	// failure, not that a declared onError was refused.
+	NoOnError bool
 	// Settle reports that the Fire routed a settled actor's onDone or onError, which
 	// carried the actor's outcome as its event data (WithEventData): Err for an onError,
 	// Output for an onDone. A message the actor sent the parent, or the onError of a

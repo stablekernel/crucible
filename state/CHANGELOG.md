@@ -13,18 +13,20 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
-- **`Scheduler.ArmAt`** arms one delayed transition at an absolute deadline — the
-  same timer id, event and firing behavior a `ScheduleAfter` for it would carry —
-  without reading the clock, where `Absorb` reads one to turn the effect's declared
-  delay into a deadline. A host that persisted a timer's deadline, as `durable` does
-  for the timers a checkpoint recorded, re-arms it exactly, so no reading is taken.
-  It's additive, within v1.1.0.
 - **`ActorSystem.WithParentFireObserver`** calls a function with each parent Fire the
   system drives (a `ParentFire`: its result, refused ones included, the actor it came
   from, whether it settled that actor, with its output or error, and whether it routed
   the onError of a spawn that couldn't start), so a host that records a delivery or spawn
   can tell a parent transition refused because its context ended from one that applied,
   and which Fire carried the actor's output. It's additive, within v1.1.0.
+- **`SpawnActor.NoOnError` and `ParentFire.NoOnError`** report that an invoked actor
+  declared no onError. Such an actor's `OnError` holds the zero event, which the system
+  still fires at the parent when the actor can't start, as before, so its refusal looks
+  like a declared onError the parent refused. The flags tell them apart without
+  matching the refusal's reason. An onError that is itself the zero event, such as the
+  first constant of an `iota` enum, counts as declared when the machine was built with
+  `WithInvokeOnError`; an invocation loaded from JSON counts one as declared only when
+  it isn't the zero event. It's additive, within v1.1.0.
 - **`ActorSystem.AbsorbRespawn`** is `Absorb` for actors a host spawns again after
   rebuilding the parent from a record that already holds every parent Fire their
   earlier start drove: an actor it spawns starts as under `Absorb`, but its start

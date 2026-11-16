@@ -87,10 +87,9 @@ type Record struct {
 	// EndedActors, when set, holds the child-machine actors the instance's state
 	// declared once this step ended that ran and have ended, settled or stopped, or
 	// whose spawn failed and whose onError applied, or was refused for a reason
-	// other than a context ending and other than the parent's having no transition
-	// for it (the journal holds that onError, or the refusal replay meets again), so
-	// Recover doesn't spawn them again. An actor whose spawn failed with no onError
-	// to route to — none declared, or none the parent handles — isn't one, and
+	// other than a context ending (the journal holds that onError, or the refusal
+	// replay meets again), so Recover doesn't spawn them again. An actor whose spawn
+	// failed with no onError declared isn't one, and
 	// neither is one whose onError a context's ending refused, since the step that
 	// drove it records nothing: Recover tries both again. The first step after Start records the
 	// set, and later steps record it when they change it. It is nil otherwise, for a
@@ -100,8 +99,8 @@ type Record struct {
 
 	// UnstartedActors, when set, holds the child-machine actors the instance's state
 	// declared once this step ended that aren't running and haven't ended: their latest
-	// spawn failed with no onError to route to — none was declared, or the parent has
-	// no transition for it — or its onError was refused because a context ended, which
+	// spawn failed with no onError declared, or its onError was refused because a
+	// context ended, which
 	// left the step that drove it recording nothing. Recover
 	// spawns them as new, so the messages they send the parent as they start apply and
 	// are journaled. A declared actor in neither set was running, and the journal holds

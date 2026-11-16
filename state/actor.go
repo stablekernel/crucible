@@ -87,6 +87,11 @@ type SpawnActor struct {
 	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name rather than by ref. Empty when unset.
 	SystemID string `json:"systemId,omitempty"`
+	// NoOnError reports that an invoked actor declared no onError, so OnError holds the
+	// zero event, which the system still fires at the parent when the actor can't start.
+	// A host that must tell a refused onError from an absent one reads it. A dynamic
+	// spawn with no onError leaves OnError nil instead, and escalates.
+	NoOnError bool `json:"noOnError,omitempty"`
 }
 
 // StopActor is the effect the kernel emits when an instance exits a state that
@@ -237,13 +242,14 @@ func (i *Instance[S, E, C]) actorEffectsOnEntry(entries []S, tr *Trace) []Effect
 			}
 			id := actorInvocationID(m.name, s, ix, inv)
 			out = append(out, SpawnActor{
-				ID:       id,
-				Src:      inv.Src,
-				Input:    inv.Input,
-				OnDone:   inv.OnDone,
-				OnError:  inv.OnError,
-				State:    fmtState(s),
-				SystemID: inv.SystemID,
+				ID:        id,
+				Src:       inv.Src,
+				Input:     inv.Input,
+				OnDone:    inv.OnDone,
+				OnError:   inv.OnError,
+				State:     fmtState(s),
+				SystemID:  inv.SystemID,
+				NoOnError: !inv.declaresOnError(),
 			})
 			tr.note("actor.spawn." + id)
 		}
