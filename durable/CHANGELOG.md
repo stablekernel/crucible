@@ -227,10 +227,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `Recover` leaves it alone. A spawn whose onError a context's ending refused still
   retries, since the step that drove it records nothing, as does one with no onError
   declared, as before. An invoked actor with no onError fires the zero event, which the
-  parent refuses as having no transition, and `durable` reads that refusal as "none
-  declared". So a declared onError the parent has no transition for retries too, and a
-  wildcard or a transition that takes the zero event counts as caught; #250 tracks a
-  better way to tell them apart.
+  parent refuses as having no transition, and `durable` reads that refusal
+  (`state.ErrNoTransition`) as "none declared". So a declared onError the parent has no
+  transition for retries too, and a wildcard or a transition that takes the zero event
+  counts as caught; #250 tracks a better way to tell them apart. A host refusal worded
+  like the kernel's counts as handled.
 - **A message an actor sends its parent as it spawns applies once.** A `Fire`,
   `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor
   again to send it again: it landed after the steps that followed it live, or never, if

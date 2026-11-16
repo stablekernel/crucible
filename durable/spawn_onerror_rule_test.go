@@ -102,14 +102,13 @@ func TestSpawnRule_GuardRefusedOnErrorIsDone(t *testing.T) {
 }
 
 func TestSpawnRule_DeclaredOnErrorWithNoTransitionIsDone(t *testing.T) {
-	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by the reason string; #250")
+	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by a no-transition refusal; #250")
 	if got := spawnRuleCalls(t, spawnRuleMachine(false, nil, state.WithInvokeOnError("spawnFailed"))); got != 1 {
 		t.Fatalf("behavior ran %d times, want Recover to leave it alone", got)
 	}
 }
 
 func TestSpawnRule_DenialWordedLikeNoTransitionIsDone(t *testing.T) {
-	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by the reason string; #250")
 	denial := &state.InvalidTransitionError{Event: "spawnFailed", Reason: "no transition declared for this state and event"}
 	m := spawnRuleMachine(true, denyAs("spawnFailed", denial), state.WithInvokeOnError("spawnFailed"))
 	if got := spawnRuleCalls(t, m); got != 1 {

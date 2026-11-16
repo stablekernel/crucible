@@ -644,10 +644,6 @@ func (i *Instance[S, E, C]) fireFromState(ctx context.Context, start S, event E,
 		}
 	}
 
-	err := &InvalidTransitionError{
-		From:   fmtState(from),
-		Event:  fmt.Sprint(event),
-		Reason: "no transition declared for this state and event",
-	}
+	err := newNoTransitionError(fmtState(from), fmt.Sprint(event))
 	return FireResult[S]{NewState: from, Trace: tr, Err: err}
 }

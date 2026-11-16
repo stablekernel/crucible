@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,30 @@ type InvalidTransitionError struct {
 	To     string
 	Event  string
 	Reason string
+
+	// noTransition marks the kernel's own refusal of an event the active
+	// configuration declares no transition for, which ErrNoTransition matches.
+	noTransition bool
+}
+
+// ErrNoTransition matches, with errors.Is, the *InvalidTransitionError a Fire
+// returns when the active configuration declares no transition for the event. It
+// matches only the kernel's own refusal, not one a host builds with the same Reason.
+var ErrNoTransition = errors.New("crucible/state: no transition declared for this state and event")
+
+// noTransitionReason is the Reason of the kernel's no-transition refusal.
+const noTransitionReason = "no transition declared for this state and event"
+
+// newNoTransitionError returns the kernel's refusal of event in from, which has no
+// transition declared for it.
+func newNoTransitionError(from, event string) *InvalidTransitionError {
+	return &InvalidTransitionError{From: from, Event: event, Reason: noTransitionReason, noTransition: true}
+}
+
+// Is reports whether target is ErrNoTransition and e is the kernel's no-transition
+// refusal.
+func (e *InvalidTransitionError) Is(target error) bool {
+	return target == ErrNoTransition && e.noTransition
 }
 
 func (e *InvalidTransitionError) Error() string {

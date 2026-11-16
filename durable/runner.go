@@ -696,8 +696,8 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	// isn't: the step that drove it recorded nothing. Nor is one the parent had no
 	// transition for: an invoked actor with no onError declared routes the zero event,
 	// which the parent refuses that way, and nothing caught the failure. Telling the two
-	// apart by the refusal's reason is a stopgap; see #250.
-	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !isNoTransition(pf.Result.Err) {
+	// apart by a no-transition refusal is a stopgap; see #250.
+	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !errors.Is(pf.Result.Err, state.ErrNoTransition) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
@@ -1728,13 +1728,6 @@ func (jsonEventCodec[E]) Decode(payload []byte) (E, error) {
 	}
 	err := json.Unmarshal(payload, &e)
 	return e, err
-}
-
-// isNoTransition reports whether err is the kernel's refusal of an event the state has
-// no transition for, as state's own unexported check reads it.
-func isNoTransition(err error) bool {
-	var it *state.InvalidTransitionError
-	return errors.As(err, &it) && it.Reason == "no transition declared for this state and event"
 }
 
 // isContextErr reports whether err is a context's cancellation or deadline, which a
