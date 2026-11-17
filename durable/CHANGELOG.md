@@ -142,8 +142,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   JSON form, the raw result), and the state onDone enters starts its actors and
   services, before `RunService` fails; after `Recover` the service runs again, and its
   `Assign` with it. So keep a service's result JSON round-trippable, and have an onDone
-  `Assign` check the payload's type rather than assume it. A stacked change, #258,
-  refuses such a result before any `Assign` runs.
+  `Assign` check the payload's type rather than assume it. This may change, to refuse
+  such a result before any `Assign` runs.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
   another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
@@ -200,9 +200,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state stops its service and its actor, and one that enters a state starts its service
   and spawns its actor. The tick's Record journals the parent Fires an actor it spawned
   drove, replayed after its timers, and a parent Fire a context's ending refused fails
-  the Handle and records nothing, as for `Fire`. So does a `ctx` that ends while the
-  tick spawns its actors, which can cost a message one actor sends another without any
-  Fire reporting it, as `RunService` does after its settle. Replay does this for a tick of journal
+  the Handle and records nothing, as for `Fire`. So does a `ctx` that has ended by the
+  time the actor system took the spawns and messages to actors the timers handed it,
+  by the rule `Fire` shares: an actor's start or delivery refused under it is lost
+  without any Fire reporting it. A tick that handed the actor system neither, with no
+  Fire a context refused, records even when its `ctx` ends once its timers have fired
+  and their transitions applied. Replay does this for a tick of journal
   format 2 or later; an older version's tick replays as it ran, with its services left
   in flight. This is the Tick-driver fix #236 tracked. The services and actors a timer
   starts run under the tick's step context, as a `Fire`'s do, so an actor's behavior or
@@ -276,11 +279,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state spawned failed to start and a context's ending refused its onError, the Fire was
   recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns
   `ErrHandleFailed` and records nothing, though its event applied: fire it again on the
-  recovered Handle. So does a Fire whose context has ended by the time the actors it
-  spawned have started, which can cost a message one actor sends another without any
-  Fire reporting it, as `Tick` and `RunService` do. A Fire that spawned no actor and
-  drove no Fire a context refused still records, even when its context ends once the
-  kernel has applied the event.
+  recovered Handle. So does a Fire whose context has ended by the time the actor system
+  took the work the Fire handed it, a spawn or a message to an actor (`SendTo`,
+  `ForwardEvent`), as for `Tick`: an actor's start or delivery refused under it is lost
+  without any Fire reporting it. A Fire that handed the actor system neither and drove
+  no Fire a context refused still records, even when its context ends once the kernel
+  has applied the event: stopping an actor, or starting or stopping a timer or service,
+  runs nothing the context can refuse.
 - **An actor's output replays with the Fire that carried it.** When one delivery drove
   several parent Fires, such as an onDone entering a state whose actor then failed to
   start, the output was recorded with the last Fire, so replay gave it to the wrong

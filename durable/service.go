@@ -119,8 +119,7 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // onDone Assign with it. An Assign that asserts the payload's type unchecked panics on
 // the stand-in, which refuses the settle's Fire, and RunService still returns
 // ErrHandleFailed. So keep a service's result JSON round-trippable, and have an onDone
-// Assign check the payload's type rather than assume it. A stacked change, #258, refuses
-// such a result before any Assign runs.
+// Assign check the payload's type rather than assume it.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
@@ -175,7 +174,9 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	// or a Fire an actor spawn routes, before it applies, so the instance may not have
 	// seen this result: journaling it would commit on recovery what live never applied.
 	// The runner has already dropped the service, so this Handle can't run it again;
-	// Recover re-arms it.
+	// Recover re-arms it. This step rechecks ctx whatever its absorb handed the actor
+	// system, unlike Fire and Tick (handsActorsWork): the service itself ran under ctx,
+	// so its outcome can be one ctx's ending caused.
 	fires := h.actorFires.take()
 	if err := stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
 		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))

@@ -158,8 +158,9 @@ ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does a
-`Tick`, `RunService` or `DeliverToActor` whose context ended during the step, a `Fire`
-whose context ended before the actors it spawned had started, and any of
+`RunService` or `DeliverToActor` whose context ended during the step, a `Tick` whose
+context ended while its timers fired, a `Fire` or `Tick` whose context ended before the
+actor system took the spawns and messages to actors it handed it, and any of
 the four, `Fire` included, that drove a Fire refused because a context ended, the caller's
 or one middleware derived from it. So does an effect handler
 that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no

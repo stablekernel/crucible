@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,6 +175,91 @@ func TestRecover_AnOlderVersionsTickReplaysAsItRan(t *testing.T) {
 	}
 	if _, err = durable.Recover(ctx, m, old, "i1", opts...); err != nil {
 		t.Fatalf("Recover after the settle the older run left in flight: %v", err)
+	}
+}
+
+// TestRecover_AnOlderVersionsTickThenACheckpointAndASettle_FailsRecover pins today's
+// upgrade path for a journal an older version wrote, of format 0 or 1, whose tick left
+// fetching with fetch in flight, as that version's Tick did. Recover replays the tick
+// as it ran, so the recovered Handle still has fetch in flight. Its next checkpoint, of
+// this version's format, holds only the configuration's services, and timedOut declares
+// none, so fetch isn't in it. RunService settles fetch after that checkpoint, and the
+// settle's Record follows it in the tail, so every later Recover fails replaying a
+// settle with no service in flight. This pins the current behavior for a decision: a
+// Recover that stops, after its walk, the services such a tick left in flight would
+// recover, as would replaying the tick with this version's rules, though that one fails
+// on an older tail that settles fetch after the tick.
+func TestRecover_AnOlderVersionsTickThenACheckpointAndASettle_FailsRecover(t *testing.T) {
+	for _, format := range []int{0, 1} {
+		t.Run(fmt.Sprintf("format %d", format), func(t *testing.T) {
+			ctx := context.Background()
+			fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) { return "ok", nil }
+			m := state.ForgeFor[stepCtx]("tickUpgrade").
+				Service("fetch", fetch).
+				State("idle").
+				State("fetching").Invoke("fetch", state.WithInvokeOnDone("fetched")).
+				State("timedOut").
+				Initial("idle").
+				Transition("idle").On("begin").GoTo("fetching").
+				Transition("fetching").After(5 * time.Second).On("timeout").GoTo("timedOut").
+				Transition("timedOut").On("poke").GoTo("timedOut").
+				Quench()
+			clk := state.NewFakeClock(epoch)
+			opts := []stepOption{
+				durable.WithRunnerClock[string, string, stepCtx](clk),
+				durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch)),
+			}
+			st := durable.NewMemStore()
+			h, err := durable.NewRunner(m, st, opts...).Start(ctx, "i1", stepCtx{}, state.WithInitialState("idle"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, err = h.Fire(ctx, "begin"); err != nil {
+				t.Fatalf("Fire(begin): %v", err)
+			}
+			clk.Advance(6 * time.Second)
+			if _, err = h.Tick(ctx); err != nil {
+				t.Fatalf("Tick: %v", err)
+			}
+			snap, recs, err := st.Load(ctx, "i1")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			old := durable.NewMemStore()
+			if err = old.Checkpoint(ctx, "i1", withCheckpointFormat(t, snap, format), -1); err != nil {
+				t.Fatalf("Checkpoint: %v", err)
+			}
+			for _, rec := range recs {
+				rec.Format = format
+				if _, err = old.Append(ctx, "i1", rec); err != nil {
+					t.Fatalf("Append: %v", err)
+				}
+			}
+
+			// Checkpoint after poke, not after the settle that follows it.
+			checkpointing := append(opts[:len(opts):len(opts)], durable.WithCheckpointEvery[string, string, stepCtx](2))
+			oh, err := durable.Recover(ctx, m, old, "i1", checkpointing...)
+			if err != nil {
+				t.Fatalf("Recover the older journal: %v", err)
+			}
+			if _, err = oh.Fire(ctx, "poke"); err != nil {
+				t.Fatalf("Fire(poke): %v", err)
+			}
+			if n := tailLen(t, old, "i1"); n != 0 {
+				t.Fatalf("setup: %d records after poke, want a checkpoint that compacted the tail", n)
+			}
+			id := state.InvokeID("tickUpgrade", "fetching", 0)
+			if _, ran, rerr := oh.RunService(ctx, id); !ran || rerr != nil {
+				t.Fatalf("RunService = %v, %v; want fetch in flight, as the older Tick left it", ran, rerr)
+			}
+			if n := tailLen(t, old, "i1"); n != 1 {
+				t.Fatalf("setup: %d records after the settle, want only the settle past the checkpoint", n)
+			}
+			_, err = durable.Recover(ctx, m, old, "i1", opts...)
+			if err == nil || !strings.Contains(err.Error(), "no in-flight service to settle") {
+				t.Fatalf("Recover after the settle = %v; today it fails with no in-flight service to settle", err)
+			}
+		})
 	}
 }
 
