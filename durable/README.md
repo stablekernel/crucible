@@ -159,10 +159,11 @@ takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does a
 `RunService` or `DeliverToActor` whose context ended during the step, a `Tick` whose
-context ended while its timers fired, a `Fire` or `Tick` whose context ended before the
-actor system took the spawns and messages to actors it handed it, and any of
+context ended while its timers fired, and any of
 the four, `Fire` included, that drove a Fire refused because a context ended, the caller's
-or one middleware derived from it. So does an effect handler
+or one middleware derived from it. A message to an actor that the actor refused because
+the step's context ended doesn't fail a `Fire` or `Tick`: the message is lost, as actor
+deliveries are across `Recover`. So does an effect handler
 that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no
 step of the failed Handle is still recording and no effect is still being sent, so the
 recovered Handle loads every recorded step and can't send an effect twice. Give `Drain` a

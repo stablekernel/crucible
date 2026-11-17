@@ -2,7 +2,6 @@ package durable_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -41,15 +40,15 @@ func (p *pingSender) ChildEffects() []state.Effect {
 }
 func (p *pingSender) Output() any { return nil }
 
-// TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsNothing pins that Tick
-// checks its context after it hands the fired timers' effects to the actor system, as
-// RunService does after its absorb. A timer enters pair, which spawns target and then
-// sender, whose behavior runs as the deadline passes and which pings target as it
-// starts. Target refuses the ping, its context having ended, and no parent Fire reports
-// that. Journaling the tick would have Recover deliver the ping under a live context,
-// which live never applied, so the Tick fails the Handle and records nothing, and a
-// recovered Handle re-arms the timer.
-func TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsNothing(t *testing.T) {
+// TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsAndLosesTheMessage pins that
+// Tick doesn't check its context after it hands the fired timers' effects to the actor
+// system, unlike RunService: only a parent Fire refused by a context fails it. A timer
+// enters pair, which spawns target and then sender, whose behavior runs as the deadline
+// passes and which pings target as it starts. Target refuses the ping, its context
+// having ended, and the ping is lost live, as actor deliveries are across Recover. The
+// tick records, so a retry doesn't run the behaviors again. Recover starts both actors
+// fresh, and sender's new start pings the new target.
+func TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsAndLosesTheMessage(t *testing.T) {
 	ctx := context.Background()
 	const machine = "tickSpawnCtx"
 	targetID := state.ActorID(machine, "pair", 0)
@@ -87,12 +86,20 @@ func TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsNothing(t *testing
 	if _, err = h.Fire(ctx, "go"); err != nil {
 		t.Fatalf("Fire(go): %v", err)
 	}
+	before := tailLen(t, store, id)
 	clk.Advance(6 * time.Second)
 	turn, c := context.WithCancel(ctx)
 	cancel = c
 	_, tickErr := h.Tick(turn)
-	if len(targets) != 1 || targets[0].pinged {
-		t.Fatalf("setup: live spawned %d targets, pinged %v; want one, unpinged", len(targets), len(targets) > 0 && targets[0].pinged)
+	if turn.Err() == nil || len(targets) != 1 {
+		t.Fatalf("setup: context ended %v, live spawned %d targets; want it ended, with one target", turn.Err() != nil, len(targets))
+	}
+	if tickErr != nil {
+		t.Fatalf("Tick = %v, want the step recorded: only a parent Fire refused by a context fails it", tickErr)
+	}
+	wantTail(t, store, id, before+1)
+	if targets[0].pinged {
+		t.Fatal("live target was pinged, want the ping it refused under the ended context lost")
 	}
 
 	cancel = func() {}
@@ -100,31 +107,20 @@ func TestTick_AContextThatEndsWhileTheTickSpawnsActors_RecordsNothing(t *testing
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if !errors.Is(tickErr, durable.ErrHandleFailed) {
-		recPinged := len(targets) > 1 && targets[len(targets)-1].pinged
-		t.Fatalf("Tick = %v, want ErrHandleFailed: the context ended while it spawned actors, and live target refused the ping that recovered target (pinged %v) applied",
-			tickErr, recPinged)
-	}
-	if got := recovered.Instance().Current(); got != "waiting" || len(targets) != 1 {
-		t.Fatalf("recovered in %q, %d targets spawned; want waiting with none respawned: the tick recorded nothing", got, len(targets)-1)
-	}
-	if _, err = recovered.Tick(ctx); err != nil {
-		t.Fatalf("Tick after Recover: %v", err)
-	}
 	if got := recovered.Instance().Current(); got != "pair" || len(targets) != 2 || !targets[1].pinged {
-		t.Fatalf("after the re-armed timer fired: state %q, %d targets; want pair, with the new target pinged", got, len(targets))
+		t.Fatalf("recovered in %q, %d targets spawned; want pair, with target respawned and pinged by sender's new start", got, len(targets))
 	}
 }
 
-// TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsNothing pins that Fire
-// checks its context after it hands the event's effects to the actor system, as Tick
-// and RunService do after their absorbs. The event enters pair, which spawns target
-// and then sender, whose behavior runs as the deadline passes and which pings target
-// as it starts. Target refuses the ping, its context having ended, and no parent Fire
-// reports that. Journaling the Fire would have Recover deliver the ping under a live
-// context, which live never applied, so the Fire fails the Handle and records nothing,
-// and the event fires again on a recovered Handle.
-func TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsNothing(t *testing.T) {
+// TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsAndLosesTheMessage pins that
+// Fire doesn't check its context after it hands the event's effects to the actor
+// system, as Tick doesn't: only a parent Fire refused by a context fails it. The event
+// enters pair, which spawns target and then sender, whose behavior runs as the deadline
+// passes and which pings target as it starts. Target refuses the ping, its context
+// having ended, and the ping is lost live, as actor deliveries are across Recover. The
+// Fire records, so a retry doesn't run the behaviors again. Recover starts both actors
+// fresh, and sender's new start pings the new target.
+func TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsAndLosesTheMessage(t *testing.T) {
 	ctx := context.Background()
 	const machine = "fireSpawnCtx"
 	targetID := state.ActorID(machine, "pair", 0)
@@ -159,8 +155,15 @@ func TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsNothing(t *testing
 	turn, c := context.WithCancel(ctx)
 	cancel = c
 	_, fireErr := h.Fire(turn, "go")
-	if len(targets) != 1 || targets[0].pinged {
-		t.Fatalf("setup: live spawned %d targets, pinged %v; want one, unpinged", len(targets), len(targets) > 0 && targets[0].pinged)
+	if turn.Err() == nil || len(targets) != 1 {
+		t.Fatalf("setup: context ended %v, live spawned %d targets; want it ended, with one target", turn.Err() != nil, len(targets))
+	}
+	if fireErr != nil {
+		t.Fatalf("Fire = %v, want the step recorded: only a parent Fire refused by a context fails it", fireErr)
+	}
+	wantTail(t, store, id, before+1)
+	if targets[0].pinged {
+		t.Fatal("live target was pinged, want the ping it refused under the ended context lost")
 	}
 
 	cancel = func() {}
@@ -168,28 +171,15 @@ func TestFire_AContextThatEndsWhileTheFireSpawnsActors_RecordsNothing(t *testing
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if !errors.Is(fireErr, durable.ErrHandleFailed) || !errors.Is(fireErr, context.Canceled) {
-		recPinged := len(targets) > 1 && targets[len(targets)-1].pinged
-		t.Fatalf("Fire = %v, want ErrHandleFailed wrapping context.Canceled: the context ended while it spawned actors, and live target refused the ping that recovered target (pinged %v) applied",
-			fireErr, recPinged)
-	}
-	wantTail(t, store, id, before)
-	if got := recovered.Instance().Current(); got != "idle" || len(targets) != 1 {
-		t.Fatalf("recovered in %q, %d targets spawned; want idle with none respawned: the Fire recorded nothing", got, len(targets)-1)
-	}
-	if _, err = recovered.Fire(ctx, "go"); err != nil {
-		t.Fatalf("Fire after Recover: %v", err)
-	}
 	if got := recovered.Instance().Current(); got != "pair" || len(targets) != 2 || !targets[1].pinged {
-		t.Fatalf("after the event fired again: state %q, %d targets; want pair, with the new target pinged", got, len(targets))
+		t.Fatalf("recovered in %q, %d targets spawned; want pair, with target respawned and pinged by sender's new start", got, len(targets))
 	}
 }
 
-// TestFire_ContextEndedWithNoActorPalette_Records pins that the recheck is for a Fire
-// whose actors spawned. Without WithActorPalette, a state that declares an actor spawns
-// none, so a Fire whose context ends once the kernel applied its event, here while the
-// step armed its timer, cost nothing and records, as one entering a state with no
-// actors does.
+// TestFire_ContextEndedWithNoActorPalette_Records pins that a Fire whose context ends
+// once the kernel applied its event, here while the step armed its timer, and that drove
+// no parent Fire, records. Without WithActorPalette, a state that declares an actor
+// spawns none.
 func TestFire_ContextEndedWithNoActorPalette_Records(t *testing.T) {
 	ctx := context.Background()
 	turn, cancel := context.WithCancel(ctx)
@@ -251,17 +241,15 @@ func (n *noteTarget) DeliverFire(ctx context.Context, _ any) (bool, any) {
 func (*noteTarget) ChildEffects() []state.Effect { return nil }
 func (*noteTarget) Output() any                  { return nil }
 
-// TestStep_AContextThatEndsWhileTheStepMessagesActors_RecordsNothing pins that Fire and
-// Tick recheck their context after they hand the actor system a message for an actor
-// already running, not only a spawn. Pair runs ender and target; poke, and the timer
-// due, each stay in pair and send ender a message, then target one, by SendTo or, for
-// a Fire, by ForwardTo alone. Ender's delivery runs as the deadline passes, so target refuses
-// its message, its context having ended, and no Fire reports that. Recording the step
-// would lose the message for good: the caller sees success, and a recovered Handle
-// replays the step and starts target fresh, so no run ever delivers it. So the step
-// fails the Handle and records nothing, and the step runs again on a recovered Handle,
-// which delivers the message.
-func TestStep_AContextThatEndsWhileTheStepMessagesActors_RecordsNothing(t *testing.T) {
+// TestStep_AContextThatEndsWhileTheStepMessagesActors_RecordsAndLosesTheMessage pins
+// that Fire and Tick don't fail when an actor refuses a message they sent it because
+// their context ended. Pair runs ender and target; poke, and the timer due, each stay in
+// pair and send ender a message, then target one, by SendTo or, for a Fire, by
+// ForwardTo alone. Ender's delivery runs as the deadline passes, so target refuses its
+// message, its context having ended. The message is lost, as actor deliveries are
+// across Recover, and the step records: failing it would have the retry run the
+// actors' behaviors again. A recovered Handle starts target fresh, without the message.
+func TestStep_AContextThatEndsWhileTheStepMessagesActors_RecordsAndLosesTheMessage(t *testing.T) {
 	for _, step := range []string{"Fire", "Fire forward", "Tick"} {
 		t.Run(step, func(t *testing.T) {
 			ctx := context.Background()
@@ -325,24 +313,18 @@ func TestStep_AContextThatEndsWhileTheStepMessagesActors_RecordsNothing(t *testi
 					turn.Err() != nil, len(targets), targets[0].got)
 			}
 
+			if stepErr != nil {
+				t.Fatalf("%s = %v, want the step recorded: only a parent Fire refused by a context fails it", step, stepErr)
+			}
+			wantTail(t, store, id, before+1)
+
 			cancel = func() {}
 			recovered, err := durable.Recover(ctx, m, store, id, opts...)
 			if err != nil {
 				t.Fatalf("Recover: %v", err)
 			}
-			if !errors.Is(stepErr, durable.ErrHandleFailed) || !errors.Is(stepErr, context.Canceled) {
-				t.Fatalf("%s = %v, want ErrHandleFailed wrapping context.Canceled: target refused the message under the ended context, the journal grew from %d to %d records, and the recovered target (%d messages) never gets it",
-					step, stepErr, before, tailLen(t, store, id), targets[len(targets)-1].got)
-			}
-			wantTail(t, store, id, before)
-			if got := recovered.Instance().Current(); got != "pair" || len(targets) != 2 {
-				t.Fatalf("recovered in %q, %d targets spawned; want pair, with target respawned once", got, len(targets))
-			}
-			if err = run(recovered, ctx); err != nil {
-				t.Fatalf("%s after Recover: %v", step, err)
-			}
-			if targets[1].got != 1 {
-				t.Fatalf("after the %s ran again, the recovered target has %d messages, want 1", step, targets[1].got)
+			if got := recovered.Instance().Current(); got != "pair" || len(targets) != 2 || targets[1].got != 0 {
+				t.Fatalf("recovered in %q, %d targets spawned; want pair, with target respawned once, without the lost message", got, len(targets))
 			}
 		})
 	}
@@ -368,8 +350,8 @@ func (c *liveOnceCtx) Err() error {
 	return context.Canceled
 }
 
-// TestStep_AContextThatEndsWithNoActorWork_Records pins that the recheck after the
-// absorb is for a step that handed the actor system work. A machine with timers and a
+// TestStep_AContextThatEndsWithNoActorWork_Records pins that a step whose context ends
+// after the kernel applied it, and that drove no parent Fire, records. A machine with timers and a
 // service but no actor palette enters loading, which starts fetch and arms expire, by a
 // Fire and by a timer. The context ends after the kernel applied the step: for the
 // Fire, as it arms expire; for the Tick, after the check that follows the timers' Fires,
@@ -458,8 +440,8 @@ func TestStep_AContextThatEndsWithNoActorWork_Records(t *testing.T) {
 	}
 }
 
-// TestFire_AContextThatEndsWithNoActorToReach_Records pins what the recheck after the
-// absorb leaves out. Leave exits pair, which stops idler, and responds to the event's
+// TestFire_AContextThatEndsWithNoActorToReach_Records pins that a Fire whose context
+// ends after the kernel applied it, and that drove no parent Fire, records. Leave exits pair, which stops idler, and responds to the event's
 // sender, which a host Fire doesn't have, then arms a timer, as the context ends.
 // Stopping an actor runs nothing an ended context can refuse, and a response with no
 // sender reaches no actor, so the Fire cost nothing and records, with idler stopped

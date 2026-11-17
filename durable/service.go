@@ -175,8 +175,8 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	// seen this result: journaling it would commit on recovery what live never applied.
 	// The runner has already dropped the service, so this Handle can't run it again;
 	// Recover re-arms it. This step rechecks ctx whatever its absorb handed the actor
-	// system, unlike Fire and Tick (handsActorsWork): the service itself ran under ctx,
-	// so its outcome can be one ctx's ending caused.
+	// system, unlike Fire and Tick, which fail only on a parent Fire a context refused:
+	// the service itself ran under ctx, so its outcome can be one ctx's ending caused.
 	fires := h.actorFires.take()
 	if err := stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
 		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))

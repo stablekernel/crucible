@@ -110,10 +110,11 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal, and so does one that panicked in host code; the panic
 // reaches the caller after the Handle fails. So does a RunService or DeliverToActor whose
-// context ended during the step, a Tick whose context ended while its timers fired, a
-// Fire or Tick whose context ended before the actor system took the spawns and messages
-// to actors it handed it, and any step, Fire included, that drove a Fire refused because
-// a context ended, the caller's or one middleware derived from it. That call and every later one return ErrHandleFailed, wrapping the cause,
+// context ended during the step, a Tick whose context ended while its timers fired, and
+// any step, Fire included, that drove a Fire refused because a context ended, the
+// caller's or one middleware derived from it. A message to an actor that the actor
+// refused because the step's context ended doesn't fail it: the message is lost, as
+// actor deliveries are across Recover. That call and every later one return ErrHandleFailed, wrapping the cause,
 // which can be a context that ended during the Store write. Before recovering, call
 // Drain: a step on another goroutine may still be recording, which a recovered Handle
 // wouldn't load, or sending an effect, which it would send again. Recovering a healthy
@@ -349,17 +350,18 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 // durable seams compose: the scheduler arms or cancels delayed (`after`) timers (and
 // the Handle's timer table mirrors their deadlines for checkpointing), the service
 // runner starts or stops invoked services, and the actor system spawns or stops
-// child-machine actors. It is the absorb Fire calls for the effects it produced; a
-// settle's go through absorbSettle. Absorbing a driver's effects is a no-op when that
-// driver is not wired or the effects name none of its kind.
-func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, effects []state.Effect) {
+// child-machine actors. It is the absorb Fire calls for the effects its event produced,
+// so a forwardTo forwards that event; a settle's go through absorbSettle. Absorbing a
+// driver's effects is a no-op when that driver is not wired or the effects name none
+// of its kind.
+func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, event any, effects []state.Effect) {
 	// Arm or cancel timers only when the effects actually schedule or cancel one: the
 	// kernel Scheduler reads the clock unconditionally on Absorb, so skipping the call
 	// for a timer-free transition keeps a non-timer machine free of clock reads.
 	if hasTimerEffect(effects) {
 		h.absorbTimers(ctx, effects)
 	}
-	h.absorbRunners(ctx, effects)
+	h.absorbRunners(ctx, event, effects)
 }
 
 // absorbSettle is absorbDrivers for the effects of a service settle's own Fire, so a
@@ -373,15 +375,15 @@ func (h *Handle[S, E, C]) absorbSettle(ctx context.Context, effects []state.Effe
 		h.absorbTimers(ctx, effects)
 	}
 	forgetSettled(h.settled, effects)
-	h.absorbActors(ctx, effects)
+	h.absorbActors(ctx, nil, effects)
 }
 
-// absorbRunners feeds a transition's effects into the service runner, then the actor
-// system: absorbServices, then absorbActors. absorbDrivers calls it after arming the
-// timers.
-func (h *Handle[S, E, C]) absorbRunners(ctx context.Context, effects []state.Effect) {
+// absorbRunners feeds the effects event's transition produced into the service runner,
+// then the actor system: absorbServices, then absorbActors. absorbDrivers calls it after
+// arming the timers.
+func (h *Handle[S, E, C]) absorbRunners(ctx context.Context, event any, effects []state.Effect) {
 	h.absorbServices(ctx, effects)
-	h.absorbActors(ctx, effects)
+	h.absorbActors(ctx, event, effects)
 }
 
 // absorbServices feeds a transition's effects into the service runner, forgetting the
@@ -396,15 +398,31 @@ func (h *Handle[S, E, C]) absorbServices(ctx context.Context, effects []state.Ef
 	}
 }
 
-// absorbActors feeds a transition's effects into the actor system, which stops and
-// spawns its actors. An actor it spawns can drive a parent Fire at once, so a caller
-// absorbs every service of the step first (see absorbServices): the parent Fire then
-// stops a service the step started, as it does after a Fire and on replay.
-func (h *Handle[S, E, C]) absorbActors(ctx context.Context, effects []state.Effect) {
-	if h.actors != nil {
-		h.actorFires.attempt(effects)
-		defer h.actorFires.driving(ctx)()
-		h.actors.Absorb(ctx, effects)
+// absorbActors feeds the effects event's transition produced into the actor system,
+// which stops and spawns its actors and routes the parent's messages, so a forwardTo
+// forwards event; a nil event, as a settle's absorb passes, forwards nothing. An actor
+// it spawns can drive a parent Fire at once, so a caller absorbs every service of the
+// step first (see absorbServices): the parent Fire then stops a service the step
+// started, as it does after a Fire and on replay.
+//
+// Such a parent Fire can also leave a state whose actor the effects spawn after it, or
+// a later call of the same step does, as when one region's actor sends the parent a
+// message that exits another region's state. absorbActors feeds the system one effect
+// at a time and skips that spawn (see parentFires.left): the actor would run for a
+// state that isn't active, which Recover, spawning the actors of the configuration it
+// ends in, never runs. A single Fire that produced both spawns skips it the same way.
+func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects []state.Effect) {
+	if h.actors == nil {
+		return
+	}
+	defer h.actorFires.driving(ctx)()
+	for i := range effects {
+		if sp, ok := effects[i].(state.SpawnActor); ok && h.actorFires.left(sp) {
+			continue
+		}
+		one := effects[i : i+1 : i+1]
+		h.actorFires.attempt(one)
+		h.actors.AbsorbFor(ctx, event, one)
 	}
 }
 
@@ -704,6 +722,7 @@ type parentFires[S comparable] struct {
 	attempted map[string]bool // actors the system was asked to spawn this step
 	failed    map[string]bool // actors whose latest spawn failed and whose declared onError applied, or was refused for a reason other than a context ending
 	respawned map[string]bool // actors whose latest spawn was a respawn of one running at the journal's end, whose start the journal holds
+	exited    map[string]bool // actors a parent Fire noted since the last take stopped: the activation of their state that spawned them ended
 }
 
 // actorLifecycle is what a step did to the actors: the ones it asked the system to
@@ -801,6 +820,15 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 		}
 		p.failed[pf.ActorID] = true
 	}
+	// A parent Fire that leaves a state stops its actors (see left).
+	for _, eff := range pf.Result.Effects {
+		if e, ok := eff.(state.StopActor); ok {
+			if p.exited == nil {
+				p.exited = map[string]bool{}
+			}
+			p.exited[e.ID] = true
+		}
+	}
 	ctx := p.ctx
 	p.mu.Unlock()
 	if p.arm != nil {
@@ -839,8 +867,23 @@ func (p *parentFires[S]) take() []state.ParentFire[S] {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fires := p.fires
-	p.fires = nil
+	p.fires, p.exited = nil, nil
 	return fires
+}
+
+// left reports whether a parent Fire noted since the last take left the state that
+// declares sp, so sp, a spawn a step's own transitions produced before that Fire, is
+// for an activation of the state that has ended: the Fire stopped sp's actor. Spawning
+// it would run an actor for a state that isn't active, or, if a later Fire entered the
+// state again, a second time for one activation, when that Fire spawned its own. A
+// dynamic spawn, which declares no state, is never left. It's safe on a nil collector.
+func (p *parentFires[S]) left(sp state.SpawnActor) bool {
+	if p == nil || sp.State == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exited[sp.ID]
 }
 
 // parentFireErrs returns each parent Fire's error, nil ones included.
@@ -887,17 +930,17 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // error, records nothing and leaves the Handle usable. When the event applies, an actor
 // the step spawned can fail and route its onError through the instance; if a context
 // ending, ctx or one derived from it, refuses that onError, Fire fails the Handle with
-// ErrHandleFailed and records nothing, though the event applied. So does a ctx that has
-// ended by the time the actor system took the work the step handed it, a spawn or a
-// message to an actor (SendTo, ForwardEvent), since an actor's start or delivery
-// refused under it is lost without any Fire reporting it. Recover restores the state
-// from before the event, so fire it again on the recovered Handle, and don't act on the
-// result Fire returned with that error. A Fire that handed the actor system no spawn or
-// message and drove no Fire a context refused records, even if ctx ends after the
-// kernel applied it, as stopping actors, a response with no sender, and starting or
-// stopping timers and services run nothing ctx can refuse. A panic in host code during
-// the step fails the Handle, then reaches the caller: recover it, then Drain and
+// ErrHandleFailed and records nothing, though the event applied. Recover restores the
+// state from before the event, so fire it again on the recovered Handle, and don't act
+// on the result Fire returned with that error. Only a parent Fire a context refused fails
+// the step: a Fire that drove none records, even if ctx ends after the kernel applied
+// it. A message to an actor, or an actor's start, that the actor refused because ctx
+// ended is lost, as actor deliveries are across Recover; failing the step would have the
+// retry run the actors' behaviors, and their side effects, again. A panic in host code
+// during the step fails the Handle, then reaches the caller: recover it, then Drain and
 // Recover as for ErrHandleFailed.
+//
+// A forwardTo on the event's transition forwards the event to the actor it names.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -957,17 +1000,16 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// arms each for the seam method that settles it next. The seams compose: a Fire
 	// may enter a state that both invokes a service and spawns an actor and arms a
 	// timer, and each driver must see its effects.
-	h.absorbDrivers(ctx, res.Effects)
+	h.absorbDrivers(ctx, event, res.Effects)
 
 	// A context that ended can refuse an onError an actor the absorb spawned routes
-	// through the parent, or a message the step or an actor sent an actor, which no Fire
-	// reports. So a Fire that handed the actor system work rechecks ctx, by the rule Tick
-	// shares (see handsActorsWork): record nothing. A Fire that handed it none and drove
-	// no Fire a context refused applied whole, so it records even when ctx ended
-	// afterward.
+	// through the parent, or a message an actor sends the parent, so live never applied
+	// that Fire: record nothing, as Start and Recover do. A message to an actor refused
+	// because ctx ended is lost, as actor deliveries are across Recover, so the step
+	// records: failing it would have the retry run the actors' behaviors again.
 	fires := h.actorFires.take()
-	if canceled := consumedCanceled(ctx, h.handsActorsWork(res.Effects), parentFireErrs(fires)...); canceled != nil {
-		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, canceled))
+	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, refused))
 	}
 	// Every parent Fire the absorb drove (a message an actor sent as it spawned, a
 	// settle, a failed spawn's onError) applied after the event, so the step journals
@@ -1056,9 +1098,9 @@ func (h *Handle[S, E, C]) finishStep(ctx context.Context, rec *Record, des []dis
 // actor system too, as a Fire's do: a timer that leaves a state stops its services and
 // its actors, and one that enters a state starts and spawns them. The tick journals the
 // parent Fires an actor it spawned drove, and a context's ending that refuses one fails
-// the Handle and records nothing, as for Fire. By the rule Fire shares, so does a ctx
-// that has ended by the time the actor system took the spawns and messages to actors
-// the fired transitions handed it.
+// the Handle and records nothing, as for Fire. A message to an actor refused because
+// ctx ended is lost, as for Fire. A forwardTo on a timer's transition forwards the
+// timer's event, rebuilt with the Runner's event codec.
 // It returns the FireResults of the timers it fired, in order. A
 // failed checkpoint returns them with that error, and the Handle carries on. If another
 // goroutine failed the Handle while this step was recording, it returns them with
@@ -1139,18 +1181,16 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	}
 	var effects []state.Effect
 	for i := range results {
-		h.absorbActors(ctx, results[i].Effects)
+		h.absorbActors(ctx, h.firedEvent(results[i]), results[i].Effects)
 		effects = append(effects, results[i].Effects...)
 	}
 	// A context that ended during the absorb can refuse a parent Fire an actor the absorb
-	// spawned drove, or a message the timers or an actor sent an actor, which no Fire
-	// reports. So a tick that handed the actor system work rechecks ctx, by the rule Fire
-	// shares (see handsActorsWork): record nothing. Every other parent Fire it drove
-	// applied after the tick's timers, so the tick journals them, and replay re-fires
-	// them after it.
+	// spawned drove, as for Fire: record nothing. A message to an actor refused because
+	// ctx ended is lost, as for Fire. Every other parent Fire it drove applied after the
+	// tick's timers, so the tick journals them, and replay re-fires them after it.
 	fires := h.actorFires.take()
-	if err := consumedCanceled(ctx, h.handsActorsWork(effects), parentFireErrs(fires)...); err != nil {
-		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
+	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
+		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, refused))
 	}
 	driven, err := recordParentFires(fires, false)
 	if err != nil {
@@ -1932,9 +1972,10 @@ func isContextErr(err error) bool {
 // refused with a context's error (one middleware derived from ctx included) among errs,
 // which hold the errors of the Fires the step drove, the parent Fires its actors drove
 // among them. Such a step checks ctx itself because what it consumed can end on ctx
-// without any Fire reporting it: a RunService's service, a DeliverToActor's delivery, a
-// Tick's due timers, and a Fire's or Tick's work for the actor system
-// (handsActorsWork). A refusal with any other
+// without any Fire reporting it: a RunService's service, a DeliverToActor's delivery,
+// and a Tick's due timers. Fire and Tick don't check ctx after their absorb: a message
+// to an actor refused because ctx ended is lost, as actor deliveries are across
+// Recover, and only a parent Fire refused by a context fails them. A refusal with any other
 // cause, such as a failing guard, is deterministic: the step is journaled, and replay
 // meets the same refusal.
 func stepCanceled(ctx context.Context, errs ...error) error {
@@ -1945,35 +1986,13 @@ func stepCanceled(ctx context.Context, errs ...error) error {
 }
 
 // consumedCanceled is stepCanceled for a step that consumed something (a timer it
-// fired, a delivery that drove the parent, work it handed the actor system), and
-// refusedByContext for one that didn't, which has nothing an ended ctx could have cost
-// it.
+// fired), and refusedByContext for one that didn't, which has nothing an ended ctx
+// could have cost it.
 func consumedCanceled(ctx context.Context, consumed bool, errs ...error) error {
 	if consumed {
 		return stepCanceled(ctx, errs...)
 	}
 	return refusedByContext(errs...)
-}
-
-// handsActorsWork is the rule Fire and Tick share for rechecking ctx after their absorb:
-// it reports whether the step's effects handed a wired actor system work an ended ctx
-// can cost, a spawn, or a message to an actor (SendTo, ForwardEvent). An actor's start
-// or delivery runs under ctx, and one refused because ctx ended loses the message or
-// the start's sends with no Fire reporting it. Stopping an actor, or handing timers and
-// services to their drivers, runs nothing that ctx can refuse. A RespondToSender in a
-// step's own effects reaches no actor: the actor system knows a sender only while an
-// actor's message drives the parent, and absorbs that Fire's effects itself.
-func (h *Handle[S, E, C]) handsActorsWork(effects []state.Effect) bool {
-	if h.actors == nil {
-		return false
-	}
-	for _, eff := range effects {
-		switch eff.(type) {
-		case state.SpawnActor, state.SendTo, state.ForwardEvent:
-			return true
-		}
-	}
-	return false
 }
 
 // refusedByContext returns the first of errs that is a context's error: a Fire refused
@@ -1995,6 +2014,22 @@ func (h *Handle[S, E, C]) failOnPanic() {
 		_ = h.fail(fmt.Errorf("durable: a step of %q panicked: %v", h.id, p))
 		panic(p)
 	}
+}
+
+// firedEvent returns the event a timer's Fire fired, which the scheduler doesn't
+// report, rebuilt from res's trace with the Runner's event codec, as replay rebuilds a
+// recorded event, so a forwardTo on the timer's transition forwards it. It's nil, so a
+// forwardTo forwards nothing, as before, for an event with no JSON form, or one the codec
+// can't decode.
+func (h *Handle[S, E, C]) firedEvent(res state.FireResult[S]) any {
+	if len(res.Trace.EventPayload) == 0 {
+		return nil
+	}
+	event, err := h.runner.cfg.eventCodec.Decode(res.Trace.EventPayload)
+	if err != nil {
+		return nil
+	}
+	return event
 }
 
 // resultErrs returns each result's error, nil ones included.

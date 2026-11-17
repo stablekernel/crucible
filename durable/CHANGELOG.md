@@ -200,12 +200,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state stops its service and its actor, and one that enters a state starts its service
   and spawns its actor. The tick's Record journals the parent Fires an actor it spawned
   drove, replayed after its timers, and a parent Fire a context's ending refused fails
-  the Handle and records nothing, as for `Fire`. So does a `ctx` that has ended by the
-  time the actor system took the spawns and messages to actors the timers handed it,
-  by the rule `Fire` shares: an actor's start or delivery refused under it is lost
-  without any Fire reporting it. A tick that handed the actor system neither, with no
-  Fire a context refused, records even when its `ctx` ends once its timers have fired
-  and their transitions applied. Replay does this for a tick of journal
+  the Handle and records nothing, as for `Fire`. Only such a parent Fire fails it once
+  its timers have fired: a message to an actor that the actor refused because the
+  tick's `ctx` ended is lost, as actor deliveries are across `Recover`, and the tick
+  records. Replay does this for a tick of journal
   format 2 or later; an older version's tick replays as it ran, with its services left
   in flight. This is the Tick-driver fix #236 tracked. The services and actors a timer
   starts run under the tick's step context, as a `Fire`'s do, so an actor's behavior or
@@ -279,13 +277,23 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state spawned failed to start and a context's ending refused its onError, the Fire was
   recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns
   `ErrHandleFailed` and records nothing, though its event applied: fire it again on the
-  recovered Handle. So does a Fire whose context has ended by the time the actor system
-  took the work the Fire handed it, a spawn or a message to an actor (`SendTo`,
-  `ForwardEvent`), as for `Tick`: an actor's start or delivery refused under it is lost
-  without any Fire reporting it. A Fire that handed the actor system neither and drove
-  no Fire a context refused still records, even when its context ends once the kernel
-  has applied the event: stopping an actor, or starting or stopping a timer or service,
-  runs nothing the context can refuse.
+  recovered Handle. Only a parent Fire a context refused fails it: a Fire that drove none
+  still records, even when its context ends once the kernel has applied the event. A
+  message to an actor, or an actor's start, that the actor refused because the context
+  ended is lost, as actor deliveries are across `Recover`: failing the step would have
+  the retry run the actors' behaviors, and their side effects, again.
+- **A parent's `forwardTo` forwards its event.** A `forwardTo` on a transition a `Fire`
+  or a `Tick`'s timer drove forwarded nothing, as the actor system was handed the
+  effects without the event; this was already so on main for `Fire`. Now `Fire`
+  forwards its event, and `Tick` each timer's event, rebuilt with the Runner's event
+  codec. As for any actor delivery, the forwarded event isn't replayed: `Recover`
+  starts the actor fresh. A `forwardTo` on a transition an actor's message to the
+  parent drove, or a service settle drove, still forwards nothing.
+- **A step spawns no actor for a state it has already left.** When an actor a step
+  spawned sent the parent a message that left another state the step had entered, such
+  as a parallel region's, that state's actor still spawned after, and ran for a state
+  that wasn't active, where `Recover` never spawned it. Now the step skips that spawn,
+  for one `Fire` and for timers that fire in one `Tick`.
 - **An actor's output replays with the Fire that carried it.** When one delivery drove
   several parent Fires, such as an onDone entering a state whose actor then failed to
   start, the output was recorded with the last Fire, so replay gave it to the wrong
