@@ -287,8 +287,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   effects without the event; this was already so on main for `Fire`. Now `Fire`
   forwards its event, and `Tick` each timer's event, rebuilt with the Runner's event
   codec. As for any actor delivery, the forwarded event isn't replayed: `Recover`
-  starts the actor fresh. A `forwardTo` on a transition an actor's message to the
-  parent drove, or a service settle drove, still forwards nothing. `Tick` decodes a
+  starts the actor fresh. A `forwardTo` on a service settle's transition forwards
+  nothing. One on a transition an actor's message to the parent drove still hands the
+  child a nil event: the actor system absorbs that Fire's effects without its event
+  (#260). `Tick` decodes a
   timer's event only for a `forwardTo` an actor system can carry. When the codec can't
   decode it, `Tick` forwards nothing and returns the codec's error with the timers'
   results. The tick is still recorded and its effects dispatched, and the Handle carries
