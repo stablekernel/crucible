@@ -288,12 +288,21 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   forwards its event, and `Tick` each timer's event, rebuilt with the Runner's event
   codec. As for any actor delivery, the forwarded event isn't replayed: `Recover`
   starts the actor fresh. A `forwardTo` on a transition an actor's message to the
-  parent drove, or a service settle drove, still forwards nothing.
+  parent drove, or a service settle drove, still forwards nothing. `Tick` decodes a
+  timer's event only for a `forwardTo` an actor system can carry. When the codec can't
+  decode it, `Tick` forwards nothing and returns the codec's error with the timers'
+  results. The tick is still recorded and its effects dispatched, and the Handle carries
+  on, as when an actor can't take a message: failing it would only have `Recover` fire
+  the timers again and meet the same error.
 - **A step spawns no actor for a state it has already left.** When an actor a step
   spawned sent the parent a message that left another state the step had entered, such
   as a parallel region's, that state's actor still spawned after, and ran for a state
   that wasn't active, where `Recover` never spawned it. Now the step skips that spawn,
-  for one `Fire` and for timers that fire in one `Tick`.
+  for one `Fire` and for timers that fire in one `Tick`. `Start` and `Recover` skip it
+  too, for an actor that starts when they do and sends such a message. When `Recover`
+  respawns the actors that were running and one fails with an onError that leaves
+  another of their states, it stops that state's actor. A `Tick` also skips the spawn
+  of a state that a later timer of the same tick leaves.
 - **An actor's output replays with the Fire that carried it.** When one delivery drove
   several parent Fires, such as an onDone entering a state whose actor then failed to
   start, the output was recorded with the last Fire, so replay gave it to the wrong
