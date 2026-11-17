@@ -1130,13 +1130,14 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	for i := range results {
 		h.absorbActors(ctx, results[i].Effects)
 	}
-	// An actor the absorb spawned can drive a parent Fire, which a context that ended
-	// can refuse, as for Fire: record nothing. Every other parent Fire it drove applied
-	// after the tick's timers, so the tick journals them, and replay re-fires them after
-	// it.
+	// A context that ended during the absorb can refuse a parent Fire an actor the absorb
+	// spawned drove, or a message one actor sent another, which no Fire reports, so
+	// recheck ctx itself, as RunService does: record nothing. Every other parent Fire it
+	// drove applied after the tick's timers, so the tick journals them, and replay
+	// re-fires them after it.
 	fires := h.actorFires.take()
-	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
-		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, refused))
+	if err := consumedCanceled(ctx, len(results) > 0, parentFireErrs(fires)...); err != nil {
+		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
 	driven, err := recordParentFires(fires, false)
 	if err != nil {

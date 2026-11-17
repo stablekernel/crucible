@@ -194,7 +194,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state stops its service and its actor, and one that enters a state starts its service
   and spawns its actor. The tick's Record journals the parent Fires an actor it spawned
   drove, replayed after its timers, and a parent Fire a context's ending refused fails
-  the Handle and records nothing, as for `Fire`. Replay does this for a tick of journal
+  the Handle and records nothing, as for `Fire`. So does a `ctx` that ends while the
+  tick spawns its actors, which can cost a message one actor sends another without any
+  Fire reporting it, as `RunService` does after its settle. Replay does this for a tick of journal
   format 2 or later; an older version's tick replays as it ran, with its services left
   in flight. This is the Tick-driver fix #236 tracked. The services and actors a timer
   starts run under the tick's step context, as a `Fire`'s do, so an actor's behavior or
