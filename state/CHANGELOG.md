@@ -36,10 +36,16 @@ counts as an additive (minor) versus breaking (major) change. Use the
   onError doesn't escalate again, since its start already escalated it; a respawned
   actor's own failure with no onError does. The durable runner's `Recover` uses it for
   the actors that were running. It's additive, within v1.1.0.
-- **`ServiceRunner.WithResultTransform`** rewrites a service's outcome before `Tick`
-  settles it, so a host that records outcomes can give the live run what a replay will see.
-  An unbound service still settles through onError: a transform that returns no error for
-  its `UnboundRefError` doesn't make it succeed.
+- **`ServiceRunner.WithResultTransform`** rewrites every service outcome before it
+  settles, whether `Tick`, `SettleDone` or `SettleError` settles it, so a host that records
+  outcomes can give the live run and a replay the same value. The transform takes the
+  event that will carry the outcome, the invocation's onDone for a result and its onError
+  for an error: `func(event E, result any, err error) (out any, outErr error, abort error)`.
+  It runs before any event fires and before the service is dropped. A non-nil `abort`
+  stops the settle: no event fires, the service stays in flight, `SettleDone` and
+  `SettleError` return false with `abort` in `FireResult.Err`, and `Tick` returns that
+  `FireResult` as its one element. An unbound service still settles through onError: a
+  transform that returns no error for its `UnboundRefError` doesn't make it succeed.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
@@ -76,6 +82,16 @@ counts as an additive (minor) versus breaking (major) change. Use the
   whole system, so a message another goroutine's delivery sent the parent while it ran
   was dropped. The quiet now rides the call chain that spawns each actor, and ends when
   `AbsorbRespawn` returns.
+- **A `ServiceRunner` settle can't settle a later activation of its service.** A
+  `SettleDone` or `SettleError` whose result transform was running, or a `Tick` whose
+  `ServiceFn` was running, while the service was stopped and armed again under the same
+  invoke id, settled the new activation with the old outcome. It now returns false, or
+  an empty slice from `Tick`, as for an id not in flight, fires nothing, and leaves the
+  new activation in flight. That holds when the transform aborts too: a stale abort
+  returns no `Err`, since the activation it ran for is gone, where it used to return the
+  abort as if the service were still in flight. A `Tick` that returns a `FireResult` has
+  fired its event, or been aborted with the service still in flight, whatever that
+  `FireResult` holds.
 
 ## [1.0.0] — 2026-06-13
 

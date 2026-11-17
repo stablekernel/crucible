@@ -186,6 +186,23 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 // float64, map[string]any or []any) is accepted; a struct, an int or a typed slice is
 // refused with ErrEventDataEncoding until the decoder covers its event. A nil decoder is
 // ignored.
+//
+// The decoder also decodes a service's result, for the invocation's onDone event, live
+// in RunService and on every replay. A result whose onDone event the decoder covers
+// arrives as the decoder's type; otherwise it arrives in JSON's generic form, a struct
+// as a map[string]any and a number as a float64. A decoder that fails on a result, or
+// returns a type other than the service returned, parks the result: RunService returns
+// ErrEventDataEncoding before any onDone or onError Assign runs, records the result
+// without settling it, and keeps the Handle healthy. Recover with the fixed decoder,
+// then call RunService, to settle the parked result without running the service again;
+// the Handle that parked it never sees the fix (see Handle.RunService). The settling
+// decoder must return the type the service returned, by import path and name, or JSON's
+// generic form, so a type moved or renamed after the park settles only through a decoder
+// that returns the generic form. A service error stays message-only and
+// doesn't reach the decoder. Register the decoder before results are recorded: replay
+// decodes the journal with the recovering Runner's decoder, so one added or changed
+// after results were recorded changes what replay produces, and one that can't decode
+// a settled result fails Recover and StateAt with ErrEventDataEncoding.
 func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
 	return func(c *runnerConfig[S, E, C]) {
 		if d != nil {

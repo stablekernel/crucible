@@ -17,10 +17,12 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   onError was refused because a context ended, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
 - **`Record.Format`** records the journal format of the version that wrote the Record,
-  which is 3 from this version. Replay arms the timers and services an actor-driven
+  which is 4 from this version. Replay arms the timers and services an actor-driven
   parent Fire's state declares only for a Record of format 1 or later. `Recover` sends a
   tick's and a service settle's effects, and replay hands a tick's timer transitions'
-  effects to the service runner, only for a Record of format 2 or later.
+  effects to the service runner, only for a Record of format 2 or later. Replay decodes
+  a service result through `WithEventDataDecoder` only for a Record of format 4 or
+  later.
   **For Store authors:** a Store must keep `Format`, `EndedActors` and
   `UnstartedActors`, and keep an empty set distinct from nil. A Store that drops them, or
   maps an empty set to nil as an SQL array column or a protobuf repeated field can,
@@ -90,6 +92,31 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   older `durable`'s `Recover` re-arms a baseline's or checkpoint's timers only after the
   tail, so it misses one a tail tick fired, with no error, and its `StateAt` ignores a
   baseline's timers. Don't downgrade a Store this version has written to.
+- **Don't run mixed versions on one instance.** During a rolling deploy, let only
+  replicas of one version own a given instance: drain an instance's owner before a
+  replica of another version recovers it (#253). An older replica that appends to a
+  journal this version wrote stamps a lower journal format after this version's
+  checkpoint or Records. This version's `Recover` and stateless `Fire` then fail with an
+  error saying an older version appended to a newer journal, before replaying any of it,
+  so a refused journal sends no effect. `StateAt` and `Steps` fail with it too, on
+  whatever step `StateAt` targets, even one before the lower-format Record, so they
+  refuse the journals `Recover` refuses. This version
+  can't replay such a Record by the older format's rules, because the older version
+  reads the journal differently, settling a parked result through onDone, for one. A
+  version older than this one checks no journal format, so it reads the mixed journal
+  without refusing it, and that can't be fixed for binaries already built. When this version is the older one, it
+  refuses a later version's journal, with an error saying a newer version wrote it,
+  whenever the checkpoint or any Record it loads records a format above its own, and
+  doesn't then look for a lower-format Record among them. Each version checks only
+  what it loads, so none of this makes mixed versions safe.
+- **A journal a newer version wrote is refused.** `Recover`, a stateless
+  `Runner.Fire`, `StateAt` and `Steps` fail, before they restore or replay anything,
+  on a journal whose checkpoint or any Record records a journal format above this
+  version's, with an error naming both formats, also when the checkpoint's envelope has
+  a shape this version can't unmarshal, such as a field whose type changed, rather than
+  restore it as a bare snapshot and fail later. A version from this one onward refuses
+  a newer journal, so a rollback across a later format bump fails cleanly instead of
+  replaying the journal as its own. Versions already built don't refuse one.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
   recorded with a delivery's last Fire still replays into that transition. Only steps
@@ -133,21 +160,69 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   relaxes `Fire`, and the stateless `Runner.Fire`, which failed with the marshal error
   before; `Tick` and `RunService` now record such an effect too.
 - **A service result reaches `Assign` decoded, live as well as on replay,** so a retried
-  effect can't differ from the first attempt: a struct arrives as a map, an integer as a
-  `float64`, which loses precision above 2^53, and an error as an error with the same
-  message, any invalid UTF-8 replaced, which `errors.Is` and `errors.As` no longer match.
-  So onError's `Assign` and the `ServiceRunner`'s `LastError` see a plain error even for
-  an unbound service's `*state.UnboundRefError`. An `Error` method that panics settles
-  with a message saying the service error panicked, its invalid UTF-8 replaced too. The journal records this decoded value. A result whose JSON
-  form won't decode, such as a number beyond `float64`, fails `RunService` with
-  `ErrHandleFailed` and records nothing, as a result that won't encode does, so
-  `Recover` doesn't fail on it. Either is refused only after its settle applied: the
-  onDone `Assign` runs once on an internal stand-in for the result (for one with no
-  JSON form, the raw result), and the state onDone enters starts its actors and
-  services, before `RunService` fails; after `Recover` the service runs again, and its
-  `Assign` with it. So keep a service's result JSON round-trippable, and have an onDone
-  `Assign` check the payload's type rather than assume it. This may change, to refuse
-  such a result before any `Assign` runs.
+  effect can't differ from the first attempt. The result is decoded through the
+  `WithEventDataDecoder` decoder for the invocation's onDone event, as a `WithEventData`
+  payload is: a decoder for that event, such as `DecodeAs[Order]`, hands `Assign` that
+  type, and without one a struct arrives as a map and an integer as a `float64`, which
+  loses precision above 2^53. A decoder may always return JSON's generic form, including
+  a `json.Number` from one that decodes with `UseNumber`; a `WithEventData` payload
+  must still come back as the type its caller passed. A decoder that fails, or returns a type other than the
+  service returned, or a result whose JSON form won't decode, such as a number beyond
+  `float64`, parks the result (see below). `Recover` and `StateAt` fail with
+  `ErrEventDataEncoding`, running no `Assign`, on a settled result their decoder can't
+  decode. Every successful settle records the Go type the service returned, with its
+  import path, and replay holds the decoder to it as the live settle did: `Recover` and
+  `StateAt` fail with `ErrEventDataEncoding`, running no `Assign`, when the decoder
+  returns another type, such as a pointer to it. JSON's generic form, and nil, are always
+  accepted. Replay decodes the journal with the recovering Runner's decoder, so register
+  a decoder before results are recorded: changing the type a decoder returns for an event
+  whose results are recorded fails `Recover` on them, unless it returns the generic form,
+  and a decoder added later for the type the service returned changes what replay hands
+  `Assign` from the generic form to that type. A typed nil result, such as a nil
+  pointer, goes through the decoder as JSON's `null`, so `DecodeAs[*T]` hands `Assign` a
+  nil `*T` live and on replay alike; on main, `Assign` saw the typed nil live and an
+  untyped nil on replay. With no decoder it arrives as an untyped nil, and an untyped nil
+  result never reaches the decoder. An error stays message-only:
+  an error with the same message, any invalid UTF-8 replaced, which `errors.Is` and
+  `errors.As` no longer match, live or on replay. So onError's `Assign` and the
+  `ServiceRunner`'s `LastError` see a plain error even for an unbound service's
+  `*state.UnboundRefError`. An `Error` method that panics settles with a message saying the service error
+  panicked, its invalid UTF-8 replaced too. The journal records the JSON the live settle
+  decoded, so replay decodes the same bytes, even for a decoder whose type doesn't
+  survive a round trip through its own encoding. A result with no JSON form fails the
+  Handle, as before, but now before any `Assign` runs. A service result in a Record an
+  older version wrote, of format 3 or lower, replays as that version replayed it: in JSON's
+  generic form, through no decoder, so a decoder added for its onDone event can't fail
+  `Recover` on it.
+- **A service result that won't decode is parked.** `RunService` returns
+  `ErrEventDataEncoding`, not `ErrHandleFailed`, before any onDone or onError `Assign`
+  runs. The decode aborts the settle through `ServiceRunner.WithResultTransform`'s abort
+  return, so no event fires. The journal records the result as the service returned it,
+  with its Go type and import path, in a Record of its own that settles nothing. The
+  Handle stays healthy and the service stays in flight, but its `ServiceFn` never runs
+  again. The Handle that parked it never sees a fixed decoder: `Recover` with the fixed
+  decoder, then call `RunService`, and it settles the parked result, which the decoder
+  must return as the type the service returned, or in JSON's generic form, as live.
+  The type is matched by import path and name, so after the type is moved or renamed
+  only a decoder that returns the generic form settles it: settle parked results before
+  such a move. A
+  ctx that ended during the service parks nothing: `RunService` fails the Handle and
+  records nothing, as for a result that decodes, and the service runs again after
+  `Recover`. Until then each `RunService` returns
+  `ErrEventDataEncoding` and records nothing more. `Recover` and `StateAt` replay a
+  parked result as parked, so they don't fail on it, and `StateAt` at that step shows
+  the instance as it was before. A checkpoint carries the parked results in a new
+  `parkedServices` field of its envelope, so compacting the Record that parked one
+  doesn't lose it. A Fire or timer that leaves the state that declares the service stops
+  it and discards the parked result; entering the state again runs the `ServiceFn` for
+  the new activation. The Record that settles a parked result records its Go type too, and replay holds the decoder to it,
+  as that settle did: `Recover` and `StateAt` fail with `ErrEventDataEncoding`, running no `Assign`, when the decoder returns another type. The
+  type is the full name, with every named type's import path, also inside a struct
+  literal, func or chan type, whose fields' tags are part of it. Moving or renaming the
+  type after a park leaves the result parked under a decoder for its new name, and, once
+  settled, fails replay under one; a decoder that returns JSON's generic form for that
+  event settles or replays it. A parked Record or checkpoint is new to this version: an
+  older `durable` replays a parked Record as a settled result.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
   another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
@@ -196,33 +271,45 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   its service in flight and its actor running, and one that entered a state started no
   service and spawned no actor. A service left in flight could then settle after a
   checkpoint that no longer held it, journaling a settle replay couldn't apply, so every
-  `Recover` failed with "no in-flight service to settle". Now `Tick` hands every fired
+  `Recover` failed with "no in-flight service to settle"; and a parked result the timer
+  discarded made `RunService` run the `ServiceFn` again. Now `Tick` hands every fired
   transition's effects to the service runner, in fire order, and then to the actor
   system, as a `Fire` that produced them all does, live and on replay, so a parent Fire
   an actor spawned for one timer drives sees the services every timer of the tick
   started, and stops one it leaves rather than leave it in flight: a timer that leaves a
-  state stops its service and its actor, and one that enters a state starts its service
-  and spawns its actor. The tick's Record journals the parent Fires an actor it spawned
-  drove, replayed after its timers, and a parent Fire a context's ending refused fails
-  the Handle and records nothing, as for `Fire`. Only such a parent Fire fails it once
-  its timers have fired: a message to an actor that the actor refused because the
+  state stops its service,
+  discarding a parked result, and its actor, and one that enters a state starts its
+  service and spawns its actor. The tick's Record journals the parent Fires an actor it
+  spawned drove, replayed after its timers, and a parent Fire a context's ending refused
+  fails the Handle and records nothing, as for `Fire`. Only such a parent Fire fails it
+  once its timers have fired: a message to an actor that the actor refused because the
   tick's `ctx` ended is lost, as actor deliveries are across `Recover`, and the tick
-  records. Replay does this for a tick of journal
-  format 2 or later; an older version's tick replays as it ran, with its services left
-  in flight. This is the Tick-driver fix #236 tracked. The services and actors a timer
-  starts run under the tick's step context, as a `Fire`'s do, so an actor's behavior or
-  a parent Fire's middleware that calls back into the same Handle gets
-  `ErrReentrantStep` at once rather than deadlock on the step lock the `Tick` holds.
-- **A checkpoint without `WithServiceRegistry` keeps the settled services.** A Handle
-  recovered without a service registry restored them from its checkpoint but wrote its
-  next checkpoint without them, so a later `Recover` with the registry found the service
-  not settled, and `RunService` ran its `ServiceFn` again. A checkpoint now keeps them
-  with or without a registry. `Recover` without a registry still refuses a journal tail
-  that holds a service's settle.
+  records. Replay does this for a tick of
+  journal format 2 or later; an older version's tick replays as it ran, with its
+  services left in flight. This is the Tick-driver fix #236 tracked. The services and
+  actors a timer starts run under the tick's step context, as a `Fire`'s do, so an
+  actor's behavior or a parent Fire's middleware that calls back into the same Handle
+  gets `ErrReentrantStep` at once rather than deadlock on the step lock the `Tick` holds.
+- **A parked settle holds the decoder to the result's own type on the Handle that
+  parked it.** The live settle compares the decoder's type with the `ServiceFn`'s, but
+  the parked settle compared only their names, so a decoder that returned another type of
+  the same name and package, such as another function-local type, was refused live, and
+  its result parked, then accepted by the next `RunService` on the same Handle. That
+  `RunService` now refuses it too. After a `Recover` only the recorded name is left, so a
+  result of a function-local type is told from another of the same name only until then.
+- **A checkpoint without `WithServiceRegistry` keeps the services' parked and settled
+  results.** A Handle recovered without a service registry restored them from its
+  checkpoint but wrote its next checkpoint without them, so a later `Recover` with the
+  registry found the service in flight with no parked result, or not settled, and
+  `RunService` ran its `ServiceFn` again. A checkpoint now keeps them with or without a
+  registry. `Recover` without a registry still refuses a journal tail that holds a
+  service's settle or park.
 - **`Recover` and `StateAt` fail when a Store loses `Record.Format`.** The Start baseline
-  and every checkpoint record the journal format too, and a Record after one with a lower
-  format fails replay, where it used to replay as an older journal's and silently skip
-  the timers and services an actor-driven Fire armed.
+  and every checkpoint record the journal format too, and a Record with a lower format
+  than the checkpoint or any Record before it fails replay, before any Record replays, where it used to replay as an older journal's and silently skip
+  the timers and services an actor-driven Fire armed. The error says the Store didn't
+  keep `Record.Format` for a Record with no format, and that an older version appended
+  it, a mixed-version deploy, for one with a lower format.
 - **A step that touches no actor doesn't recompute the actor sets.** Each append rebuilt
   the declared actors from every active state; it now reuses the last sets while the
   configuration, the running actors and the step's spawns are unchanged.
