@@ -158,13 +158,14 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 		return true, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
 	}
 
-	step := h.nextStep
-	// A parent Fire the delivery drove can arm a timer, which reads the clock.
-	rec := Record{Step: step, Entries: append(h.drainClock(), entries...)}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
+	// A parent Fire the delivery drove can arm a timer, which reads the clock. Its effects
+	// aren't dispatched, so the step names none, and finishStep only offers its
+	// checkpoint.
+	rec := &Record{Step: h.nextStep, Entries: append(h.drainClock(), entries...)}
+	if _, err := h.recordStep(ctx, rec, nil); err != nil {
 		return true, err
 	}
-	return true, nil
+	return true, h.finishStep(ctx, rec, nil)
 }
 
 // DeliverToActorByID is DeliverToActor keyed by raw actor id, for a host that

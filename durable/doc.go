@@ -17,9 +17,12 @@
 // recovery replays the exact recorded driving events and nondeterministic results
 // through the same pure transition function.
 //
-// Exactly-once effects: a domain effect emitted by a transition is applied
+// Exactly-once effects: a domain effect emitted by a step (Runner.Start's initial entry
+// is at-least-once, and a parent transition an actor drives isn't dispatched) is applied
 // exactly once over the instance's lifetime — the live run plus any number of
-// recoveries — even though the runtime's replay loop is at-least-once. Each
+// recoveries — even though the runtime's replay loop is at-least-once. The exception is
+// a crash or failed mark after the handler returned, or a handoff between owners, where
+// an effect can apply twice, so keep handlers idempotent on EffectInstance plus the EffectID. Each
 // effect is stamped with a deterministic EffectID (step, ordinal, kind) and
 // deduplicated through the Store's dispatch set.
 //
@@ -120,7 +123,7 @@
 // publishing a message — as an Effect value the kernel routes out through
 // FireResult.Effects without applying. The Runner applies it through the caller-
 // supplied EffectHandler (WithEffectHandler), exactly once over the instance's
-// lifetime.
+// lifetime, with the exceptions under Exactly-once effects above.
 //
 // Each emitted effect is stamped with a deterministic EffectID derived from its
 // step, its emission ordinal within that step, and its kind — every component a
@@ -131,6 +134,12 @@
 // crash between append and dispatch leaves the effect recorded but un-marked, so
 // recovery redispatches it; a crash after dispatch finds the id marked and skips
 // it.
+//
+// The dispatched set lives in a Store that implements DispatchStore, as MemStore and
+// FileStore do. A Runner with an effect handler requires one: Start, Recover and the
+// stateless Runner.Fire refuse any other Store with ErrNoDispatchStore before writing
+// anything or calling the handler. Without a handler, any Store works and no effect is
+// applied.
 //
 // Kernel driver effects (services, timers, actors) are absorbed by their host
 // drivers and never reach the handler.

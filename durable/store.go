@@ -59,7 +59,11 @@ type Record struct {
 
 	// Effects are the effects the step emitted, each with its deterministically
 	// stamped EffectID, persisted before dispatch so a crash between persist and
-	// dispatch is recoverable: Resume re-dispatches, deduped by EffectID.
+	// dispatch is recoverable: Recover re-dispatches, deduped by EffectID. A
+	// KindedEffect whose payload won't marshal is recorded by EffectID and Kind with no
+	// Payload, as an effect that isn't a KindedEffect is, and its Meta holds the
+	// marshal error's message under "crucible.marshalError". Replay re-derives every
+	// effect's value, so none is rebuilt from its envelope.
 	Effects []state.EffectEnvelope
 
 	// Snapshot, when non-empty, is a full marshaled state.Snapshot captured at
@@ -114,8 +118,11 @@ type Record struct {
 	// Format is the journal format of the durable version that wrote the Record: zero on a
 	// Record from before this field, and 1 from the version that arms the timers and
 	// services an actor-driven parent Fire's state declares. Replay arms them only for a
-	// Record of format 1 or later, since an older run took no clock read for them. A
-	// Store keeps it as it keeps Step.
+	// Record of format 1 or later, since an older run took no clock read for them. From
+	// format 2 the live run dispatched a tick's and a service settle's domain effects, so
+	// Recover sends them, and a Tick handed its timer transitions' effects to the service
+	// runner and the actor system, so replay starts and stops their services as it did;
+	// an older Record replays as that version ran it. A Store keeps it as it keeps Step.
 	Format int `json:",omitempty"`
 }
 

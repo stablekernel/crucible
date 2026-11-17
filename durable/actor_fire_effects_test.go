@@ -12,7 +12,7 @@ import (
 // parent Fire emits, where an actor drove that Fire, is dispatched like the event
 // Fire's own: here a failed spawn's onError transition emits a notify.
 func TestFire_DispatchesTheEffectsOfAParentFireAnActorDrove(t *testing.T) {
-	t.Skip("a parent Fire an actor drove has its timers and services armed, but its domain effects aren't dispatched; #235 fixes it")
+	t.Skip("a parent Fire an actor drove has its timers and services armed, but its domain effects aren't dispatched; see #257")
 	ctx := context.Background()
 	type cx struct{}
 	m := state.ForgeFor[cx]("actorEffects").

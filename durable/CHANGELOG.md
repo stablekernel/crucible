@@ -17,14 +17,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   onError was refused because a context ended, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
 - **`Record.Format`** records the journal format of the version that wrote the Record,
-  which is 1 from this version. Replay arms the timers and services an actor-driven
-  parent Fire's state declares only for a Record of format 1 or later.
+  which is 2 from this version. Replay arms the timers and services an actor-driven
+  parent Fire's state declares only for a Record of format 1 or later. `Recover` sends a
+  tick's and a service settle's effects, and replay hands a tick's timer transitions'
+  effects to the service runner, only for a Record of format 2 or later.
   **For Store authors:** a Store must keep `Format`, `EndedActors` and
   `UnstartedActors`, and keep an empty set distinct from nil. A Store that drops them, or
   maps an empty set to nil as an SQL array column or a protobuf repeated field can,
   makes `Recover` spawn ended actors again, and replay arm nothing for a Record without
   its `Format`. MemStore and FileStore keep all three.
 
+- **`EffectInstance`** reads the instance from the ctx an `EffectHandler` receives, because
+  effect ids repeat across instances.
 - **Fencing.** `WithFence` on `Store.Append` and `WithCheckpointFence` on
   `Store.Checkpoint` carry a caller-issued token, and a Store refuses a token lower
   than the highest it has seen for the instance with `ErrFenced`, writing nothing.
@@ -64,6 +68,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **An effect handler needs a `DispatchStore`.** This is a behavior change. On main, a
+  Runner with `WithEffectHandler` and a Store that doesn't implement `DispatchStore`
+  silently skipped every effect: `Fire`'s, and `Recover`'s re-send, never reached the
+  handler. Now `Start`, `Recover` and the stateless `Runner.Fire` refuse that
+  configuration with the new `ErrNoDispatchStore`, before they read or write the Store
+  or call the handler. It is a permanent configuration error and doesn't match
+  `ErrEffectDispatch`, so a caller that retries `Recover` on a dispatch failure doesn't
+  loop on it. A Store with no handler wired is unaffected, and
+  `MemStore` and `FileStore` implement `DispatchStore`. A Store author whose backend
+  doesn't track dispatched effects either implements `Dispatched` and
+  `MarkDispatched` or drops the handler.
 - **A journal this version writes isn't for an older one.** An actor entry can now say
   its parent Fire was refused, which an older `durable` fails `Recover` on, or, for an
   entry with no event, replays as the zero event. An older `durable` also ignores the
@@ -98,7 +113,31 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **A failed effect dispatch fails the Handle**, and so does an effect handler that
   panics, which now returns `ErrEffectDispatch` instead of panicking out of `Fire`. The
   effect stays unmarked in the journal, so no later checkpoint compacts it away, and
-  `Recover` dispatches it again.
+  `Recover` dispatches it again, failing with `ErrEffectDispatch` while the handler still
+  does. A handler that panics in `Start` or `Recover` returns `ErrEffectDispatch` too, and
+  so does a `DispatchStore` whose `Dispatched` or `MarkDispatched` panics or returns an
+  error, in a step, `Recover` or the stateless `Runner.Fire`, with the Store's error in
+  the chain. A failed `MarkDispatched` fails the Handle too, and `Recover` applies that
+  effect again. The handler's error now matches through `errors.Is`.
+- **A `KindedEffect` that can't marshal no longer fails a step.** A step records it by
+  its id and kind with no payload, as it records an effect that isn't a `KindedEffect`,
+  and its `EffectEnvelope.Meta` holds the marshal error's message under
+  `crucible.marshalError`; a `MarshalJSON` that panics is recorded the same way, with the
+  panic's message there. Replay re-derives the effect's value, so it dispatches as any
+  effect does: once live with a handler wired, once on the `Recover` that retries a
+  failed dispatch, and once on a `Recover` whose handler was wired only then. This
+  relaxes `Fire`, and the stateless `Runner.Fire`, which failed with the marshal error
+  before; `Tick` and `RunService` now record such an effect too.
+- **A service result reaches `Assign` decoded, live as well as on replay,** so a retried
+  effect can't differ from the first attempt: a struct arrives as a map, an integer as a
+  `float64`, which loses precision above 2^53, and an error as an error with the same
+  message, any invalid UTF-8 replaced, which `errors.Is` and `errors.As` no longer match.
+  So onError's `Assign` and the `ServiceRunner`'s `LastError` see a plain error even for
+  an unbound service's `*state.UnboundRefError`. An `Error` method that panics settles
+  with a message saying the service error panicked, its invalid UTF-8 replaced too. The journal records this decoded value. A result whose JSON
+  form won't decode, such as a number beyond `float64`, fails `RunService` with
+  `ErrHandleFailed` and records nothing, as a result that won't encode does, so
+  `Recover` doesn't fail on it.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
   another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
@@ -142,6 +181,31 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **A timer transition starts and stops services and actors.** `Tick` handed a fired
+  timer transition's effects only to the scheduler, so a timer that left a state left
+  its service in flight and its actor running, and one that entered a state started no
+  service and spawned no actor. A service left in flight could then settle after a
+  checkpoint that no longer held it, journaling a settle replay couldn't apply, so every
+  `Recover` failed with "no in-flight service to settle". Now `Tick` hands every fired
+  transition's effects to the service runner, in fire order, and then to the actor
+  system, as a `Fire` that produced them all does, live and on replay, so a parent Fire
+  an actor spawned for one timer drives sees the services every timer of the tick
+  started, and stops one it leaves rather than leave it in flight: a timer that leaves a
+  state stops its service and its actor, and one that enters a state starts its service
+  and spawns its actor. The tick's Record journals the parent Fires an actor it spawned
+  drove, replayed after its timers, and a parent Fire a context's ending refused fails
+  the Handle and records nothing, as for `Fire`. Replay does this for a tick of journal
+  format 2 or later; an older version's tick replays as it ran, with its services left
+  in flight. This is the Tick-driver fix #236 tracked. The services and actors a timer
+  starts run under the tick's step context, as a `Fire`'s do, so an actor's behavior or
+  a parent Fire's middleware that calls back into the same Handle gets
+  `ErrReentrantStep` at once rather than deadlock on the step lock the `Tick` holds.
+- **A checkpoint without `WithServiceRegistry` keeps the settled services.** A Handle
+  recovered without a service registry restored them from its checkpoint but wrote its
+  next checkpoint without them, so a later `Recover` with the registry found the service
+  not settled, and `RunService` ran its `ServiceFn` again. A checkpoint now keeps them
+  with or without a registry. `Recover` without a registry still refuses a journal tail
+  that holds a service's settle.
 - **`Recover` and `StateAt` fail when a Store loses `Record.Format`.** The Start baseline
   and every checkpoint record the journal format too, and a Record after one with a lower
   format fails replay, where it used to replay as an older journal's and silently skip
@@ -168,6 +232,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
+- **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
+  dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
+  baseline and before writing it, and only if the entry succeeded. Those effects are
+  at-least-once: a handler failure, a failed baseline write or overlapping `Start` calls
+  re-apply them, so key any dedupe on `EffectInstance` plus the effect id. Effects from a
+  parent transition an actor drives, including during `Fire`, are still not dispatched.
+  `Recover` re-dispatches what replaying a step produces, as it did for a `Fire`: for a
+  `Tick` or service step, only in a Record of format 2 or later, so it doesn't send
+  effects from an older version's `Tick` and service steps, which never dispatched
+  them. It goes by the Record's format, not its `Effects` envelopes, so a Store that
+  doesn't keep `Record.Effects` loses no effect a crash left unsent. As for a `Fire`'s,
+  it loads the Store's dispatched set once for each Record with effects to send.
 - **A Tick, RunService or DeliverToActor whose context ended partway isn't journaled.** A canceled `RunService`, `Tick`
   or `DeliverToActor` used to record a result the live instance never applied, which
   recovery then committed, or for an actor, failed on. Each now returns `ErrHandleFailed`
