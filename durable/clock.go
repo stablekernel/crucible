@@ -98,6 +98,17 @@ func (c *recordingClock) markBuf() int {
 	return len(*c.buf)
 }
 
+// dropFrom discards the readings recorded at index i and after, under the clock mutex:
+// an idle Tick drops its own reads this way and keeps the ones before them, which an
+// earlier, still unrecorded parent Fire took.
+func (c *recordingClock) dropFrom(i int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i >= 0 && i < len(*c.buf) {
+		*c.buf = (*c.buf)[:i]
+	}
+}
+
 // armReadingAt returns the clock reading recorded at index i, ok false when the
 // buffer holds no entry there (no read was appended). Taken under the clock mutex
 // so it does not race a concurrent Now().

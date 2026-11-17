@@ -1197,6 +1197,10 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	if err := h.refuse(ctx); err != nil {
 		return nil, nil, nil, err
 	}
+	mark := -1
+	if h.recClock != nil {
+		mark = h.recClock.markBuf()
+	}
 	results := h.sched.Tick(ctx)
 	// A context that ended partway can make the kernel refuse a due timer's Fire after
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
@@ -1208,8 +1212,12 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	}
 	// A tick that fired nothing changes nothing, so it records nothing, and its clock
 	// read goes with it: replay runs no tick for it, so it consumes no recorded reading.
+	// Only its own read goes: one before it belongs to a parent Fire Start's or Recover's
+	// actors drove, which the next step records.
 	if len(results) == 0 {
-		h.drainClock()
+		if mark >= 0 {
+			h.recClock.dropFrom(mark)
+		}
 		return results, nil, nil, nil
 	}
 
