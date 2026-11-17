@@ -160,8 +160,9 @@ func TestRecover_OlderVersionsFireEffectIsSentWithoutEnvelopes(t *testing.T) {
 }
 
 // asFormatOne copies src's journal for id into a fresh MemStore with the checkpoint and
-// every Record of journal format 1, as the version before this one wrote them, so a test
-// can hand-build the Records that version left.
+// every Record of journal format 1, older than tickDriversFormat: a version that still
+// recorded idle ticks and left a settle's clock read for the next Record, so a test can
+// hand-build the Records such a version left.
 func asFormatOne(t *testing.T, src *durable.MemStore, id durable.InstanceID) *durable.MemStore {
 	t.Helper()
 	ctx := context.Background()

@@ -161,7 +161,7 @@ func decodeTimerEvent[E comparable](codec EventCodec[E], raw json.RawMessage) (E
 
 // mirrorArmed folds the ScheduleAfter/CancelScheduled effects of a replayed step
 // into the armed timer table at the recorded instant now, so recovery tracks which
-// timers the tail replay re-established and at what deadlines. It is the replay-side
+// timers are pending as the tail replays, and at what deadlines. It is the replay-side
 // analog of the Handle's live arming, sharing the recorded clock read rather than a
 // live one.
 func mirrorArmed(armed map[string]pendingTimer, effects []state.Effect, now time.Time) {

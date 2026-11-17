@@ -81,8 +81,8 @@ func TestUnmarshalCheckpoint_Garbage(t *testing.T) {
 	}
 }
 
-// TestReArmEffects_RemainingDelay confirms a persisted timer is re-armed at its
-// remaining delay.
+// TestReArmEffects_RemainingDelay confirms a persisted timer is re-armed with a delay
+// that lands on its deadline from the instant passed.
 func TestReArmEffects_RemainingDelay(t *testing.T) {
 	now := time.Unix(0, 1_000_000_000).UTC()
 	wires := []pendingTimerWire{

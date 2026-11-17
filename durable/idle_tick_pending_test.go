@@ -9,10 +9,11 @@ import (
 	"github.com/stablekernel/crucible/state"
 )
 
-// TestIdleTick_KeepsAPendingParentFiresRead proves an idle Tick, the first step after
-// Start or Recover, keeps the clock read a pending parent Fire took arming its timer: the
-// goer's go, sent as it spawned, which the next real step journals. A Recover after that
-// step replays the go's arming at its read, so the timer is due 10s after it.
+// TestIdleTick_KeepsAPendingParentFiresRead proves an idle Tick, the first call after
+// Start or Recover, keeps the clock read a pending parent Fire took arming its timer. The
+// Fire is the "go" event the goer actor sends as it spawns, which moves the parent to a
+// state with a 10s timer; the next recorded step journals it. A Recover after that step
+// replays the arming at its read, so the timer is due 10s after it.
 func TestIdleTick_KeepsAPendingParentFiresRead(t *testing.T) {
 	ctx := context.Background()
 	for _, from := range []string{"Start", "Recover"} {

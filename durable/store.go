@@ -84,8 +84,9 @@ type Record struct {
 	Tick bool
 
 	// TickSteps is the number of timer transitions the tick at this barrier fired
-	// (zero only in a journal from before idle ticks stopped recording). It lets replay advance its step
-	// accounting across a re-derived tick without a recorded Event per timer.
+	// (zero only in a journal from before idle ticks stopped recording). It lets replay
+	// advance its step accounting across a re-derived tick without a recorded Event per
+	// timer, and replay fails when the re-derived tick fires a different number.
 	TickSteps int
 
 	// EndedActors, when set, holds the child-machine actors the instance's state

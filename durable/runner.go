@@ -38,8 +38,8 @@ import (
 //
 // The first nondeterministic source recorded as Record.Entries is the clock: a
 // Runner owns each instance's delayed-transition scheduler and wraps the clock
-// (WithRunnerClock) so every reading the scheduler consumes — arming a timer's
-// deadline or testing dueness — is journaled and returned verbatim on recovery,
+// (WithRunnerClock) so the readings a recorded step's scheduler consumes — arming a
+// timer's deadline or testing dueness — are journaled and returned verbatim on recovery,
 // making timer-driven transitions durable and replay wall-clock-independent.
 //
 // Invoked services are the second recorded seam: a service runs on the live path
@@ -81,7 +81,7 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // Handle is a live durable instance: the recovered or freshly started kernel
 // Instance bound to its Runner and InstanceID, so subsequent Fires continue to
 // record. It owns the instance's delayed-transition scheduler and the recording
-// clock that journals every reading the scheduler consumes, so timer-driven
+// clock that journals the readings each recorded step consumes, so timer-driven
 // transitions are durable and replay wall-clock-independent. Obtain a Handle from
 // Runner.Start or Recover.
 //
@@ -563,7 +563,8 @@ func (h *Handle[S, E, C]) ID() InstanceID { return h.id }
 // than clobbering its recorded baseline.
 //
 // Start arms the initial state's `after` timers and carries them in the baseline, so a
-// Tick fires them and recovery re-arms them.
+// Tick fires them and recovery re-arms them. It arms them even when the initial entry
+// failed, as it starts the state's services and actors.
 //
 // If a context ending (ctx's, or one middleware derived from it) refuses a parent Fire
 // an initial actor drove, such as a failed spawn's onError, Start returns an error
@@ -1206,14 +1207,14 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	// the scheduler consumed it. Journaling that would commit on recovery what live never
 	// applied, so record nothing: Recover re-arms the timers.
 	// A tick that fired no timer consumed nothing, so an ended ctx can't have cost it
-	// anything: it records as usual.
+	// anything: it returns below as an idle tick.
 	if err := consumedCanceled(ctx, len(results) > 0, append(resultErrs(results), parentFireErrs(h.actorFires.take())...)...); err != nil {
 		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, err))
 	}
-	// A tick that fired nothing changes nothing, so it records nothing, and its clock
-	// read goes with it: replay runs no tick for it, so it consumes no recorded reading.
-	// Only its own read goes: one before it belongs to a parent Fire Start's or Recover's
-	// actors drove, which the next step records.
+	// A tick that fired nothing changes nothing, so it records nothing. Its own clock
+	// reads go too: recorded, they'd be readings no replayed step consumes. Reads taken
+	// before it stay: they belong to a parent Fire that an actor spawned by Start or
+	// Recover drove, which the next step records.
 	if len(results) == 0 {
 		if mark >= 0 {
 			h.recClock.dropFrom(mark)
@@ -1676,10 +1677,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// from the final configuration's StartEffects.
 	actors, actorFires := r.newActorSystem(inst)
 
-	// armed mirrors the scheduler's pending timers re-established by tail replay,
-	// with their recorded deadlines, so a persisted-but-compacted timer is re-armed
-	// only when the tail did not already re-arm it, and the Handle's table is seeded
-	// with every still-pending timer's deadline for the next checkpoint.
+	// armed mirrors the scheduler's pending timers, with their recorded deadlines: the
+	// checkpoint's, re-armed before the tail, then as the tail arms, cancels and fires
+	// them. It seeds the Handle's table with every still-pending timer's deadline for
+	// the next checkpoint.
 	armed := map[string]pendingTimer{}
 
 	// mirror tracks, as replay walks the tail, the still-pending timers in armed and the
@@ -2174,7 +2175,10 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 //     the same deadlines come due and the same timers fire at their recorded instants.
 //     Each fired transition starts or stops its services, as the live Tick did, for a
 //     Record of tickDriversFormat or later, and its recorded parent Fires re-fire after
-//     the tick.
+//     the tick. A tick that fires a different number of timers than the Record's
+//     TickSteps fails the replay.
+//   - A tick Record with TickSteps zero, which only an older version wrote, fires
+//     nothing; the caller skips its readings (replayClock.skipTo).
 //   - A plain event re-fires it with its recorded event data, then re-arms its timers
 //     and services as the live Fire did.
 //   - A checkpoint-only Record drives nothing.
@@ -2230,6 +2234,16 @@ func replayRecord[S comparable, E comparable, C any](
 		// reading, and the Record says nothing fired. The caller skips the reading.
 	case rec.Tick:
 		ticked := sched.Tick(ctx)
+		// A replayed tick fires exactly the timers the live one did. A different count
+		// means the journal holds a history replay can't reproduce, such as an older
+		// version's recovery that missed a timer fired in its tail and later fired it
+		// again: fail rather than replay the following steps in another state.
+		if len(ticked) != rec.TickSteps {
+			if err := ctx.Err(); err != nil {
+				return stepEffects, err
+			}
+			return stepEffects, fmt.Errorf("replaying the tick at step %d: it fired %d timers, but the journal records %d", rec.Step, len(ticked), rec.TickSteps)
+		}
 		mirrorTick(mirror, sched, ticked)
 		for i := range ticked {
 			if rec.Format >= tickDriversFormat {
