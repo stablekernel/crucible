@@ -110,6 +110,17 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // ErrFenced, as the Handle doc says. A failed Checkpoint returns the plain error, and
 // the result is recorded. A failed effect dispatch also returns ErrHandleFailed, but the
 // result is recorded: Recover retries the effect and the service doesn't run again.
+//
+// A result whose JSON form won't decode, or that has no JSON form, such as a chan, is
+// refused only after its settle applied: the onDone Assign runs once on an internal
+// stand-in for the result (for one with no JSON form, the raw result), and the state
+// onDone enters starts its actors and services. Only then does RunService return
+// ErrHandleFailed, recording nothing, and after Recover the service runs again, its
+// onDone Assign with it. An Assign that asserts the payload's type unchecked panics on
+// the stand-in, which refuses the settle's Fire, and RunService still returns
+// ErrHandleFailed. So keep a service's result JSON round-trippable, and have an onDone
+// Assign check the payload's type rather than assume it. A stacked change, #258, refuses
+// such a result before any Assign runs.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err

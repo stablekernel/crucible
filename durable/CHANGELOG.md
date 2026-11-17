@@ -137,7 +137,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   with a message saying the service error panicked, its invalid UTF-8 replaced too. The journal records this decoded value. A result whose JSON
   form won't decode, such as a number beyond `float64`, fails `RunService` with
   `ErrHandleFailed` and records nothing, as a result that won't encode does, so
-  `Recover` doesn't fail on it.
+  `Recover` doesn't fail on it. Either is refused only after its settle applied: the
+  onDone `Assign` runs once on an internal stand-in for the result (for one with no
+  JSON form, the raw result), and the state onDone enters starts its actors and
+  services, before `RunService` fails; after `Recover` the service runs again, and its
+  `Assign` with it. So keep a service's result JSON round-trippable, and have an onDone
+  `Assign` check the payload's type rather than assume it. A stacked change, #258,
+  refuses such a result before any `Assign` runs.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
   another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was
@@ -270,8 +276,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   state spawned failed to start and a context's ending refused its onError, the Fire was
   recorded, and `Recover` then applied the onError live never applied. Now `Fire` returns
   `ErrHandleFailed` and records nothing, though its event applied: fire it again on the
-  recovered Handle. A Fire that drove no Fire a context refused still records, even when its
-  context ends once the kernel has applied the event.
+  recovered Handle. So does a Fire whose context has ended by the time the actors it
+  spawned have started, which can cost a message one actor sends another without any
+  Fire reporting it, as `Tick` and `RunService` do. A Fire that spawned no actor and
+  drove no Fire a context refused still records, even when its context ends once the
+  kernel has applied the event.
 - **An actor's output replays with the Fire that carried it.** When one delivery drove
   several parent Fires, such as an onDone entering a state whose actor then failed to
   start, the output was recorded with the last Fire, so replay gave it to the wrong

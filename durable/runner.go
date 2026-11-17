@@ -110,7 +110,8 @@ func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st 
 // A step that applied to the kernel but may not have been recorded leaves the Handle out
 // of step with the journal, and so does one that panicked in host code; the panic
 // reaches the caller after the Handle fails. So does a Tick, RunService or DeliverToActor whose context
-// ended during the step, and any step, Fire included, that drove a Fire refused because
+// ended during the step, a Fire whose context ended before the actors it spawned had
+// started, and any step, Fire included, that drove a Fire refused because
 // a context ended, the caller's or one middleware derived from it. That call and every later one return ErrHandleFailed, wrapping the cause,
 // which can be a context that ended during the Store write. Before recovering, call
 // Drain: a step on another goroutine may still be recording, which a recovered Handle
@@ -885,12 +886,14 @@ func (r *Runner[S, E, C]) Fire(ctx context.Context, id InstanceID, event E, opts
 // error, records nothing and leaves the Handle usable. When the event applies, an actor
 // the step spawned can fail and route its onError through the instance; if a context
 // ending, ctx or one derived from it, refuses that onError, Fire fails the Handle with
-// ErrHandleFailed and records nothing, though the event applied. Recover restores the
+// ErrHandleFailed and records nothing, though the event applied. So does a ctx that has
+// ended by the time the actors the step spawned have started, since it can cost a
+// message one actor sends another without any Fire reporting it. Recover restores the
 // state from before the event, so fire it again on the recovered Handle, and don't act
-// on the result Fire returned with that error. A Fire that drove no Fire a context
-// refused records, even if ctx ends after the kernel applied it. A panic in host code
-// during the step fails the Handle, then reaches the caller: recover it, then Drain
-// and Recover as for ErrHandleFailed.
+// on the result Fire returned with that error. A Fire that spawned no actor and drove
+// no Fire a context refused records, even if ctx ends after the kernel applied it. A
+// panic in host code during the step fails the Handle, then reaches the caller: recover
+// it, then Drain and Recover as for ErrHandleFailed.
 //
 // A state.WithEventData payload reaches the transition's Assign as the Runner's
 // EventDataDecoder rebuilds it from the payload's JSON form, live and on replay alike, so
@@ -952,14 +955,17 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	// timer, and each driver must see its effects.
 	h.absorbDrivers(ctx, res.Effects)
 
-	// An actor the absorb spawned can fail and route its onError through the parent.
-	// A context that ended can refuse that Fire, so live never applied it, and
-	// journaling this step would let Recover re-spawn the actor under a live context,
-	// where the onError applies. Record nothing. A Fire that drove no Fire a context refused
-	// applied whole, so it records even when ctx ended afterward.
+	// A context that ended can refuse an onError an actor the absorb spawned routes
+	// through the parent, or a message one actor sent another as it spawned, which no
+	// Fire reports. Live never applied it, and journaling this step would let Recover
+	// re-spawn the actors under a live context, where it applies. So a Fire that spawned
+	// an actor rechecks ctx itself, as Tick and RunService do: record nothing. A Fire
+	// that spawned none and drove no Fire a context refused applied whole, so it records
+	// even when ctx ended afterward.
 	fires := h.actorFires.take()
-	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
-		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, refused))
+	spawned := h.actors != nil && hasSpawnEffect(res.Effects)
+	if canceled := consumedCanceled(ctx, spawned, parentFireErrs(fires)...); canceled != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, canceled))
 	}
 	// Every parent Fire the absorb drove (a message an actor sent as it spawned, a
 	// settle, a failed spawn's onError) applied after the event, so the step journals
@@ -1917,13 +1923,14 @@ func isContextErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// stepCanceled reports why a Tick, RunService or DeliverToActor must record nothing:
-// a context ended, so a Fire the step drove may have been refused, and live may not
-// have applied what the step would journal. That's the caller's ctx having ended, or
-// a Fire refused with a context's error (one middleware derived from ctx included)
-// among errs, which hold the errors of the Fires the step drove, the parent Fires its
-// actors drove among them. These steps check ctx itself because a service or timer
-// they consumed can end on it without any Fire reporting it. A refusal with any other
+// stepCanceled reports why a Tick, RunService, DeliverToActor, or a Fire that spawned an
+// actor, must record nothing: a context ended, so a Fire the step drove may have been
+// refused, and live may not have applied what the step would journal. That's the
+// caller's ctx having ended, or a Fire refused with a context's error (one middleware
+// derived from ctx included) among errs, which hold the errors of the Fires the step
+// drove, the parent Fires its actors drove among them. These steps check ctx itself
+// because a service or timer they consumed, or a message one actor sent another, can
+// end on it without any Fire reporting it. A refusal with any other
 // cause, such as a failing guard, is deterministic: the step is journaled, and replay
 // meets the same refusal.
 func stepCanceled(ctx context.Context, errs ...error) error {
@@ -1934,13 +1941,25 @@ func stepCanceled(ctx context.Context, errs ...error) error {
 }
 
 // consumedCanceled is stepCanceled for a step that consumed something (a timer it
-// fired, a delivery that drove the parent), and refusedByContext for one that didn't,
-// which has nothing an ended ctx could have cost it.
+// fired, a delivery that drove the parent, an actor a Fire spawned), and
+// refusedByContext for one that didn't, which has nothing an ended ctx could have cost
+// it.
 func consumedCanceled(ctx context.Context, consumed bool, errs ...error) error {
 	if consumed {
 		return stepCanceled(ctx, errs...)
 	}
 	return refusedByContext(errs...)
+}
+
+// hasSpawnEffect reports whether effects ask the actor system to spawn an actor, whose
+// start can run under a context that ended.
+func hasSpawnEffect(effects []state.Effect) bool {
+	for _, eff := range effects {
+		if _, ok := eff.(state.SpawnActor); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // refusedByContext returns the first of errs that is a context's error: a Fire refused
