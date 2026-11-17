@@ -127,10 +127,17 @@ func WithActorPalette[S comparable, E comparable, C any](palette map[string]stat
 }
 
 // WithEffectHandler binds the seam the Runner calls to apply each emitted domain
-// effect — an email, a charge, a published message: any at-most-once side effect
-// a transition emits as a domain Effect value. A durable effect is applied
+// effect — an email, a charge, a published message: any side effect
+// a transition emits as a domain Effect value. Effects from a parent transition an actor
+// drives aren't dispatched. The handler needs a Store that is a DispatchStore, as
+// MemStore and FileStore are: with any other Store, Start, Recover and the stateless
+// Runner.Fire refuse the configuration with ErrNoDispatchStore before they write to the
+// Store or call the handler. A
+// durable effect from a step is applied
 // exactly once over the whole lifetime of an instance (the live run plus any
-// number of recoveries), deduped by a deterministic EffectID: the Runner stamps
+// number of recoveries), except that it can apply twice after a crash or failed mark
+// once the handler returned, or during a handoff, so keep the handler idempotent on
+// EffectInstance plus the id. It is deduped by a deterministic EffectID: the Runner stamps
 // each emitted effect, write-ahead persists the step Record carrying those ids,
 // then invokes the handler for every id not already marked dispatched, marking
 // each as it succeeds. A handler error or panic fails the Handle with ErrHandleFailed,
@@ -187,7 +194,8 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 // Checkpoint, so a Handle that has lost the instance to a newer owner gets ErrFenced
 // instead of committing. Pass the token the host's lease issued; a retry by the same
 // owner keeps the same token. A non-positive token is the same as no token, which a
-// fenced instance refuses. MarkDispatched is not fenced.
+// fenced instance refuses. MarkDispatched is not fenced, so during a handoff an effect
+// handler can run concurrently for one effect id.
 //
 // The token applies to every instance the Runner drives, so a host with a token per
 // instance passes it to Recover, or builds a Runner per instance. No fence token is written

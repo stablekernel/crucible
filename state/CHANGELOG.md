@@ -36,6 +36,10 @@ counts as an additive (minor) versus breaking (major) change. Use the
   onError doesn't escalate again, since its start already escalated it; a respawned
   actor's own failure with no onError does. The durable runner's `Recover` uses it for
   the actors that were running. It's additive, within v1.1.0.
+- **`ServiceRunner.WithResultTransform`** rewrites a service's outcome before `Tick`
+  settles it, so a host that records outcomes can give the live run what a replay will see.
+  An unbound service still settles through onError: a transform that returns no error for
+  its `UnboundRefError` doesn't make it succeed.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new

@@ -29,8 +29,8 @@ import (
 // The Runner wraps the kernel's reusable host driver, state.ServiceRunner, which
 // turns StartService / StopService effects into real ServiceFn executions and
 // re-fires each result through the invocation's onDone / onError event. On the live
-// path RunService delegates to ServiceRunner.Run (resolve + run + settle), reads
-// the raw outcome the service produced, and journals it as a JournalServiceResult
+// path RunService delegates to ServiceRunner.Tick (resolve + run + settle), reads
+// the outcome in its JSON-decoded form, and journals it as a JournalServiceResult
 // correlated by the invocation id. On recovery the recorded outcomes are replayed
 // in order through ServiceRunner.SettleDone / SettleError — the same settle methods
 // the live run drove — so the kernel re-fires the identical onDone / onError event
@@ -55,7 +55,7 @@ type serviceResultPayload struct {
 	// Result is the JSON-encoded successful return of the ServiceFn, present for a
 	// SettleDone outcome. It is decoded to a Go value and re-fired through onDone so
 	// the transition's Assign reads it from AssignCtx.Event exactly as on the live
-	// run.
+	// run, which settles with the same decoded form (see replayableOutcome).
 	Result json.RawMessage `json:"result,omitempty"`
 	// Error is the failure message for a SettleError outcome. It is reconstructed
 	// into an error and re-fired through onError so the transition's Assign reads it
@@ -80,9 +80,14 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // records its outcome, and settles it — firing the invocation's onDone (on
 // success) or onError (on failure) event through the durable instance and
 // recording the produced step. The service is resolved and executed against the
-// registry supplied with WithServiceRegistry; its raw result or error is journaled
+// registry supplied with WithServiceRegistry; its result or error is journaled
 // as a JournalServiceResult correlated by id so recovery replays it without
-// re-invoking the service.
+// re-invoking the service. The outcome reaches the machine JSON-decoded, live as on
+// replay, and the journal holds that form: a struct is a map, an integer a float64 that
+// loses precision above 2^53. An error is message-only: an error with the same message,
+// which errors.Is and errors.As no longer match, live or on replay. So onError's Assign
+// and the ServiceRunner's LastError see a plain error even for an unbound service's
+// *state.UnboundRefError.
 //
 // It returns the routed FireResult and true, or the zero result and false when id
 // names no in-flight service (already settled, stopped, or never started). It returns
@@ -90,36 +95,68 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // before the service started.
 //
 // Once the service has run, it returns true with any error. A result that won't encode,
-// a ctx that ended during the service or while its settle's effects were absorbed (even
-// after a clean settle), or a Fire the settle drove refused because a context ended (ctx,
-// or one middleware derived from it) returns ErrHandleFailed and records nothing: a
-// recovered Handle has the service in flight again, and RunService runs it a second time.
+// a result whose JSON form won't decode, such as a number beyond float64, a ctx that
+// ended during the service or while its settle's effects were absorbed (even after a
+// clean settle), or a Fire the settle drove refused because a context ended (ctx, or one
+// middleware derived from it) returns ErrHandleFailed and records nothing: a recovered
+// Handle has the service in flight again, and RunService runs it a second time. A
+// KindedEffect the settle emits whose payload won't marshal doesn't fail it: it is
+// recorded by id and kind, as recordEffects says, and dispatches as any effect does.
 // A failed Append also returns ErrHandleFailed, but the write may have landed anyway:
 // Recover finds out, and the service runs again only if the result isn't in the
 // journal. If another goroutine failed the Handle while this step was recording, it
 // returns the result, true and ErrHandleFailed saying the step was recorded. Every
 // ErrHandleFailed also matches its cause, so test for ErrHandleFailed first, then
 // ErrFenced, as the Handle doc says. A failed Checkpoint returns the plain error, and
-// the result is recorded.
+// the result is recorded. A failed effect dispatch also returns ErrHandleFailed, but the
+// result is recorded: Recover retries the effect and the service doesn't run again.
+//
+// A result whose JSON form won't decode, or that has no JSON form, such as a chan, is
+// refused only after its settle applied: the onDone Assign runs once on an internal
+// stand-in for the result (for one with no JSON form, the raw result), and the state
+// onDone enters starts its actors and services. Only then does RunService return
+// ErrHandleFailed, recording nothing, and after Recover the service runs again, its
+// onDone Assign with it. An Assign that asserts the payload's type unchecked panics on
+// the stand-in, which refuses the settle's Fire, and RunService still returns
+// ErrHandleFailed. So keep a service's result JSON round-trippable, and have an onDone
+// Assign check the payload's type rather than assume it.
 func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.FireResult[S], bool, error) {
 	if err := h.acquire(ctx); err != nil {
 		return state.FireResult[S]{}, false, err
 	}
+	res, ran, rec, des, err := h.lockedServiceStep(ctx, id)
+	if err != nil || rec == nil {
+		return res, ran, err
+	}
+	// Dispatch after releasing the step lock, as Fire does.
+	return res, true, h.finishStep(ctx, rec, des)
+}
+
+// lockedServiceStep runs serviceStep and releases the step lock however it returns. A
+// panic in host code fails the Handle first, since the settle may have applied.
+func (h *Handle[S, E, C]) lockedServiceStep(ctx context.Context, id string) (state.FireResult[S], bool, *Record, []dispatchableEffect, error) {
 	defer h.release()
 	defer h.failOnPanic()
+	return h.serviceStep(ctx, id)
+}
+
+// serviceStep is the part of RunService that holds the step lock: it runs and settles
+// the service and records the step, naming its domain effects, before any is
+// dispatched. It returns a nil Record when nothing was recorded.
+func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.FireResult[S], bool, *Record, []dispatchableEffect, error) {
 	if err := h.refuse(ctx); err != nil {
-		return state.FireResult[S]{}, false, err
+		return state.FireResult[S]{}, false, nil, nil, err
 	}
 	if h.svc == nil {
-		return state.FireResult[S]{}, false, fmt.Errorf("durable: no service registry wired for %q (supply WithServiceRegistry)", h.id)
+		return state.FireResult[S]{}, false, nil, nil, fmt.Errorf("durable: no service registry wired for %q (supply WithServiceRegistry)", h.id)
 	}
 	if !h.svc.HasPending(id) {
-		return state.FireResult[S]{}, false, nil
+		return state.FireResult[S]{}, false, nil, nil, nil
 	}
 
 	results := h.svc.Tick(h.stepContext(ctx), id)
 	if len(results) == 0 {
-		return state.FireResult[S]{}, false, nil
+		return state.FireResult[S]{}, false, nil, nil, nil
 	}
 	res := results[0]
 	// The service settled: unless the settle's own Fire leaves or re-enters the state
@@ -127,24 +164,27 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	h.noteSettled(id)
 
 	// The settle re-fired the invocation's onDone / onError, which may enter a state
-	// that arms a timer, starts another service, or spawns an actor. Absorb those
-	// effects into every driver so the next seam method finds them armed — the service
-	// seam composes with the timer and actor seams in one instance.
-	h.absorbDrivers(h.stepContext(ctx), res.Effects)
+	// that arms a timer, starts another service, or spawns an actor. The ServiceRunner
+	// already started and stopped the services those effects name as it settled, so
+	// absorb them into the other drivers only, so the next seam method finds them armed
+	// — the service seam composes with the timer and actor seams in one instance.
+	h.absorbSettle(h.stepContext(ctx), res.Effects)
 
 	// A context that ended during the service or the absorb can stop the settle's Fire,
 	// or a Fire an actor spawn routes, before it applies, so the instance may not have
 	// seen this result: journaling it would commit on recovery what live never applied.
 	// The runner has already dropped the service, so this Handle can't run it again;
-	// Recover re-arms it.
+	// Recover re-arms it. This step rechecks ctx whatever its absorb handed the actor
+	// system, unlike Fire and Tick, which fail only on a parent Fire a context refused:
+	// the service itself ran under ctx, so its outcome can be one ctx's ending caused.
 	fires := h.actorFires.take()
 	if err := stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
-		return res, true, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
+		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
 
 	entry, err := recordServiceOutcome(id, h.svc.LastResult, h.svc.LastError())
 	if err != nil {
-		return res, true, h.fail(fmt.Errorf("durable: recording service %q result for %q: %w", id, h.id, err))
+		return res, true, nil, nil, h.fail(fmt.Errorf("durable: recording service %q result for %q: %w", id, h.id, err))
 	}
 	if h.svcBuf != nil {
 		*h.svcBuf = append(*h.svcBuf, entry)
@@ -155,17 +195,17 @@ func (h *Handle[S, E, C]) RunService(ctx context.Context, id string) (state.Fire
 	// them, and replay re-fires them after it.
 	driven, err := recordParentFires(fires, false)
 	if err != nil {
-		return res, true, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
+		return res, true, nil, nil, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
 	}
 
-	step := h.nextStep
 	// Arming a timer the settle's state declares reads the clock, so the step carries
 	// its reads.
-	rec := Record{Step: step, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
-	if err := h.persistStep(ctx, step, &rec); err != nil {
-		return res, true, err
+	rec := &Record{Step: h.nextStep, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
+	des, err := h.recordStep(ctx, rec, res.Effects)
+	if err != nil {
+		return res, true, nil, nil, err
 	}
-	return res, true, nil
+	return res, true, rec, des, nil
 }
 
 // noteSettled records that the service id settled in its state's current activation.
@@ -175,6 +215,37 @@ func (h *Handle[S, E, C]) noteSettled(id string) {
 	}
 	h.settled[id] = true
 }
+
+// replayableOutcome gives a service's outcome the form a replay supplies, so the live
+// settle and a replay can't differ: a result in its JSON-decoded form, and an error as
+// an error with its message as a Store keeps it (see normalizedErrorMessage). An Error
+// method that panics settles with a message saying so, normalized the same way. A
+// result with no JSON form is left as it is, and one whose JSON form won't decode is
+// marked undecodableResult; recording either fails the Handle, so the step records
+// nothing and a recovered Handle runs the service again.
+func replayableOutcome(result any, err error) (any, error) {
+	if err != nil {
+		msg, perr := normalizedErrorMessage(err, "service error")
+		if perr != nil {
+			msg = validUTF8(perr.Error())
+		}
+		return nil, errors.New(msg)
+	}
+	b, jerr := marshalPayload(result)
+	if jerr != nil {
+		return result, nil
+	}
+	var decoded any
+	if jerr = json.Unmarshal(b, &decoded); jerr != nil {
+		return undecodableResult{err: jerr}, nil
+	}
+	return decoded, nil
+}
+
+// undecodableResult stands in for a service result whose JSON form won't decode, such
+// as a number beyond float64, so recordServiceOutcome refuses it: a replay couldn't
+// decode the journaled form, and every Recover would fail.
+type undecodableResult struct{ err error }
 
 // recordServiceOutcome builds the JournalServiceResult entry for a just-settled
 // service. It reads the success result through lastResult (valid only during the
@@ -186,7 +257,10 @@ func recordServiceOutcome(id string, lastResult func() (any, bool), lastErr erro
 		msg := lastErr.Error()
 		sp.Error = &msg
 	} else if result, ok := lastResult(); ok {
-		raw, err := json.Marshal(result)
+		if u, bad := result.(undecodableResult); bad {
+			return state.JournalEntry{}, fmt.Errorf("service result won't decode from its JSON form: %w", u.err)
+		}
+		raw, err := marshalPayload(result)
 		if err != nil {
 			return state.JournalEntry{}, fmt.Errorf("marshaling service result: %w", err)
 		}

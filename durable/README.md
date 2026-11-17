@@ -31,10 +31,16 @@ backends implement the `Store` interface out of tree.
 - **Deterministic replay**: a recovered instance is byte-identical to one that
   never crashed, because recovery replays the recorded driving events and
   nondeterministic results rather than re-executing their sources.
-- **Exactly-once effects**: a domain effect is applied exactly once over the
+- **Exactly-once effects**: a domain effect from a step (not an initial entry, which is at-least-once, or a parent transition an actor drives, which is not dispatched) is applied exactly once over the
   instance's lifetime (the live run plus any number of recoveries), even though
-  the replay loop is at-least-once. Each effect carries a deterministic
-  `EffectID` and is deduplicated through the `Store`'s dispatch set.
+  the replay loop is at-least-once. The exception is a crash or failed mark after the
+  handler returned, or a handoff between owners, where it can apply twice, so keep
+  handlers idempotent on `EffectInstance` plus the `EffectID`. Each effect carries a
+  deterministic `EffectID` and is deduplicated through the `Store`'s dispatch set.
+  The handler needs a `Store` that implements `DispatchStore`, as `MemStore` and
+  `FileStore` do: with any other `Store`, `Start`, `Recover` and the stateless
+  `Runner.Fire` refuse the configuration with `ErrNoDispatchStore`, a permanent
+  configuration error that doesn't match `ErrEffectDispatch`, so retrying doesn't help.
 - **Durability across restart**: every `Fire` step is write-ahead appended to
   the `Store` before it is acknowledged, so a crash after a successful `Fire`
   never loses the step. Periodic checkpoints bound the tail recovery replays.
@@ -84,7 +90,7 @@ the first time, and replayed verbatim on recovery:
 | **Clock** (timers) | `WithRunnerClock` | `JournalClockRead`, replayed so timers fire at the same recorded instants, wall-clock-independent; armed deadlines survive checkpoint compaction |
 | **Invoked services** | `WithServiceRegistry` + `Handle.RunService` | `JournalServiceResult`; a recorded result replays through the kernel's settle seam without re-running the service, and an unrecorded one (a context canceled during the service or its settle, a crash, or a failed `Append` whose write didn't land) runs again when the host calls `RunService` |
 | **Child-machine actors** | `WithActorPalette` + `Handle.DeliverToActor` | `JournalActorMessage`; recovery re-fires a recorded parent transition; a settled or stopped actor doesn't re-run; a running `InvokeActor` actor restarts from its initial state on any `Recover`, and a `Spawn` actor doesn't return |
-| **Domain effects** | `WithEffectHandler` | dispatch set, applied exactly once via deterministic `EffectID` dedup |
+| **Domain effects** | `WithEffectHandler` | dispatch set, a step's effects applied exactly once via deterministic `EffectID` dedup, with the exceptions under Exactly-once effects |
 
 Use `WithCheckpointEvery(n)` to tune how often a full snapshot is written (a
 shorter interval bounds recovery replay; a longer one cuts checkpoint cost).
@@ -152,9 +158,12 @@ ends. Read the instance with `View`, which
 takes the lock; `Instance()` is outside it.
 
 A step that may not have been recorded fails the Handle with `ErrHandleFailed`. So does a
-`Tick`, `RunService` or `DeliverToActor` whose context ended during the step, and any of
+`RunService` or `DeliverToActor` whose context ended during the step, a `Tick` whose
+context ended while its timers fired, and any of
 the four, `Fire` included, that drove a Fire refused because a context ended, the caller's
-or one middleware derived from it. So does an effect handler
+or one middleware derived from it. A message to an actor that the actor refused because
+the step's context ended doesn't fail a `Fire` or `Tick`: the message is lost, as actor
+deliveries are across `Recover`. So does an effect handler
 that returns an error or panics. Before `Recover`, call `Handle.Drain`, which waits until no
 step of the failed Handle is still recording and no effect is still being sent, so the
 recovered Handle loads every recorded step and can't send an effect twice. Give `Drain` a
@@ -164,15 +173,20 @@ failed the Handle returns `ErrHandleFailed` saying it was recorded; `Recover` se
 its effects. To move a healthy Handle's instance to a new Handle, stop calling the old one
 and let its calls return first: a step can start after `Drain` returns. `Recover` a new
 Handle with the same options to continue, unless the cause is `ErrFenced`: then a newer
-owner holds the instance, so stop.
+owner holds the instance, so stop. `Recover` retries an unapplied effect, and returns
+`ErrEffectDispatch` while the handler still fails.
 
 ## Caveat: serialized payloads
 
 Events, service done-data, actor done-data, and actor messages are recorded as their
 JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
-observes the JSON-decoded shape on a replayed `onDone`. A `WithEventData` payload is
-decoded from its JSON form live as well as on replay, so a reducer gets the same value
-both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per
+observes the JSON-decoded shape of actor done-data on a replayed `onDone`. A service's
+result is JSON-decoded live as well as on replay, so a reducer gets the same value both
+ways: a struct is a map and an integer a `float64`, which loses precision above 2^53, and
+an error an error with the same message, which `errors.Is` and `errors.As` no longer
+match. A
+`WithEventData` payload is decoded from its JSON form live as well as on replay, so a
+reducer gets the same value both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per
 event, for example `durable.DecodeAs[Order]`. Without one, a payload decodes as JSON's own
 form, so `Handle.Fire` refuses a struct or an integer rather than hand the reducer a map
 or a `float64`. An error stays an error with the same message, with any invalid UTF-8

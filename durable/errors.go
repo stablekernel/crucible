@@ -13,6 +13,7 @@ const (
 	errorCheckpointNotAdvancing = "checkpoint does not advance"
 	errorInstanceExists         = "instance already exists"
 	errorEffectDispatch         = "effect dispatch failed"
+	errorNoDispatchStore        = "effect handler needs a DispatchStore"
 	errorStepOutOfRange         = "time-travel step out of range"
 	errorEventDataEncoding      = "event data can't be recorded"
 	errorRecordTooLarge         = "record too large for the journal"
@@ -88,10 +89,25 @@ var (
 	ErrInstanceExists = errors.New(errorPrefix + errorInstanceExists)
 
 	// ErrEffectDispatch wraps a failure returned by the caller-supplied effect
-	// handler (WithEffectHandler) while applying an emitted effect, or a panic in it. The effect was
+	// handler (WithEffectHandler) while applying an emitted effect, or a panic in it,
+	// and an error or panic in the Store's dispatch tracking (DispatchStore's
+	// Dispatched or MarkDispatched), with the cause in its chain. The effect was
 	// persisted (write-ahead) but not marked dispatched, so the Handle fails with
-	// ErrHandleFailed wrapping it, and Recover dispatches it again. Callers match
-	// this with errors.Is to tell a dispatch failure from a kernel transition or
-	// persistence error.
+	// ErrHandleFailed wrapping it, and Recover dispatches it again; a failure in
+	// Runner.Start leaves no instance. Recover fails with this error while the handler,
+	// or the dispatch tracking, still does, so retrying Recover can succeed once they
+	// recover. An effect handler wired with a Store that isn't a DispatchStore is
+	// refused with ErrNoDispatchStore instead, which this doesn't match. Callers match
+	// this with errors.Is to tell a dispatch failure from a kernel transition or a
+	// Record's persistence error.
 	ErrEffectDispatch = errors.New(errorPrefix + errorEffectDispatch)
+
+	// ErrNoDispatchStore is returned by Start, Recover and the stateless Runner.Fire,
+	// before they read or write the Store or call the handler, for an effect handler
+	// (WithEffectHandler) wired with a Store that doesn't implement DispatchStore,
+	// which has no dispatch tracking. It is a permanent configuration error: retrying
+	// doesn't help. Wire a Store that implements DispatchStore, as MemStore and
+	// FileStore do, or drop WithEffectHandler. It doesn't match ErrEffectDispatch, so a
+	// caller that retries Recover on a dispatch failure doesn't loop on it.
+	ErrNoDispatchStore = errors.New(errorPrefix + errorNoDispatchStore)
 )
