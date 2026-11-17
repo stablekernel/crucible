@@ -243,6 +243,20 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
+- **Timers survive recovery.** `Start` now arms the initial state's timers, which it never
+  did, so a new instance starting in a timed state fires a timer it didn't before. It
+  carries them in the baseline; an instance started earlier keeps its initial timer
+  unarmed. Recovery re-arms checkpointed timers before the tail replays, so one fired in
+  the tail isn't missed. `StateAt` re-arms baseline timers too, so its result changes when
+  one fires in the window, and it fails if a timer's event won't decode with the options
+  passed.
+- **A tick that fires nothing records nothing.** It used to append a Record every time,
+  so a timer loop grew the journal while a timer was pending. An idle `Tick` doesn't touch
+  the Store, so it can't report `ErrFenced` or a Store failure: a stale owner finds out on
+  its next real step. Replay reads an older journal's idle tick Record as nothing fired.
+  A clock reading no replayed step consumed no longer reaches the live clock after
+  `Recover`. An older journal whose settle put its clock read in the next Record can still
+  arm a replayed timer at the wrong instant (#262).
 - **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
   dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
   baseline and before writing it, and only if the entry succeeded. Those effects are

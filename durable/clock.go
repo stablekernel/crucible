@@ -125,7 +125,8 @@ type replayClock struct {
 	readings []int64
 	cursor   int
 	fallback state.Clock
-	last     time.Time // the reading Now last returned
+	held     *time.Time // a fixed reading set by hold, nil otherwise
+	last     time.Time  // the reading Now last returned outside a hold
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
@@ -139,6 +140,9 @@ func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 func (c *replayClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.held != nil {
+		return *c.held
+	}
 	if c.cursor < len(c.readings) {
 		c.last = time.Unix(0, c.readings[c.cursor]).UTC()
 		c.cursor++
@@ -154,6 +158,41 @@ func (c *replayClock) lastRead() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.last
+}
+
+// skipTo moves the cursor forward to reading n and never back, past readings no replayed
+// step consumes.
+func (c *replayClock) skipTo(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cursor < n {
+		c.cursor = n
+	}
+}
+
+// clockReadCount returns how many clock readings rec holds.
+func clockReadCount(rec *Record) int {
+	n := 0
+	for _, e := range rec.Entries {
+		if e.Kind == state.JournalClockRead {
+			n++
+		}
+	}
+	return n
+}
+
+// hold makes Now return t without consuming a reading, until release.
+func (c *replayClock) hold(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = &t
+}
+
+// release ends a hold.
+func (c *replayClock) release() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = nil
 }
 
 // After delegates to the fallback clock; replay drives elapses through Now + Tick

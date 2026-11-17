@@ -81,22 +81,19 @@ func TestUnmarshalCheckpoint_Garbage(t *testing.T) {
 	}
 }
 
-// TestReArmEffects_SkipsAlreadyArmed confirms a persisted timer already armed by
-// tail replay is not re-armed (no double-arm), while an un-armed one is re-armed at
-// its remaining delay.
-func TestReArmEffects_SkipsAlreadyArmed(t *testing.T) {
+// TestReArmEffects_RemainingDelay confirms a persisted timer is re-armed at its
+// remaining delay.
+func TestReArmEffects_RemainingDelay(t *testing.T) {
 	now := time.Unix(0, 1_000_000_000).UTC()
 	wires := []pendingTimerWire{
-		{ID: "armed", DueUnixNano: now.Add(5 * time.Second).UnixNano(), Event: json.RawMessage(`"x"`)},
 		{ID: "compacted", DueUnixNano: now.Add(8 * time.Second).UnixNano(), Event: json.RawMessage(`"y"`)},
 	}
-	already := map[string]pendingTimer{"armed": {id: "armed"}}
-	effects, seeded, err := reArmEffects[string](jsonEventCodec[string]{}, wires, already, now)
+	effects, seeded, err := reArmEffects[string](jsonEventCodec[string]{}, wires, now)
 	if err != nil {
 		t.Fatalf("reArmEffects: %v", err)
 	}
 	if len(effects) != 1 || len(seeded) != 1 {
-		t.Fatalf("want exactly the compacted timer re-armed, got effects=%d seeded=%d", len(effects), len(seeded))
+		t.Fatalf("want the timer re-armed, got effects=%d seeded=%d", len(effects), len(seeded))
 	}
 	sa, ok := effects[0].(state.ScheduleAfter)
 	if !ok || sa.ID != "compacted" {
@@ -115,7 +112,7 @@ func TestReArmEffects_ElapsedDeadlineImmediate(t *testing.T) {
 	wires := []pendingTimerWire{
 		{ID: "past", DueUnixNano: now.Add(-3 * time.Second).UnixNano(), Event: json.RawMessage(`"z"`)},
 	}
-	effects, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, map[string]pendingTimer{}, now)
+	effects, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, now)
 	if err != nil {
 		t.Fatalf("reArmEffects: %v", err)
 	}
@@ -133,7 +130,7 @@ func TestReArmEffects_BadEventErrors(t *testing.T) {
 	wires := []pendingTimerWire{
 		{ID: "bad", DueUnixNano: 1, Event: json.RawMessage(`{not valid`)},
 	}
-	_, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, map[string]pendingTimer{}, time.Unix(0, 0))
+	_, _, err := reArmEffects[string](jsonEventCodec[string]{}, wires, time.Unix(0, 0))
 	if err == nil {
 		t.Fatal("want decode error for corrupt timer event, got nil")
 	}
