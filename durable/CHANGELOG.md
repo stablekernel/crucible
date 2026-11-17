@@ -73,7 +73,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   silently skipped every effect: `Fire`'s, and `Recover`'s re-send, never reached the
   handler. Now `Start`, `Recover` and the stateless `Runner.Fire` refuse that
   configuration with the new `ErrNoDispatchStore`, before they read or write the Store
-  or call the handler. It is a permanent configuration error and doesn't match
+  or call the handler. A stateless `Runner.Fire` on a custom Store without
+  `DispatchStore` used to succeed with its effects skipped; it now returns
+  `ErrNoDispatchStore`. It is a permanent configuration error and doesn't match
   `ErrEffectDispatch`, so a caller that retries `Recover` on a dispatch failure doesn't
   loop on it. A Store with no handler wired is unaffected, and
   `MemStore` and `FileStore` implement `DispatchStore`. A Store author whose backend

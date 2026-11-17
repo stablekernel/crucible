@@ -126,6 +126,7 @@ type DispatchStore interface {
 // the same (step, ordinal, kind) inputs, so the id is stable.
 type dispatchableEffect struct {
 	id     string
+	step   int // the step that produced the effect, for error messages
 	effect state.Effect
 }
 
@@ -179,7 +180,7 @@ func dispatchableEffects(step int, effects []state.Effect) []dispatchableEffect 
 			continue
 		}
 		id := fmt.Sprintf("%d#%d#%s", step, ordinal, effectKind(e))
-		out = append(out, dispatchableEffect{id: id, effect: e})
+		out = append(out, dispatchableEffect{id: id, step: step, effect: e})
 		ordinal++
 	}
 	return out
@@ -328,7 +329,7 @@ func (r *Runner[S, E, C]) dispatch(ctx context.Context, id InstanceID, des []dis
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("%w: effect dispatch for %q panicked: %v", ErrEffectDispatch, id, p)
+			err = fmt.Errorf("%w: step %d for %q: effect dispatch panicked: %v", ErrEffectDispatch, des[0].step, id, p)
 		}
 	}()
 

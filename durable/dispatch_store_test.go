@@ -3,6 +3,7 @@ package durable_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -101,6 +102,9 @@ func TestDispatchStorePanic_ReturnsEffectDispatch(t *testing.T) {
 			})
 			if !errors.Is(err, durable.ErrEffectDispatch) {
 				t.Fatalf("Recover: %v, want ErrEffectDispatch", err)
+			}
+			if !strings.Contains(err.Error(), "step 0 for") {
+				t.Fatalf("Recover: %v, want the message to name step 0", err)
 			}
 		})
 		t.Run(tc.name+"/Runner.Fire", func(t *testing.T) {
