@@ -1182,7 +1182,9 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	}
 
 	rec := &Record{Step: h.nextStep, Event: []byte(res.Trace.EventPayload), EventData: payload.data, EventDataError: payload.errMsg, Entries: append(h.drainClock(), driven...)}
-	des, err := h.recordStep(ctx, rec, res.Effects)
+	// The driven Fires' effects follow the step's own, in fire order, so their stamped
+	// ids and their dispatch order match replay's (see drivenFireEffects).
+	des, err := h.recordStep(ctx, rec, drivenFireEffects(res.Effects, fires))
 	if err != nil {
 		return res, nil, nil, err
 	}
@@ -1194,8 +1196,7 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 // append durably names every effect that must be dispatched before any dispatch
 // happens, then appends rec and advances the next step. A step with effects is marked
 // dispatching, so no checkpoint compacts it until finishStep, which the caller runs
-// after releasing the step lock, has dispatched them; a step with no effects to dispatch
-// may run finishStep under the lock, as DeliverToActor does. The kernel has already
+// after releasing the step lock, has dispatched them. The kernel has already
 // applied the step, so a failed encode or append fails the Handle; a failed checkpoint
 // doesn't, because the Record is durable. This relies on the Append running inline,
 // under the step lock, before the step returns: an Append deferred off this goroutine
@@ -1398,7 +1399,9 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 		return results, nil, nil, h.fail(fmt.Errorf("durable: recording %q's parent Fires: %w", h.id, err))
 	}
 	rec := &Record{Step: h.nextStep, Tick: true, TickSteps: len(results), Entries: append(h.drainClock(), driven...)}
-	des, err := h.recordStep(ctx, rec, effects)
+	// The driven Fires' effects follow the tick's own, in fire order, so their stamped
+	// ids and their dispatch order match replay's (see drivenFireEffects).
+	des, err := h.recordStep(ctx, rec, drivenFireEffects(effects, fires))
 	if err != nil {
 		return results, nil, nil, err
 	}
@@ -2341,11 +2344,14 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 // it, running no service, actor or effect handler. Recover and StateAt both walk the
 // journal with it; Recover adds its deadline table, which mirror tracks, and effect
 // re-dispatch on top. A nil mirror tracks no deadlines. It returns the effects of the
-// step's own work, a plain event's, a settlement's or a tick's timers', so Recover can
-// re-dispatch their domain effects; nil for any other Record.
+// step's own work, a plain event's, a settlement's or a tick's timers', followed by
+// the parent Fires an actor drove within the step, in fire order, as the live step
+// named them among its own (see drivenFireEffects), so Recover can re-dispatch their
+// domain effects under the ids live stamped; nil for any other Record.
 //
 //   - Parent Fires a Start's or Recover's spawns drove, recorded with the next step,
-//     re-fire first, before the step's own work.
+//     re-fire first, before the step's own work. Their effects are armed but not
+//     returned: no live path dispatches them, so Recover sends none.
 //   - An actor delivery re-fires each parent transition the delivery drove, in fire
 //     order, with the recorded done-data or error, so the kernel re-derives the same
 //     onDone / onError (or message) transition. A Fire's or settle's absorb-driven
@@ -2385,7 +2391,9 @@ func replayRecord[S comparable, E comparable, C any](
 		return stepEffects, fmt.Errorf("at step %d: %w", rec.Step, err)
 	}
 	// Parent Fires a Start's or Recover's spawns drove ran before the step's own work.
-	if err := replayActors(ctx, inst, cfg, sched, svc, rec, before, mirror, actorArms); err != nil {
+	// Their effects aren't returned: no live path dispatches them (see the
+	// Start-spawned note above).
+	if _, err := replayActors(ctx, inst, cfg, sched, svc, rec, before, mirror, actorArms); err != nil {
 		return stepEffects, err
 	}
 	switch {
@@ -2459,13 +2467,22 @@ func replayRecord[S comparable, E comparable, C any](
 		}
 	}
 	// The rest are a delivery's parent Fires, or the ones a Fire's or settle's absorb
-	// drove after it, such as a spawned actor's onError.
-	return stepEffects, replayActors(ctx, inst, cfg, sched, svc, rec, rest, mirror, actorArms)
+	// drove after it, such as a spawned actor's onError. Their effects follow the
+	// step's own, in fire order, as the live step named them, so Recover re-dispatches
+	// a driven Fire's domain effects under the ids live stamped.
+	driven, err := replayActors(ctx, inst, cfg, sched, svc, rec, rest, mirror, actorArms)
+	if err != nil {
+		return stepEffects, err
+	}
+	return append(stepEffects, driven...), nil
 }
 
-// replayActors re-fires recorded parent transitions, in order. When actorArms, the
-// version that wrote rec armed the timers and services an actor-driven Fire declares,
-// so each one arms them, as the live run did. An older version armed none, and took no
+// replayActors re-fires recorded parent transitions, in order, and returns the effects
+// each re-fired transition produced, in fire order, for the caller to fold into the
+// step's dispatchable effects after the step's own, as the live step named them.
+// When actorArms, the version that wrote rec armed the timers and services an
+// actor-driven Fire declares, so each one arms them, as the live run did. An older
+// version armed none, and took no
 // clock read for them, so they're left alone, as that run left them.
 func replayActors[S comparable, E comparable, C any](
 	ctx context.Context,
@@ -2477,19 +2494,21 @@ func replayActors[S comparable, E comparable, C any](
 	entries []decodedActorEntry,
 	mirror *armMirror,
 	actorArms bool,
-) error {
+) ([]state.Effect, error) {
+	var driven []state.Effect
 	for _, entry := range entries {
 		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, entry, rec.Format >= decodedActorDataFormat)
 		if err != nil {
-			return fmt.Errorf("at step %d: %w", rec.Step, err)
+			return nil, fmt.Errorf("at step %d: %w", rec.Step, err)
 		}
 		if actorArms {
 			replayArm(ctx, sched, svc, effects, mirror)
 		} else {
 			mirror.forget(effects)
 		}
+		driven = append(driven, effects...)
 	}
-	return nil
+	return driven, nil
 }
 
 // checkFormats fails when a Record in records has a lower journal Format than the

@@ -113,7 +113,9 @@ type actorMessagePayload struct {
 
 // DeliverToActor routes event into the running actor identified by ref, runs the
 // actor (settling it when it reaches its final state), records each parent
-// transition the delivery drove, and persists the produced step. The actor
+// transition the delivery drove, persists the produced step, and dispatches the
+// domain effects those transitions emitted once it is recorded, as Fire dispatches
+// its own. The actor
 // behavior is resolved and run against the palette supplied with WithActorPalette;
 // the done-data, error, or parent-driving message it routes is journaled as a
 // JournalActorMessage correlated by the actor id so recovery replays it without
@@ -149,13 +151,35 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	if err := h.acquire(ctx); err != nil {
 		return false, err
 	}
+	delivered, rec, des, err := h.lockedDeliverStep(ctx, ref, event)
+	if rec == nil {
+		return delivered, err
+	}
+	// Dispatch after releasing the step lock, as Fire does, so an effect handler can
+	// call back into this Handle. The Record already names every effect (write-ahead),
+	// so a crash here leaves it for recovery to redispatch, deduped by id.
+	return delivered, errors.Join(err, h.finishStep(ctx, rec, des))
+}
+
+// lockedDeliverStep runs deliverStep and releases the step lock however it returns.
+// A panic in host code fails the Handle first, since the kernel may have applied a
+// parent Fire the delivery drove.
+func (h *Handle[S, E, C]) lockedDeliverStep(ctx context.Context, ref state.ActorRef, event any) (bool, *Record, []dispatchableEffect, error) {
 	defer h.release()
 	defer h.failOnPanic()
+	return h.deliverStep(ctx, ref, event)
+}
+
+// deliverStep is the part of DeliverToActor that holds the step lock: it runs the
+// delivery and records the step, naming the domain effects of the parent Fires it
+// drove, before any is dispatched. It returns a nil Record when nothing was
+// recorded. ctx is the step's marked context.
+func (h *Handle[S, E, C]) deliverStep(ctx context.Context, ref state.ActorRef, event any) (bool, *Record, []dispatchableEffect, error) {
 	if err := h.refuse(ctx); err != nil {
-		return false, err
+		return false, nil, nil, err
 	}
 	if h.actors == nil {
-		return false, fmt.Errorf("durable: no actor palette wired for %q (supply WithActorPalette)", h.id)
+		return false, nil, nil, fmt.Errorf("durable: no actor palette wired for %q (supply WithActorPalette)", h.id)
 	}
 
 	stepCtx := h.stepContext(ctx)
@@ -167,14 +191,14 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	}()
 	fires := h.actorFires.take()
 	if !delivered {
-		return false, nil
+		return false, nil, nil, nil
 	}
 	// A context that ended during the delivery can make the kernel refuse the actor's
 	// own Fire, losing the event, or a parent Fire it drove. A refused Fire rolls back,
 	// so live never applied it, but journaling the delivery would replay it under a live
 	// context, where it applies. Record nothing.
 	if err := stepCanceled(ctx, parentFireErrs(fires)...); err != nil {
-		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
+		return true, nil, nil, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
 	// The actor's done-data wouldn't decode for its onDone event, or decodes as another
 	// type than the actor produced: the settle aborted, firing nothing, so no Assign ran
@@ -183,22 +207,45 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	// but the actor can run again. Fail the Handle and record nothing, so a recovered
 	// Handle runs the actor from its initial state and the delivery again.
 	if abort := h.actorFires.takeAborts(); abort != nil {
-		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, abort))
+		return true, nil, nil, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, abort))
 	}
 
 	entries, err := recordParentFires(fires, false)
 	if err != nil {
-		return true, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
+		return true, nil, nil, h.fail(fmt.Errorf("durable: recording actor %q result for %q: %w", ref.ID, h.id, err))
 	}
 
-	// A parent Fire the delivery drove can arm a timer, which reads the clock. Its effects
-	// aren't dispatched, so the step names none, and finishStep only offers its
-	// checkpoint.
+	// A parent Fire the delivery drove can arm a timer, which reads the clock, and can
+	// emit a domain effect, which the step dispatches as its own: the delivery itself
+	// produces no parent transition, so the driven Fires' effects are all it names.
 	rec := &Record{Step: h.nextStep, Entries: append(h.drainClock(), entries...)}
-	if _, err := h.recordStep(ctx, rec, nil); err != nil {
-		return true, err
+	des, err := h.recordStep(ctx, rec, drivenFireEffects(nil, fires))
+	if err != nil {
+		return true, nil, nil, err
 	}
-	return true, h.finishStep(ctx, rec, nil)
+	return true, rec, des, nil
+}
+
+// drivenFireEffects appends the effects of the parent Fires an actor system drove, in
+// fire order, after a step's own effects, so the driving step names a parent
+// transition an actor drove among the effects it dispatches: the step's own first,
+// then each driven Fire's, in fire order. The stamped ids follow that order
+// (dispatchableEffects numbers every dispatchable effect of one step), and replay
+// reproduces it, re-firing the recorded Fires after the step's own work (see
+// replayActors), so live and Recover stamp and dispatch the same ids. A refused Fire
+// applied nothing and carries no effects; Fires that drove none leave the step's own
+// effects unchanged.
+func drivenFireEffects[S comparable](own []state.Effect, fires []notedFire[S]) []state.Effect {
+	var driven []state.Effect
+	for _, nf := range fires {
+		driven = append(driven, nf.pf.Result.Effects...)
+	}
+	if len(driven) == 0 {
+		return own
+	}
+	out := make([]state.Effect, 0, len(own)+len(driven))
+	out = append(out, own...)
+	return append(out, driven...)
 }
 
 // DeliverToActorByID is DeliverToActor keyed by raw actor id, for a host that

@@ -297,6 +297,19 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **A parent transition an actor drives dispatches its domain effects.** A domain
+  effect a parent `Fire` emitted, where an actor drove that Fire — a failed spawn's
+  onError during a `Fire`, a `Tick`, or a service settle's transition, or a settle or
+  message a `DeliverToActor` delivery drove — never reached the `EffectHandler`: the
+  step that drove the Fire journaled it but named only its own effects, so the effect
+  was never dispatched, live or on `Recover`, and an effect id re-derived by replay
+  deduplicated nothing. Now every such step — `Fire`, `Tick`, `DeliverToActor` and
+  `RunService` — names the driven Fires' effects after its own, in fire order, under
+  the same deterministic ids live and on replay, so `Recover` re-dispatches one a
+  crash kept from landing, exactly once. An actor delivery now dispatches after
+  releasing the step lock, as `Fire` does, so an effect handler can call back into the
+  same `Handle`. The parent Fires an actor spawned by `Start` or `Recover` drives run
+  before any step and still dispatch none of their effects.
 - **A timer transition starts and stops services and actors.** `Tick` handed a fired
   timer transition's effects only to the scheduler, so a timer that left a state left
   its service in flight and its actor running, and one that entered a state started no
