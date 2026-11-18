@@ -74,7 +74,14 @@ func writeJournal(t *testing.T, c journalCase, format int, a *scnAssigns) (*stat
 // the instance and both formats and wraps none of the package's sentinels.
 func mustBeNewer(t *testing.T, what string, err error) {
 	t.Helper()
-	want := fmt.Sprintf("durable: %q was written by a newer version (journal format %d; this version reads up to 4)", "scn-1", newerFormat)
+	mustBeNewerFormat(t, what, err, newerFormat)
+}
+
+// mustBeNewerFormat is mustBeNewer for a journal of format, whose value the refusal
+// names.
+func mustBeNewerFormat(t *testing.T, what string, err error, format int) {
+	t.Helper()
+	want := fmt.Sprintf("durable: %q was written by a newer version (journal format %d; this version reads up to 4)", "scn-1", format)
 	if err == nil || err.Error() != want {
 		t.Fatalf("%s = %v, want %q", what, err, want)
 	}
@@ -198,17 +205,25 @@ type reshapedWriter struct {
 }
 
 func (s *reshapedWriter) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
+	return reshapeCheckpoint(s.MemStore, ctx, id, snapshot, throughStep, opts,
+		json.RawMessage(strconv.Itoa(newerFormat)))
+}
+
+// reshapeCheckpoint rewrites a checkpoint envelope as a later version might: format
+// stamped as format, with nextStep changed from a number to a string, so this version's
+// envelope type can't unmarshal it, and stores that.
+func reshapeCheckpoint(st *durable.MemStore, ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts []durable.CheckpointOption, format json.RawMessage) error {
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(snapshot, &env); err != nil {
 		return err
 	}
-	env["format"] = json.RawMessage(strconv.Itoa(newerFormat))
+	env["format"] = format
 	env["nextStep"] = json.RawMessage(`"x"`)
 	b, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
-	return s.MemStore.Checkpoint(ctx, id, b, throughStep, opts...)
+	return st.Checkpoint(ctx, id, b, throughStep, opts...)
 }
 
 // TestJournalFormat_NewerEnvelopeOfAnotherShape_IsRefused: a later version may change
@@ -232,4 +247,51 @@ func TestJournalFormat_NewerEnvelopeOfAnotherShape_IsRefused(t *testing.T) {
 	mustBeNewer(t, "StateAt", err)
 	_, err = durable.Steps(ctx, store, "scn-1")
 	mustBeNewer(t, "Steps", err)
+}
+
+// nonIntegerFormatWriter writes every checkpoint as a later version might: format as
+// the non-integer JSON number format (1e1, 10.0), with nextStep changed from a number
+// to a string, so this version's envelope type can't unmarshal it.
+type nonIntegerFormatWriter struct {
+	format json.RawMessage
+	*durable.MemStore
+}
+
+func (s *nonIntegerFormatWriter) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
+	return reshapeCheckpoint(s.MemStore, ctx, id, snapshot, throughStep, opts, s.format)
+}
+
+// TestJournalFormat_NewerEnvelopeOfNonIntegerFormat_IsRefused: a later version may
+// stamp the envelope's format as a non-integer JSON number (1e1, 10.0), which Int64
+// can't read, even though its value is above this version's. Every reader must still
+// refuse the checkpoint as a newer version's by the number's value, rather than take
+// the bytes for a bare pre-envelope snapshot of format 0 and fail later with an obscure
+// error.
+func TestJournalFormat_NewerEnvelopeOfNonIntegerFormat_IsRefused(t *testing.T) {
+	for _, form := range []struct {
+		name   string
+		format json.RawMessage
+		value  int
+	}{
+		{"exponent form", json.RawMessage(`1e1`), 10},
+		{"decimal form", json.RawMessage(`10.0`), 10},
+	} {
+		t.Run(form.name, func(t *testing.T) {
+			ctx := context.Background()
+			fn := returning(scnUser{ID: 7, Name: "ann"}, nil)
+			m := scnMachine(fn, &scnAssigns{})
+			store := &nonIntegerFormatWriter{format: form.format, MemStore: durable.NewMemStore(durable.WithHistory())}
+			reg := durable.WithServiceRegistry[string, string, svcCtx](fetchRegistry(fn))
+			scnStart(t, m, store, reg)
+
+			_, err := durable.Recover(ctx, m, store, "scn-1", reg)
+			mustBeNewerFormat(t, "Recover", err, form.value)
+			_, err = durable.NewRunner(m, store, reg).Fire(ctx, "scn-1", "done")
+			mustBeNewerFormat(t, "Runner.Fire", err, form.value)
+			_, err = durable.StateAt(ctx, m, store, "scn-1", durable.BaselineStep, reg)
+			mustBeNewerFormat(t, "StateAt", err, form.value)
+			_, err = durable.Steps(ctx, store, "scn-1")
+			mustBeNewerFormat(t, "Steps", err, form.value)
+		})
+	}
 }

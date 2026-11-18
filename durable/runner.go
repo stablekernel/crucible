@@ -1525,22 +1525,33 @@ type actorSetsCache[S comparable] struct {
 	ended, unstarted *ActorSet
 }
 
+// startedInServices returns the sorted, unique ids of the StartService effects
+// starts declares whose service m holds, keyed by service id: the settled services or
+// the parked results. The active states declare starts (Instance.StartEffects), so a
+// checkpoint records only what a later Recover needn't start again. It returns nil
+// when m is empty or holds none of them.
+func startedInServices[V any](starts []state.Effect, m map[string]V) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	var ids []string
+	for _, eff := range starts {
+		if sv, ok := eff.(state.StartService); ok {
+			if _, held := m[sv.ID]; held {
+				ids = append(ids, sv.ID)
+			}
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
+}
+
 // endedServices returns the invoked services the active states declare that settled
 // while the state that declares them stayed active, sorted. A declared service that
 // never settled isn't one: Recover starts it. A Handle with no service registry keeps
 // the ones it recovered, so a later Recover with the registry doesn't run them again.
 func (h *Handle[S, E, C]) endedServices() []string {
-	if len(h.settled) == 0 {
-		return nil
-	}
-	var ids []string
-	for _, eff := range h.inst.StartEffects() {
-		if sv, ok := eff.(state.StartService); ok && h.settled[sv.ID] {
-			ids = append(ids, sv.ID)
-		}
-	}
-	slices.Sort(ids)
-	return slices.Compact(ids)
+	return startedInServices(h.inst.StartEffects(), h.settled)
 }
 
 // parkedServices returns the parked results of the services the active states declare,
@@ -1548,22 +1559,10 @@ func (h *Handle[S, E, C]) endedServices() []string {
 // service registry keeps the ones it recovered, so a later Recover with the registry
 // settles them rather than run their ServiceFns again.
 func (h *Handle[S, E, C]) parkedServices() []parkedServiceWire {
-	if len(h.parked) == 0 {
-		return nil
-	}
-	var ids []string
-	for _, eff := range h.inst.StartEffects() {
-		if sv, ok := eff.(state.StartService); ok {
-			if _, parked := h.parked[sv.ID]; parked {
-				ids = append(ids, sv.ID)
-			}
-		}
-	}
+	ids := startedInServices(h.inst.StartEffects(), h.parked)
 	if len(ids) == 0 {
 		return nil
 	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
 	out := make([]parkedServiceWire, len(ids))
 	for i, id := range ids {
 		p := h.parked[id]

@@ -175,8 +175,11 @@ func unmarshalCheckpoint(b []byte) checkpointEnvelope {
 	return env
 }
 
-// newerFormatOf returns the "format" member of b, a JSON object, when it is an integer
-// above journalFormat, capped to fit an int on any platform, and zero otherwise.
+// newerFormatOf returns the "format" member of b, a JSON object, when it is a number
+// above journalFormat, capped to fit an int on any platform, and zero otherwise. The
+// number needn't be an integer literal: 1e1, 10.0 or one beyond int64 still makes the
+// journal newer when its value is above journalFormat, as a later version may write
+// either shape.
 func newerFormatOf(b []byte) int {
 	var probe struct {
 		Format json.Number `json:"format"`
@@ -184,11 +187,21 @@ func newerFormatOf(b []byte) int {
 	if json.Unmarshal(b, &probe) != nil {
 		return 0
 	}
-	f, err := probe.Format.Int64()
-	if err != nil || f <= journalFormat {
+	if f, err := probe.Format.Int64(); err == nil {
+		if f <= journalFormat {
+			return 0
+		}
+		return int(min(f, math.MaxInt32))
+	}
+	// Int64 rejects a non-integer form (1e1, 10.0) and an integer beyond its range;
+	// the value is what makes the journal newer, not the shape, so fall back to the
+	// number's float value. One beyond float range parses as an infinity, which counts
+	// as above journalFormat too; one that doesn't read as a number above it doesn't.
+	g, _ := probe.Format.Float64()
+	if !(g > float64(journalFormat)) {
 		return 0
 	}
-	return int(min(f, math.MaxInt32))
+	return int(min(math.Ceil(g), float64(math.MaxInt32)))
 }
 
 // decodeTimerEvent decodes a persisted timer event wire back into the machine's
