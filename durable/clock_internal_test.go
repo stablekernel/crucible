@@ -40,6 +40,11 @@ func TestRecordingClock_AfterDelegates(t *testing.T) {
 	c := newRecordingClock(real, &buf)
 
 	ch := c.After(time.Second)
+	select {
+	case <-ch:
+		t.Fatal("After fired before the wrapped clock advanced")
+	default:
+	}
 	real.Advance(time.Second)
 	select {
 	case got := <-ch:
@@ -83,6 +88,11 @@ func TestReplayClock_AfterDelegatesToFallback(t *testing.T) {
 	fallback := state.NewFakeClock(clockEpoch)
 	c := newReplayClock(nil, fallback)
 	ch := c.After(time.Second)
+	select {
+	case <-ch:
+		t.Fatal("After fired before the fallback clock advanced")
+	default:
+	}
 	fallback.Advance(time.Second)
 	select {
 	case got := <-ch:
