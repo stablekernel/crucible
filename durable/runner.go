@@ -564,7 +564,7 @@ func (h *Handle[S, E, C]) ID() InstanceID { return h.id }
 //
 // Start arms the initial state's `after` timers and carries them in the baseline, so a
 // Tick fires them and recovery re-arms them. It arms them even when the initial entry
-// failed, as it starts the state's services and actors.
+// failed, as it already starts that state's services and actors.
 //
 // If a context ending (ctx's, or one middleware derived from it) refuses a parent Fire
 // an initial actor drove, such as a failed spawn's onError, Start returns an error
@@ -1610,8 +1610,8 @@ func (h *Handle[S, E, C]) respawn(ctx context.Context, effects []state.Effect, u
 // the effect handler keeps failing. With an effect handler wired, it refuses a Store
 // that isn't a DispatchStore with ErrNoDispatchStore before it loads anything, whether
 // or not an effect is waiting. It re-arms the checkpoint's timers before replaying the
-// tail, and fails when a tick this version recorded fires a different number of timers
-// on replay than it recorded.
+// tail, and fails when a tick of journal format 3 or later fires a different number of
+// timers on replay than it recorded.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -1738,9 +1738,10 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
-		if rec.Tick && rec.TickSteps == 0 {
-			repClock.skipTo(reads)
-		}
+		// Leave none of the Record's readings for the next one. A Record this version
+		// wrote replays exactly its own; an older one can leave some, such as a tick
+		// whose recorded timer replay keeps canceled, or an idle tick's.
+		repClock.skipTo(reads)
 		if rec.EndedActors != nil {
 			ended = rec.EndedActors
 		}
@@ -1768,7 +1769,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 	}
 
-	// Pass any reading no replayed step consumed, so live continuation reads the real
+	// Skip any reading no replayed step consumed, so live continuation reads the real
 	// clock: an older journal can leave one, such as a settle's read it put in the next
 	// Record.
 	repClock.skipTo(reads)
@@ -2177,10 +2178,11 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 //     the same deadlines come due and the same timers fire at their recorded instants.
 //     Each fired transition starts or stops its services, as the live Tick did, for a
 //     Record of tickDriversFormat or later, and its recorded parent Fires re-fire after
-//     the tick. A tick that fires a different number of timers than the Record's
-//     TickSteps fails the replay.
+//     the tick. For a Record of timersFirstFormat or later, a tick that fires a
+//     different number of timers than the Record's TickSteps fails the replay.
 //   - A tick Record with TickSteps zero, which only an older version wrote, fires
-//     nothing; the caller skips its readings (replayClock.skipTo).
+//     nothing. After every Record the caller skips any reading it left
+//     (replayClock.skipTo).
 //   - A plain event re-fires it with its recorded event data, then re-arms its timers
 //     and services as the live Fire did.
 //   - A checkpoint-only Record drives nothing.
@@ -2324,7 +2326,7 @@ func sendsReplayedEffects(rec *Record) bool {
 // first that dispatches a tick's and a service settle's domain effects, so Recover sends
 // them. tickDriversFormat is the first whose Tick hands its timer transitions' effects
 // to the service runner and the actor system, so replay starts and stops their services
-// as it did. timersFirstFormat is the first whose Recover re-armed a checkpoint's timers
+// as it did. timersFirstFormat is the first whose Recover re-arms a checkpoint's timers
 // before the tail, so its replayed ticks fire exactly the timers they record. An older
 // version's recovery re-armed them after the tail, so a journal it continued can record
 // a tick replay can't reproduce: a timer the tail had fired or canceled, fired again.

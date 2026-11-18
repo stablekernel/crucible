@@ -93,8 +93,8 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 // StateAt reconstructs a durable instance's state AS OF the recorded step, read-only:
 // it restores the start baseline, re-arms the timers the baseline carries, and replays
 // the recorded driving events, service settlements, actor transitions, and clock reads
-// forward up to step, returning a detached view of the instance at that point. It runs no service, re-instantiates
-// no actor, reads no wall clock, and dispatches no domain effect — every result is a
+// forward up to step, returning a detached view of the instance at that point. It runs
+// no service, re-instantiates no actor, reads no wall clock, and dispatches no domain effect — every result is a
 // pure replay of recorded values — and it mutates neither the live instance nor the
 // Store. The same functional options a Runner takes are accepted (the event codec,
 // the service registry and actor palette needed to settle recorded results, the
@@ -104,8 +104,8 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 // step must be in [BaselineStep, lastRecordedStep]; a step outside that range
 // reports ErrStepOutOfRange, an unknown instance reports ErrInstanceNotFound, and an
 // ended ctx reports its error. It also fails when a baseline timer's event won't decode
-// with the event codec passed, and when a tick this version recorded fires a different
-// number of timers on replay than it recorded.
+// with the event codec passed, and when a tick of journal format 3 or later fires a
+// different number of timers on replay than it recorded.
 func StateAt[S comparable, E comparable, C any](
 	ctx context.Context,
 	m *state.Machine[S, E, C],
@@ -272,9 +272,8 @@ func replayThrough[S comparable, E comparable, C any](
 		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
 			return err
 		}
-		if bounded[i].Tick && bounded[i].TickSteps == 0 {
-			repClock.skipTo(reads)
-		}
+		// Leave none of the Record's readings for the next one, as Recover does.
+		repClock.skipTo(reads)
 	}
 	// A canceled context can stop a replayed settle or tick without an error reaching
 	// here, which would hand back a view short of the journal.

@@ -15,9 +15,9 @@ import (
 // so the Now() readings of each recorded step are journaled and returned verbatim
 // on replay. Two kinds of reading belong to no step and aren't journaled: the one Start
 // takes arming the initial state's timers, and an idle Tick's reads. This makes timer
-// firing wall-clock-independent: a recovered
-// instance re-derives the same deadlines and fires the same timers at the same
-// recorded instants, regardless of the wall clock at recovery time.
+// firing wall-clock-independent: a recovered instance re-derives the same deadlines and
+// fires the same timers at the same recorded instants, regardless of the wall clock at
+// recovery time.
 //
 // # What triggers a clock read
 //

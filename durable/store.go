@@ -86,7 +86,8 @@ type Record struct {
 	// TickSteps is the number of timer transitions the tick at this barrier fired
 	// (zero only in a journal from before idle ticks stopped recording). It lets replay
 	// advance its step accounting across a re-derived tick without a recorded Event per
-	// timer, and replay fails when the re-derived tick fires a different number.
+	// timer. From journal format 3, replay fails when the re-derived tick fires a
+	// different number.
 	TickSteps int
 
 	// EndedActors, when set, holds the child-machine actors the instance's state
@@ -123,7 +124,9 @@ type Record struct {
 	// format 2 the live run dispatched a tick's and a service settle's domain effects, so
 	// Recover sends them, and a Tick handed its timer transitions' effects to the service
 	// runner and the actor system, so replay starts and stops their services as it did;
-	// an older Record replays as that version ran it. A Store keeps it as it keeps Step.
+	// an older Record replays as that version ran it. From format 3 Recover re-arms a
+	// checkpoint's timers before the tail, and replay fails on a tick that fires a
+	// different number of timers than TickSteps. A Store keeps it as it keeps Step.
 	Format int `json:",omitempty"`
 }
 

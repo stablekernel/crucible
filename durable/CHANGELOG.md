@@ -249,9 +249,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   did, so a new instance starting in a timed state fires a timer it didn't before. It
   carries them in the baseline; an instance started earlier keeps its initial timer
   unarmed. It arms them even when the initial entry failed, as it already starts that
-  state's services and actors. Recovery re-arms checkpointed timers before the tail replays, so
-  one fired in the tail isn't missed. `StateAt` re-arms baseline timers too, so its result
-  changes when one fires in the window, and it fails if a timer's event won't decode with
+  state's services and actors. Recovery re-arms checkpointed timers before the tail
+  replays, so one fired in the tail isn't missed. `StateAt` re-arms baseline timers too,
+  so its result changes when one fires in the window, and it fails if a timer's event won't decode with
   the options passed; `transport`'s time-travel view passes none, so it fails there for a
   machine whose timer events need a custom codec.
 - **A replayed tick must fire what it recorded.** `Recover` and `StateAt` now fail when a
@@ -259,17 +259,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   its Record says, rather than replaying the following steps in another state. An older
   Record isn't checked: an older version's recovery re-armed a checkpoint's timers after
   the tail, so a journal it continued can record a timer the tail had fired or canceled
-  firing again. One it revived after a cancel fired into a refusal, and replays to the
-  same state. One it fired twice makes replay diverge from that run with no error, as
-  that version's own replay did.
+  firing again. A canceled one it revived usually fired into a refusal, and replays to
+  the same state. If the state it was in then takes the timer's event, or the timer
+  fired twice, replay diverges from that run with no error, as that version's own replay
+  did.
 - **A tick that fires nothing records nothing.** It used to append a Record every time,
   so a timer loop grew the journal while a timer was pending. An idle `Tick` doesn't touch
   the Store, so it can't report `ErrFenced` or a Store failure: a stale owner finds out on
   its next real step. An idle tick also takes no step number and doesn't count toward
   `WithCheckpointEvery`. Replay reads an older journal's idle tick Record as nothing fired.
   A recorded reading no replayed step consumed is no longer returned to the first timer
-  armed after `Recover`. An older journal whose settle put its clock read in the next Record can still
-  arm a replayed timer at the wrong instant (#262).
+  armed after `Recover`. An older journal whose settle put its clock read in the next
+  Record can still arm a replayed timer at the wrong instant (#262).
 - **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
   dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
   baseline and before writing it, and only if the entry succeeded. Those effects are

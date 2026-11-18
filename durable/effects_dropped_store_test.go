@@ -169,7 +169,7 @@ func asFormatOne(t *testing.T, src *durable.MemStore, id durable.InstanceID) *du
 }
 
 // asFormat copies src's journal for id into a fresh MemStore with the checkpoint and
-// every Record of journal format, as a version that wrote that format left them.
+// every Record of journal format `format`, as a version that wrote it left them.
 func asFormat(t *testing.T, src *durable.MemStore, id durable.InstanceID, format int) *durable.MemStore {
 	t.Helper()
 	ctx := context.Background()
