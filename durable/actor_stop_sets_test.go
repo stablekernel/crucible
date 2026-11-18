@@ -331,6 +331,103 @@ func TestTick_AnExplicitStopThenAReentry_SpawnsTheNewActivation(t *testing.T) {
 	}
 }
 
+var errYExit = errors.New("Y's exit failed")
+
+// failedExitMachine enters both — by a Fire of "enter" — whose left region runs a1 and
+// whose right region declares kitchen. a1 sends bye as it starts, whose Fire would
+// leave Y for Y2 — but Y's OnExit fails, so the Fire fails, the configuration is
+// unchanged, and Y stays active with kitchen's spawn, which the step absorbs after
+// a1's, still to run.
+func failedExitMachine() stepMachine {
+	return state.ForgeFor[stepCtx]("stopByFailedExit").
+		Action("explode", func(state.ActionCtx[stepCtx]) (state.Effect, error) {
+			return nil, errYExit
+		}).
+		Actor("a1").
+		Actor("kitchen").
+		State("idle").
+		SuperState("both").
+		Region("left").
+		Initial("X").
+		SubState("X").InvokeActor("a1", state.WithInvokeID("a1")).
+		EndRegion().
+		Region("right").
+		Initial("Y").
+		SubState("Y").InvokeActor("kitchen", state.WithInvokeID("kitchen")).OnExit("explode").
+		SubState("Y2").
+		EndRegion().
+		EndSuperState().
+		Initial("idle").
+		Transition("idle").On("enter").GoTo("both").
+		Transition("Y").On("bye").GoTo("Y2").
+		Quench()
+}
+
+// TestRecover_ASpawnAStateAFailedFireTriedToExit_Runs pins that a parent Fire whose
+// exit cascade fails — Y's OnExit returns an error — leaves nothing: the Fire failed,
+// so the configuration is unchanged and Y stays active, and kitchen, the actor Y
+// declares and the step absorbs after the Fire, must spawn and run. The Fire's trace
+// still names Y among its ExitedStates (recorded before the exit actions ran) and
+// holds no effects (a failed Fire emits none), so nothing may take the trace's word
+// for the state having been left: the live Handle runs kitchen, and a Recover, whose
+// journal records it running, respawns it.
+func TestRecover_ASpawnAStateAFailedFireTriedToExit_Runs(t *testing.T) {
+	ctx := context.Background()
+	for _, every := range []int{0, 1} {
+		t.Run(fmt.Sprintf("checkpoint every %d", every), func(t *testing.T) {
+			m := failedExitMachine()
+			var kitchenSpawns int
+			opts := []stepOption{
+				durable.WithActorPalette[string, string, stepCtx](map[string]state.ActorBehavior{
+					"a1": func(map[string]any) (state.ActorInstance, error) { return &sender{ev: "bye"}, nil },
+					"kitchen": func(map[string]any) (state.ActorInstance, error) {
+						kitchenSpawns++
+						return &noteTarget{}, nil
+					},
+				}),
+			}
+			if every > 0 {
+				opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](every))
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("stop-by-failed-exit")
+			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, err = h.Fire(ctx, "enter"); err != nil {
+				t.Fatalf("Fire(enter): %v", err)
+			}
+			// The bye Fire failed on Y's exit, so Y stayed active and kitchen runs.
+			if _, ok := h.ActorRef("kitchen"); !ok {
+				t.Fatal("live: kitchen isn't running, want it running: the bye Fire's failed exit left Y active")
+			}
+			if kitchenSpawns != 1 {
+				t.Fatalf("live: kitchen spawned %d time(s), want its start", kitchenSpawns)
+			}
+			if cfg := fmt.Sprint(h.Instance().Configuration()); cfg != "[X Y]" {
+				t.Fatalf("live configuration %s, want [X Y]: the bye Fire failed and changed nothing", cfg)
+			}
+			wantSpawns := kitchenSpawns
+			for round := 1; round <= 2; round++ {
+				recovered, rerr := durable.Recover(ctx, m, store, id, opts...)
+				if rerr != nil {
+					t.Fatalf("Recover %d: %v", round, rerr)
+				}
+				if _, ok := recovered.ActorRef("kitchen"); !ok {
+					t.Fatalf("Recover %d doesn't run kitchen, want it running, as the live Handle does: the bye Fire's failed exit left Y active", round)
+				}
+				if cfg := fmt.Sprint(recovered.Instance().Configuration()); cfg != "[X Y]" {
+					t.Fatalf("Recover %d configuration %s, want [X Y]", round, cfg)
+				}
+				wantSpawns++
+				if kitchenSpawns != wantSpawns {
+					t.Fatalf("Recover %d: kitchen spawned %d times, want %d", round, kitchenSpawns, wantSpawns)
+				}
+			}
+		})
+	}
+}
+
 // earlyStopMachine runs a1 in A1 and c1 in C1, two regions of both. a1's spawn fails
 // from its second run on, routing errA, whose Fire leaves A1 for A2 and explicitly
 // stops c1 while C1 stays active.
