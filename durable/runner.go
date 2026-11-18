@@ -1135,13 +1135,20 @@ func stoppedLater(sp state.SpawnActor, rest, later []state.Effect) bool {
 	return false
 }
 
-// parentFireErrs returns each parent Fire's error, nil ones included.
-func parentFireErrs[S comparable](fires []notedFire[S]) []error {
-	errs := make([]error, len(fires))
-	for i := range fires {
-		errs[i] = fires[i].pf.Result.Err
+// errsOf returns each item's error, nil ones included, as err names it, so the two
+// error lists a step collects — its results' (resultErrs) and the parent Fires it
+// drove (parentFireErrs) — share one loop over their two element types.
+func errsOf[T any](items []T, err func(T) error) []error {
+	errs := make([]error, len(items))
+	for i := range items {
+		errs[i] = err(items[i])
 	}
 	return errs
+}
+
+// parentFireErrs returns each parent Fire's error, nil ones included.
+func parentFireErrs[S comparable](fires []notedFire[S]) []error {
+	return errsOf(fires, func(f notedFire[S]) error { return f.pf.Result.Err })
 }
 
 // Fire drives one event through a durable instance identified by id, loading and
@@ -2434,11 +2441,7 @@ func isForward(eff state.Effect) bool {
 
 // resultErrs returns each result's error, nil ones included.
 func resultErrs[S comparable](results []state.FireResult[S]) []error {
-	errs := make([]error, len(results))
-	for i := range results {
-		errs[i] = results[i].Err
-	}
-	return errs
+	return errsOf(results, func(r state.FireResult[S]) error { return r.Err })
 }
 
 // replayRecord re-applies one journaled Record to inst the way the live step applied
