@@ -591,8 +591,8 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		return nil, fmt.Errorf("durable: probing instance %q: %w", id, err)
 	}
 
-	// Install the recording clock so every reading the delayed-transition
-	// scheduler consumes is journaled for replay. The clock seam is wired at Cast
+	// Install the recording clock so the readings the delayed-transition scheduler
+	// takes during a step are journaled for replay. The clock seam is wired at Cast
 	// (WithClock); the scheduler reads it when arming and ticking timers.
 	buf := make([]state.JournalEntry, 0)
 	recClock := newRecordingClock(r.cfg.clock, &buf)
@@ -1609,7 +1609,9 @@ func (h *Handle[S, E, C]) respawn(ctx context.Context, effects []state.Effect, u
 // effect not yet marked dispatched, so it returns ErrEffectDispatch and no Handle while
 // the effect handler keeps failing. With an effect handler wired, it refuses a Store
 // that isn't a DispatchStore with ErrNoDispatchStore before it loads anything, whether
-// or not an effect is waiting.
+// or not an effect is waiting. It re-arms the checkpoint's timers before replaying the
+// tail, and fails when a tick this version recorded fires a different number of timers
+// on replay than it recorded.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -2231,18 +2233,19 @@ func replayRecord[S comparable, E comparable, C any](
 	case rec.Tick && rec.TickSteps == 0:
 		// Only a version from before idle ticks stopped recording wrote a tick that fired
 		// nothing. Don't tick: a timer re-armed from a checkpoint could be due by its
-		// reading, and the Record says nothing fired. The caller skips the reading.
+		// readings, and the Record says nothing fired. The caller skips the readings.
 	case rec.Tick:
 		ticked := sched.Tick(ctx)
-		// A replayed tick fires exactly the timers the live one did. A different count
-		// means the journal holds a history replay can't reproduce, such as an older
-		// version's recovery that missed a timer fired in its tail and later fired it
-		// again: fail rather than replay the following steps in another state.
-		if len(ticked) != rec.TickSteps {
+		// A replayed tick of timersFirstFormat or later fires exactly the timers the live
+		// one did, so a different count means the journal isn't one this replay can
+		// reproduce: fail rather than replay the following steps in another state. An
+		// older Record can legitimately differ (see timersFirstFormat), so it isn't
+		// checked. A ctx that ended can stop the tick short, so its error comes first.
+		if rec.Format >= timersFirstFormat && len(ticked) != rec.TickSteps {
 			if err := ctx.Err(); err != nil {
 				return stepEffects, err
 			}
-			return stepEffects, fmt.Errorf("replaying the tick at step %d: it fired %d timers, but the journal records %d", rec.Step, len(ticked), rec.TickSteps)
+			return stepEffects, fmt.Errorf("replaying the tick at step %d: it fired %d timer(s), but the journal records %d", rec.Step, len(ticked), rec.TickSteps)
 		}
 		mirrorTick(mirror, sched, ticked)
 		for i := range ticked {
@@ -2316,17 +2319,21 @@ func sendsReplayedEffects(rec *Record) bool {
 }
 
 // journalFormat is the format this version writes in every Record and checkpoint. It is
-// dispatchedStepsFormat. actorArmsFormat is the first format that arms the timers and
+// timersFirstFormat. actorArmsFormat is the first format that arms the timers and
 // services an actor-driven parent Fire's state declares. dispatchedStepsFormat is the
 // first that dispatches a tick's and a service settle's domain effects, so Recover sends
 // them. tickDriversFormat is the first whose Tick hands its timer transitions' effects
 // to the service runner and the actor system, so replay starts and stops their services
-// as it did.
+// as it did. timersFirstFormat is the first whose Recover re-armed a checkpoint's timers
+// before the tail, so its replayed ticks fire exactly the timers they record. An older
+// version's recovery re-armed them after the tail, so a journal it continued can record
+// a tick replay can't reproduce: a timer the tail had fired or canceled, fired again.
 const (
 	actorArmsFormat       = 1
 	dispatchedStepsFormat = 2
 	tickDriversFormat     = 2
-	journalFormat         = dispatchedStepsFormat
+	timersFirstFormat     = 3
+	journalFormat         = timersFirstFormat
 )
 
 // replayArm arms the timers and services a replayed Fire's effects declare, as the live

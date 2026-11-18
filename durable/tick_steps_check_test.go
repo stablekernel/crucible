@@ -10,47 +10,94 @@ import (
 	"github.com/stablekernel/crucible/state"
 )
 
-// TestRecover_ATickThatFiresFewerTimersThanRecorded_Fails proves Recover refuses a
-// journal whose tick Record says it fired a timer replay can't fire. An older version's
-// recovery could leave one: it missed a checkpointed timer that a tail tick fired, re-armed
-// it after the walk, and a later live tick fired it again. Replay, which re-arms the
-// timer before the tail, fires it at the first tick, so the second finds nothing due.
-func TestRecover_ATickThatFiresFewerTimersThanRecorded_Fails(t *testing.T) {
+// leavableTimerMachine is pendingTimerMachine with a "leave" from waiting back to idle,
+// which cancels the timer.
+func leavableTimerMachine() *state.Machine[string, string, *timerCtx] {
+	return state.ForgeFor[*timerCtx]("leavableTimer").
+		State("idle").
+		State("waiting").
+		State("done").Final().
+		Initial("idle").
+		Transition("idle").On("arm").GoTo("waiting").
+		Transition("waiting").On("poke").GoTo("waiting").
+		Transition("waiting").On("leave").GoTo("idle").
+		Transition("waiting").After(10 * time.Second).On("elapsed").GoTo("done").
+		Quench()
+}
+
+// checkpointedTimer starts m in idle, arms its timer and pokes twice, so a checkpoint
+// every 3 steps carries the pending timer, then fires each of then.
+func checkpointedTimer(t *testing.T, m *state.Machine[string, string, *timerCtx], opts []durable.Option[string, string, *timerCtx], then ...string) (*durable.MemStore, durable.InstanceID) {
+	t.Helper()
 	ctx := context.Background()
-	m := pendingTimerMachine()
-	clk := state.NewFakeClock(epoch)
-	opts := []durable.Option[string, string, *timerCtx]{
-		durable.WithRunnerClock[string, string, *timerCtx](clk),
-		durable.WithCheckpointEvery[string, string, *timerCtx](3),
-	}
 	store, id := durable.NewMemStore(), durable.InstanceID("timer-1")
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, &timerCtx{}, state.WithInitialState("idle"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	for _, ev := range []string{"arm", "poke", "poke"} { // the checkpoint carries the timer
+	for _, ev := range append([]string{"arm", "poke", "poke"}, then...) {
 		if _, err = h.Fire(ctx, ev); err != nil {
 			t.Fatalf("Fire(%s): %v", ev, err)
 		}
 	}
-	clk.Advance(11 * time.Second)
-	if fired, tickErr := h.Tick(ctx); tickErr != nil || len(fired) != 1 {
-		t.Fatalf("Tick = %d fired, %v, want 1", len(fired), tickErr)
-	}
+	return store, id
+}
 
-	older := asFormatOne(t, store, id)
+// TestRecover_ATickThatFiresFewerTimersThanRecorded_Fails proves Recover and StateAt
+// refuse a Record this version wrote whose tick replay can't reproduce: it records a
+// fired timer, but nothing is due at its readings.
+func TestRecover_ATickThatFiresFewerTimersThanRecorded_Fails(t *testing.T) {
+	ctx := context.Background()
+	m := leavableTimerMachine()
+	opts := []durable.Option[string, string, *timerCtx]{
+		durable.WithRunnerClock[string, string, *timerCtx](state.NewFakeClock(epoch)),
+		durable.WithCheckpointEvery[string, string, *timerCtx](3),
+	}
+	store, id := checkpointedTimer(t, m, opts, "leave")
+	_, tail, err := store.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	last := tail[len(tail)-1]
+	read := clockReadAt(11 * time.Second)
+	bad := durable.Record{Step: last.Step + 1, Tick: true, TickSteps: 1, Format: last.Format, Entries: []state.JournalEntry{read, read, read}}
+	if _, err = store.Append(ctx, id, bad); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	want := "fired 0 timer(s), but the journal records 1"
+	if _, err = durable.Recover(ctx, m, store, id, opts...); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Recover: %v, want the tick's fired count refused", err)
+	}
+}
+
+// TestRecover_AnOlderRecoverysRevivedTimer_Recovers proves an older journal whose tick
+// fired a timer the tail had canceled still recovers, to the state the older version
+// reached. That version re-armed a checkpoint's timers after the tail, so its recovery
+// revived the canceled timer, and a later tick fired it into a refusal, recorded as one
+// fired timer. Replay keeps it canceled and fires nothing, which changes no state.
+func TestRecover_AnOlderRecoverysRevivedTimer_Recovers(t *testing.T) {
+	ctx := context.Background()
+	m := leavableTimerMachine()
+	opts := []durable.Option[string, string, *timerCtx]{
+		durable.WithRunnerClock[string, string, *timerCtx](state.NewFakeClock(epoch)),
+		durable.WithCheckpointEvery[string, string, *timerCtx](3),
+	}
+	store, id := checkpointedTimer(t, m, opts, "leave")
+	older := asFormat(t, store, id, 2)
 	_, tail, err := older.Load(ctx, id)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	read := clockReadAt(12 * time.Second)
-	again := durable.Record{Step: tail[len(tail)-1].Step + 1, Tick: true, TickSteps: 1, Format: 1, Entries: []state.JournalEntry{read, read, read}}
-	if _, err = older.Append(ctx, id, again); err != nil {
+	read := clockReadAt(11 * time.Second)
+	revived := durable.Record{Step: tail[len(tail)-1].Step + 1, Tick: true, TickSteps: 1, Format: 2, Entries: []state.JournalEntry{read, read, read}}
+	if _, err = older.Append(ctx, id, revived); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-
-	_, err = durable.Recover(ctx, m, older, id, opts...)
-	if err == nil || !strings.Contains(err.Error(), "fired 0 timers, but the journal records 1") {
-		t.Fatalf("Recover: %v, want the tick's fired count refused", err)
+	recovered, err := durable.Recover(ctx, m, older, id, opts...)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := recovered.Instance().Current(); got != "idle" {
+		t.Fatalf("recovered in %q, want idle: the revived timer's Fire was refused", got)
 	}
 }

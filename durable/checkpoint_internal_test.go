@@ -104,9 +104,8 @@ func TestReArmEffects_RemainingDelay(t *testing.T) {
 	}
 }
 
-// TestReArmEffects_ElapsedDeadlineImmediate confirms a deadline already at or before
-// now yields a non-positive delay (armed as immediately due), so an elapsed-while-
-// down timer fires on the next Tick.
+// TestReArmEffects_ElapsedDeadlineImmediate confirms reArmEffects gives a deadline at or
+// before the instant passed a non-positive delay, which the scheduler arms as due.
 func TestReArmEffects_ElapsedDeadlineImmediate(t *testing.T) {
 	now := time.Unix(0, 10_000_000_000).UTC()
 	wires := []pendingTimerWire{
