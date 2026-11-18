@@ -579,9 +579,13 @@ func (s *ActorSystem[S, E, C]) IsRunning(id string) bool {
 // Deliver routes event into the mailbox of the actor identified by ref, then
 // drains the actor (Step) so the delivered event is processed and any resulting
 // completion is routed to the parent. It returns whether the actor was found
-// running. It is the delivery mechanism the sendTo / sendParent / respond /
-// forwardTo action sugar routes through; a host (or a test) may also call it
-// directly to inject an event into an actor from outside.
+// running. An abort a WithSettleTransform function returns for a settle the
+// delivery drives isn't reported to Deliver's caller: the abort went to the
+// delivery's Tick, whose results Deliver drops, so the actor stays running and the
+// host sees the abort by calling Tick or SettleError itself; the durable Runner
+// reports it through the Handle. Deliver is the delivery mechanism the sendTo /
+// sendParent / respond / forwardTo action sugar routes through; a host (or a test)
+// may also call it directly to inject an event into an actor from outside.
 func (s *ActorSystem[S, E, C]) Deliver(ctx context.Context, ref ActorRef, event any) bool {
 	return s.deliver(ctx, ref.ID, event, "")
 }
@@ -814,22 +818,24 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	}
 	// The transform runs outside the lock, before the actor is marked done, so an
 	// abort, or a panic in the transform, leaves the actor running and settleable
-	// again.
+	// again. It may stop the actor and spawn another under the same id while it
+	// runs, so from here the settle holds to ra, the actor it began for: only that
+	// actor, still running, settles or reports an abort.
 	if s.transform != nil {
 		var abort error
 		if output, err, abort = s.applySettleTransform(ra, output, err); abort != nil {
-			// An actor stopped or settled while the transform ran reports no abort, as
-			// the ServiceRunner's stale settle does: there is nothing in flight to
-			// settle again.
-			if !s.settleable(id) {
+			// An actor stopped, settled, or respawned under the same id while the
+			// transform ran reports no abort, as the ServiceRunner's stale settle does:
+			// the abort came from the actor the transform ran for, and nothing of that
+			// actor is in flight to settle again.
+			if !s.sameActor(id, ra) {
 				return FireResult[S]{}, false
 			}
 			return FireResult[S]{Err: abort}, false
 		}
 	}
 	s.mu.Lock()
-	ra, ok = s.actors[id]
-	if !ok || ra.done {
+	if cur, ok := s.actors[id]; !ok || cur != ra || cur.done {
 		s.mu.Unlock()
 		return FireResult[S]{}, false
 	}
@@ -998,31 +1004,36 @@ func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S]
 //
 // A non-nil abort stops the settle instead: no event fires, so no Assign, middleware
 // or inspector runs, and the actor stays running, so it can be settled again. The
-// settle reports the abort as the ServiceRunner's does: SettleError, and the settle a
-// delivery or the system's Tick drives, return false with abort, as given, in
-// FireResult.Err, and the system's Tick returns that FireResult as one element of its
-// slice. An actor stopped or settled while the transform ran reports no abort, as a
-// stale settle does. LastOutput and LastError still report the previous settle.
+// settle reports the abort as the ServiceRunner's does: SettleError returns false
+// with the abort, as given, in FireResult.Err, and the system's Tick returns that
+// FireResult as one element of its slice. A settle a delivery drives isn't reported
+// to Deliver's caller: Deliver returns only whether it found the actor running, so
+// the actor stays running and the host sees the abort by calling Tick or SettleError
+// itself; the durable Runner reports it through the Handle. An actor stopped,
+// settled, or respawned under the same id while the transform ran reports no abort,
+// as a stale settle does. LastOutput and LastError still report the previous settle.
 //
 // f runs before the actor is marked done, outside the system's lock, so it may run
-// for a settle that then finds the actor stopped or settled by another goroutine,
-// which reports no abort. That holds even if the actor was spawned again under the
-// same id meanwhile: the new actor stays running. A panic in f goes on out of the
-// settle, leaving the actor running. Set f before the first settle: the field isn't
-// guarded.
+// for a settle that then finds the actor stopped, settled, or respawned under the
+// same id — by another goroutine, or by f itself — which reports no abort and leaves
+// the new actor running: the settle holds to the actor it began for. A panic in f
+// goes on out of the settle, leaving the actor running. Set f before the first
+// settle: the field isn't guarded.
 func (s *ActorSystem[S, E, C]) WithSettleTransform(f func(event E, output any, err error) (out any, outErr error, abort error)) *ActorSystem[S, E, C] {
 	s.transform = f
 	return s
 }
 
-// settleable reports whether the actor under id is still running, so a settle whose
-// transform aborted can tell a live actor from one another goroutine stopped or
-// settled while the transform ran.
-func (s *ActorSystem[S, E, C]) settleable(id string) bool {
+// sameActor reports whether the actor under id is still ra, the same *runningActor
+// a settle began for, and still running, so a settle whose transform ran outside the
+// lock reports its abort only for the actor it came from: one another goroutine
+// stopped, settled, or respawned under the same id while the transform ran reports
+// none.
+func (s *ActorSystem[S, E, C]) sameActor(id string, ra *runningActor[E]) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ra, ok := s.actors[id]
-	return ok && !ra.done
+	cur, ok := s.actors[id]
+	return ok && cur == ra && !cur.done
 }
 
 // applySettleTransform runs the transform on an outcome of ra. An UnboundActorError

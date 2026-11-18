@@ -427,7 +427,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 		} else if !replay {
 			derr = decodedAsPassed(value, result, what, true)
 		} else {
-			derr = decodedAsRecorded(value, recorded, aliases)
+			derr = decodedAsRecorded(value, recorded, aliases, what)
 		}
 		if derr != nil {
 			rtype := recorded.rtype
@@ -652,7 +652,8 @@ func qualifiedName(pkg, name string) string {
 
 // decodedAsRecorded is decodedAsPassed for a recorded result, which records its type's
 // name rather than a value: it reports, as an ErrEventDataEncoding error, a value the
-// decoder returned as another type than the recorded one. As live, nil and JSON's
+// decoder returned as another type than the recorded one; what names the outcome, a
+// service's result or an actor's done-data. As live, nil and JSON's
 // generic form are always accepted. A name aliases maps, from WithResultTypeAlias, to
 // the type the decoded value has is accepted too: the type was renamed or moved after
 // the result was recorded, and the alias says what the recorded name now means; every
@@ -662,8 +663,10 @@ func qualifiedName(pkg, name string) string {
 // alias too, which a parked result ignores — or as one read from the journal or a
 // checkpoint is held to its name, which a type of the same name and package, such as
 // another function-local type, also has. An empty name, a result recorded with no
-// type, accepts anything.
-func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string) error {
+// type, accepts anything. Only a parked service result carries its own type, so the
+// parked check below names a service result whatever what is; an actor outcome is
+// never parked.
+func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string, what string) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
@@ -674,11 +677,11 @@ func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]st
 		if aliased {
 			// The name is covered by an alias, so name the type it now means, which is
 			// the one to decode as, not the recorded name the type no longer has.
-			return fmt.Errorf("%w: a %s service result, aliased to %s by WithResultTypeAlias, decodes as %s; decode it as %s with WithEventDataDecoder",
-				ErrEventDataEncoding, typ, alias, got, alias)
+			return fmt.Errorf("%w: a %s %s, aliased to %s by WithResultTypeAlias, decodes as %s; decode it as %s with WithEventDataDecoder",
+				ErrEventDataEncoding, typ, what, alias, got, alias)
 		}
-		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
-			ErrEventDataEncoding, typ, got, typ)
+		return fmt.Errorf("%w: a %s %s decodes as %s; decode it as %s with WithEventDataDecoder",
+			ErrEventDataEncoding, typ, what, got, typ)
 	}
 	// The name agrees — the recorded one or the alias's — so only a result this Handle
 	// parked, which carries its type itself, can be another type: through the alias,
