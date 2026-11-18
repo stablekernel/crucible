@@ -353,6 +353,43 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 	return h.recClock.drain()
 }
 
+// armEffects is the one arming sequence every absorb path takes, live
+// (absorbDrivers, absorbSettle, absorbParentFire) and replayed (replayArm), so no
+// path can drift from the rest as a later change updates one and misses the others.
+// The canonical order is forget, then timers, then services: forget drops from the
+// settled services and parked results each service the effects start or stop, so a
+// service a state re-enters runs its ServiceFn again and a stopped one's parked
+// result is discarded; arm arms or cancels the delayed (`after`) timers, and runs
+// only when the effects schedule or cancel one — the kernel Scheduler reads the
+// clock unconditionally on Absorb, so skipping the call for a timer-free transition
+// keeps a non-timer machine free of clock reads; absorb starts and stops the
+// services, and a nil absorb is the settle path, where the ServiceRunner absorbed
+// the effects itself as it settled, so handing them to it again would arm each
+// service it starts a second time, where replay arms it once.
+//
+// Live and replay must share the sequence because a replay has to take the clock
+// reads the live run took, with the same drivers in the same state around each one,
+// for the readings a Record journals and the timer deadlines a checkpoint carries to
+// come out as the live run's did: one path arming in another order could leave a
+// recovered or reconstructed instance whose timers and services disagree with the
+// journal the live run wrote. Actor absorption stays with the live callers, since a
+// replay runs no actor: Recover spawns the actors of the states it ends in.
+func armEffects(
+	ctx context.Context,
+	forget func([]state.Effect),
+	arm func(context.Context, []state.Effect),
+	absorb func(context.Context, []state.Effect),
+	effects []state.Effect,
+) {
+	forget(effects)
+	if hasTimerEffect(effects) {
+		arm(ctx, effects)
+	}
+	if absorb != nil {
+		absorb(ctx, effects)
+	}
+}
+
 // absorbDrivers feeds a transition's effects into every wired host driver so the
 // durable seams compose: the scheduler arms or cancels delayed (`after`) timers (and
 // the Handle's timer table mirrors their deadlines for checkpointing), the service
@@ -360,38 +397,33 @@ func (h *Handle[S, E, C]) drainClock() []state.JournalEntry {
 // child-machine actors. It is the absorb Fire calls for the effects its event produced,
 // so a forwardTo forwards that event; a settle's go through absorbSettle. Absorbing a
 // driver's effects is a no-op when that driver is not wired or the effects name none
-// of its kind.
+// of its kind. Its timers and services go through armEffects, the sequence replay
+// shares, and its actors follow, as a settle's do.
 func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, event any, effects []state.Effect) {
-	// Arm or cancel timers only when the effects actually schedule or cancel one: the
-	// kernel Scheduler reads the clock unconditionally on Absorb, so skipping the call
-	// for a timer-free transition keeps a non-timer machine free of clock reads.
-	if hasTimerEffect(effects) {
-		h.absorbTimers(ctx, effects)
-	}
-	h.absorbRunners(ctx, event, effects)
+	armEffects(ctx, h.forgetServices, h.absorbTimers, h.absorbIntoServices, effects)
+	h.absorbActors(ctx, event, effects, nil)
 }
 
 // absorbSettle is absorbDrivers for the effects of a service settle's own Fire, so a
 // state the settle enters arms whatever it declares, such as a service whose onDone
 // spawns an actor. The ServiceRunner absorbed those effects itself as it settled, so
-// absorbSettle doesn't hand them to it again, which would arm each service it starts a
-// second time, where replay arms it once: it forgets the settled services and parked
-// results the effects start or stop, and arms the timers, then the actors, in
-// absorbDrivers' order.
+// absorbSettle passes armEffects a nil services seam, which would otherwise arm each
+// service it starts a second time, where replay arms it once: it forgets the settled
+// services and parked results the effects start or stop, and arms the timers, then
+// the actors, in armEffects' order.
 func (h *Handle[S, E, C]) absorbSettle(ctx context.Context, effects []state.Effect) {
-	if hasTimerEffect(effects) {
-		h.absorbTimers(ctx, effects)
-	}
-	h.forgetServices(effects)
+	armEffects(ctx, h.forgetServices, h.absorbTimers, nil, effects)
 	h.absorbActors(ctx, nil, effects, nil)
 }
 
-// absorbRunners feeds the effects event's transition produced into the service runner,
-// then the actor system: absorbServices, then absorbActors. absorbDrivers calls it after
-// arming the timers.
-func (h *Handle[S, E, C]) absorbRunners(ctx context.Context, event any, effects []state.Effect) {
-	h.absorbServices(ctx, effects)
-	h.absorbActors(ctx, event, effects, nil)
+// absorbIntoServices is the services seam armEffects takes: it hands the effects to
+// the service runner, which starts and stops the services they name, when one is
+// wired. absorbServices calls it, forgetting first, for the tick path, whose
+// timers the scheduler armed itself.
+func (h *Handle[S, E, C]) absorbIntoServices(ctx context.Context, effects []state.Effect) {
+	if h.svc != nil {
+		h.svc.Absorb(ctx, effects)
+	}
 }
 
 // absorbServices feeds a transition's effects into the service runner, forgetting the
@@ -401,9 +433,7 @@ func (h *Handle[S, E, C]) absorbRunners(ctx context.Context, event any, effects 
 // services, and one that enters a state starts them, as a Fire does.
 func (h *Handle[S, E, C]) absorbServices(ctx context.Context, effects []state.Effect) {
 	h.forgetServices(effects)
-	if h.svc != nil {
-		h.svc.Absorb(ctx, effects)
-	}
+	h.absorbIntoServices(ctx, effects)
 }
 
 // absorbActors feeds the effects event's transition produced into the actor system,
@@ -464,16 +494,10 @@ func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects, 
 // absorbParentFire arms or cancels the timers and services a parent Fire the actor
 // system drove declares, which the system itself leaves alone: the state an actor's
 // onDone, onError or message enters runs its timers and services, as one a Fire enters
-// does. Replay arms them the same way, in the same order, so the clock reads match. ctx
-// is the context of the step that drove the system.
+// does. It takes armEffects' sequence, which replayArm takes for the same Fire, so
+// the clock reads match. ctx is the context of the step that drove the system.
 func (h *Handle[S, E, C]) absorbParentFire(ctx context.Context, effects []state.Effect) {
-	h.forgetServices(effects)
-	if hasTimerEffect(effects) {
-		h.absorbTimers(ctx, effects)
-	}
-	if h.svc != nil {
-		h.svc.Absorb(ctx, effects)
-	}
+	armEffects(ctx, h.forgetServices, h.absorbTimers, h.absorbIntoServices, effects)
 }
 
 // absorbTimers arms or cancels the step's delayed (`after`) timers on the kernel
@@ -2710,20 +2734,27 @@ const (
 )
 
 // replayArm arms the timers and services a replayed Fire's effects declare, as the live
-// step's absorb did, reading the clock only when they schedule or cancel a timer, as it
-// did. svc may be nil.
+// step's absorb did, through armEffects, the one arming sequence live and replay share:
+// the mirror stands in for the Handle's settled and parked tables, and the scheduler
+// for its timers, so the deadlines a checkpoint carries match. It reads the clock only
+// when they schedule or cancel a timer, as the live arm did. svc may be nil.
 func replayArm[S comparable, E comparable, C any](ctx context.Context, sched *state.Scheduler[S, E, C], svc *state.ServiceRunner[S, E, C], effects []state.Effect, mirror *armMirror) {
-	if hasTimerEffect(effects) {
-		sched.Absorb(ctx, effects)
-		mirror.arm(effects)
+	armTimers := func(c context.Context, effs []state.Effect) {
+		sched.Absorb(c, effs)
+		mirror.arm(effs)
 	}
-	replayRunners(ctx, svc, effects, mirror)
+	armServices := func(c context.Context, effs []state.Effect) {
+		if svc != nil {
+			svc.Absorb(c, effs)
+		}
+	}
+	armEffects(ctx, mirror.forget, armTimers, armServices, effects)
 }
 
 // replayRunners starts or stops the services a replayed transition's effects declare,
-// and forgets the settles and parked results of each, as the live absorbRunners did.
-// Replay runs no actor: Recover spawns the actors of the states it ends in. svc may be
-// nil.
+// and forgets the settles and parked results of each, as the live Tick's absorbServices
+// does for the same transition. Replay runs no actor: Recover spawns the actors of the
+// states it ends in. svc may be nil.
 func replayRunners[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], effects []state.Effect, mirror *armMirror) {
 	mirror.forget(effects)
 	if svc != nil {
