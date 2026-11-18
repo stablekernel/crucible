@@ -168,8 +168,9 @@ func (s *Scheduler[S, E, C]) dueLocked(now time.Time) (string, pending[E], bool)
 // is called. It implements Clock; pair it with a Scheduler (via WithClock at
 // Cast) to drive `after` transitions with no real waiting. It is concurrency-safe.
 //
-// After behaves like time.After on the fake timeline: its channel stays empty
-// until Advance moves the clock to or past the deadline. A host that selects on
+// After behaves like time.After on the fake timeline: for a positive d, its
+// channel stays empty until Advance moves the clock to or past the deadline,
+// and a d of zero or less fires at once. A host that selects on
 // After (a silence timeout, a reconnect grace) sees it fire only when the test
 // advances far enough. An unfired waiter stays registered on the clock until
 // an Advance reaches it; there is no Stop to cancel it.
