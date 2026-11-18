@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -268,6 +269,28 @@ func TestActor_Error_APanickingErrorMethod_LiveEqualsRecover(t *testing.T) {
 	}
 	if live[0] != rec[0] {
 		t.Fatalf("the parent's Assign saw different error messages live and after Recover:\n live=%s\n  rec=%s", live[0], rec[0])
+	}
+}
+
+// TestActor_DoneData_AWrongDecoderOnReplayNamesTheDoneData pins the wording of the
+// error a Recover's decoder fails an actor's recorded done-data with, held to the
+// recorded type: it names the done-data, as the live settle's errors do, not a
+// "service result", so a host reading it knows which outcome wouldn't decode.
+func TestActor_DoneData_AWrongDecoderOnReplayNamesTheDoneData(t *testing.T) {
+	ctx := context.Background()
+	var runs int64
+	behavior := outputChild(&runs, order{ID: 7})
+	_, id, store, err := liveOutcomeRun(t, behavior, childDoneDecoder(durable.DecodeAs[order]))
+	if err != nil {
+		t.Fatalf("DeliverToActor: %v", err)
+	}
+	palette := durable.WithActorPalette[string, string, outcomeCtx](map[string]state.ActorBehavior{"spawnChild": behavior})
+	_, rerr := durable.Recover(ctx, collectorMachine(), store, id, palette, childDoneDecoder(durable.DecodeAs[scnAdmin]))
+	if !errors.Is(rerr, durable.ErrEventDataEncoding) {
+		t.Fatalf("Recover with a decoder for another type = %v, want ErrEventDataEncoding", rerr)
+	}
+	if !strings.Contains(rerr.Error(), "actor done-data decodes as") {
+		t.Fatalf("the replay error %q doesn't name the actor's done-data as the outcome that wouldn't decode", rerr)
 	}
 }
 

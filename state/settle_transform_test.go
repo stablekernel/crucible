@@ -23,7 +23,10 @@ func upperSettleTransform(events *[]string) func(string, any, error) (any, error
 
 // settleParentMachine builds a parent whose "supervising" state invokes a child
 // MACHINE actor, routing its completion through Assigns that read the outcome from
-// AssignCtx.Event: the done-event payload the settle carries.
+// AssignCtx.Event: the done-event payload the settle carries. "supervising" returns
+// to "idle" on "restart", so a transform (or a host) can leave the state and
+// re-enter it, stopping the child and spawning a fresh one under the same id, as a
+// supervisor restart does.
 func settleParentMachine() *state.Machine[string, string, *trec] {
 	return state.ForgeFor[*trec]("settleparent").
 		Reducer("recordDone", func(in state.AssignCtx[*trec]) *trec {
@@ -47,6 +50,7 @@ func settleParentMachine() *state.Machine[string, string, *trec] {
 		Initial("idle").
 		CurrentStateFn(func(*trec) string { return "idle" }).
 		Transition("idle").On("start").GoTo("supervising").
+		Transition("supervising").On("restart").GoTo("idle").
 		Transition("supervising").On("childDone").GoTo("complete").Assign("recordDone").
 		Transition("supervising").On("childErr").GoTo("failed").Assign("recordFail").
 		Quench()
@@ -194,6 +198,82 @@ func TestWithSettleTransform_AbortFiresNothingAndLeavesTheActorRunning(t *testin
 	}
 	if got := strings.Join(parent.Entity().notes, ","); got != "error:wrapped: boom" {
 		t.Fatalf("notes = %q, want the second settle's Assign", got)
+	}
+}
+
+// TestWithSettleTransform_ARespawnedActorIsNotSettledByTheOldSettle proves a settle
+// whose transform ran for one actor can't settle, or report an abort for, the actor
+// respawned under the same id while the transform ran. The transform stops the
+// settling actor and spawns a fresh one under its id, as a supervisor restart does,
+// with no real concurrency: the old settle must fire nothing and report nothing —
+// not even its abort — the new actor must stay running and not done, and no onDone
+// may fire, so the new actor settles only with a delivery of its own.
+func TestWithSettleTransform_ARespawnedActorIsNotSettledByTheOldSettle(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		aborting bool // the transform aborts the first settle rather than passing its outcome through
+	}{{"the settle branch", false}, {"the abort branch", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			abort := errors.New("no recording")
+			var calls int
+			var events []string
+			var parent *state.Instance[string, string, *trec]
+			var sys *state.ActorSystem[string, string, *trec]
+			parent, sys, id := settleHarness(t, func(event string, output any, err error) (any, error, error) {
+				calls++
+				if calls > 1 {
+					return upperSettleTransform(&events)(event, output, err)
+				}
+				// While the transform runs, the supervisor restarts the actor: leaving
+				// supervising stops the settling actor, and re-entering it spawns a fresh
+				// one under the same id, the invocation's stable id for its position.
+				sys.Absorb(ctx, parent.Fire(ctx, "restart").Effects)
+				sys.Absorb(ctx, parent.Fire(ctx, "start").Effects)
+				if tc.aborting {
+					return nil, nil, abort
+				}
+				return output, err, nil
+			})
+
+			// Drive the settle whose transform respawns the actor under it.
+			if tc.aborting {
+				res, ok := sys.SettleError(ctx, id, errors.New("boom"))
+				if ok || res.Err != nil {
+					t.Fatalf("the stale SettleError = %+v, %v; want false with no Err: its abort came from the old actor", res, ok)
+				}
+			} else if !sys.DeliverByID(ctx, id, "finish") {
+				t.Fatal("DeliverByID returned false; the actor was running")
+			}
+
+			// The old settle fired nothing: no onDone, no Assign, no abort, and the
+			// parent is where the restart left it.
+			if parent.Current() != "supervising" {
+				t.Fatalf("parent state = %q, want supervising: the old settle fired nothing", parent.Current())
+			}
+			if n := len(parent.Entity().notes); n != 0 {
+				t.Fatalf("the old settle ran %d Assigns, want none", n)
+			}
+			if out, none := sys.LastOutput(); none {
+				t.Fatalf("LastOutput = %q, want none: no outcome settled", out)
+			}
+			// The respawned actor under the id is running and not done.
+			if !sys.IsRunning(id) || sys.Running() != 1 {
+				t.Fatalf("the respawned actor isn't running: IsRunning(%v), Running %d", sys.IsRunning(id), sys.Running())
+			}
+
+			// The new actor settles with a delivery of its own, carrying its own
+			// outcome — the old settle's outcome never reaches the parent.
+			if !sys.DeliverByID(ctx, id, "finish") {
+				t.Fatal("DeliverByID returned false for the respawned actor")
+			}
+			if parent.Current() != "complete" {
+				t.Fatalf("parent state = %q after the new actor's settle, want complete", parent.Current())
+			}
+			if got := strings.Join(parent.Entity().notes, ","); got != "result:PAYLOAD" {
+				t.Fatalf("notes = %q, want the new actor's own settle's result:PAYLOAD", got)
+			}
+		})
 	}
 }
 

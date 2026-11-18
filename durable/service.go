@@ -428,7 +428,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], settled *settle
 		} else if !replay {
 			derr = decodedAsPassed(value, result, what, true)
 		} else {
-			derr = decodedAsRecorded(value, recorded)
+			derr = decodedAsRecorded(value, recorded, what)
 		}
 		if derr != nil {
 			rtype := recorded.rtype
@@ -658,24 +658,25 @@ func qualifiedName(pkg, name string) string {
 
 // decodedAsRecorded is decodedAsPassed for a recorded result, which records its type's
 // name rather than a value: it reports, as an ErrEventDataEncoding error, a value the
-// decoder returned as another type than the recorded one. As live, nil and JSON's
-// generic form are always accepted. A result this Handle parked keeps its type, and is
+// decoder returned as another type than the recorded one; what names the outcome, a
+// service's result or an actor's done-data. As live, nil and JSON's generic form are
+// always accepted. A result this Handle parked keeps its type, and is
 // held to it as live held it; one read from the journal or a checkpoint is held to its
 // name, which a type of the same name and package, such as another function-local type,
 // also has. An empty name, a result recorded before settles recorded the type, accepts
 // anything.
-func decodedAsRecorded(value any, recorded recordedResult) error {
+func decodedAsRecorded(value any, recorded recordedResult, what string) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
 	}
 	if recorded.rtype != nil && reflect.TypeOf(value) != recorded.rtype {
-		return fmt.Errorf("%w: a %s service result decodes as another type, %v, of the same name or not; decode it as the service's own %s with WithEventDataDecoder",
-			ErrEventDataEncoding, typ, reflect.TypeOf(value), typ)
+		return fmt.Errorf("%w: a %s %s decodes as another type, %v, of the same name or not; decode it as its own %s with WithEventDataDecoder",
+			ErrEventDataEncoding, typ, what, reflect.TypeOf(value), typ)
 	}
 	if got := typeName(value); got != typ {
-		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
-			ErrEventDataEncoding, typ, got, typ)
+		return fmt.Errorf("%w: a %s %s decodes as %s; decode it as %s with WithEventDataDecoder",
+			ErrEventDataEncoding, typ, what, got, typ)
 	}
 	return nil
 }

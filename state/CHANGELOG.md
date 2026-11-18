@@ -58,6 +58,9 @@ counts as an additive (minor) versus breaking (major) change. Use the
   that `FireResult` as one element of its slice. An actor stopped or settled while the
   transform ran reports no abort, as a stale settle does. This is new API, additive
   within v1.1.0.
+  An abort from a settle that a delivery drives isn't reported to
+  `Deliver`'s caller: the actor stays running, and the host sees it by calling `Tick`
+  or `SettleError`.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
