@@ -54,7 +54,7 @@ func TestRecordingClock_AfterDelegates(t *testing.T) {
 
 // TestReplayClock_ReturnsRecordedThenFallsThrough confirms a replay clock returns
 // the recorded readings in order, then falls through to its fallback once the
-// readings are exhausted (the live re-arm after replay).
+// readings are exhausted (live continuation after Recover).
 func TestReplayClock_ReturnsRecordedThenFallsThrough(t *testing.T) {
 	readings := []int64{
 		clockEpoch.UnixNano(),

@@ -92,15 +92,14 @@
 //
 // Clock (WithRunnerClock): a running instance reads time only through its host
 // scheduler, which arms and ticks delayed `after` transitions. The Runner wraps
-// the real clock in a recording clock on the live path so every Now() reading the
-// scheduler consumes is journaled as a JournalClockRead in the step's Record.
+// the real clock in a recording clock on the live path so the Now() readings of a step
+// are journaled as JournalClockRead entries in its Record. An idle Tick records nothing.
 // On recovery a replay clock returns those readings in order, making timer-driven
 // transitions wall-clock-independent: the same timers fire at the same recorded
 // instants regardless of the wall clock at recovery time. A timer also survives
-// checkpoint compaction: each checkpoint persists the absolute deadlines of the
-// timers armed at that instant; on recovery a timer whose arming ScheduleAfter
-// was compacted out of the tail is re-armed from its persisted deadline rather
-// than lost.
+// checkpoint compaction: the baseline and each checkpoint persist the absolute
+// deadlines of the timers armed at that instant, and recovery re-arms them at those
+// deadlines before the tail replays, so a tail step can fire, cancel or replace them.
 //
 // Invoked services (WithServiceRegistry): a service (`invoke`) runs on the live path;
 // its result is journaled as a JournalServiceResult. On recovery the recorded result is

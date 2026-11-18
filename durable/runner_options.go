@@ -81,8 +81,8 @@ func WithEventCodec[S comparable, E comparable, C any](codec EventCodec[E]) Opti
 // WithRunnerClock injects the real time seam the Runner records on the live path
 // and replays on recovery. A durable instance reads time only through its host
 // scheduler (which arms and ticks delayed `after` transitions); the Runner wraps
-// this clock in a recording clock so every reading is journaled, and substitutes
-// a replay clock on recovery so timers fire at their recorded instants
+// this clock in a recording clock so each recorded step's readings are journaled, and
+// substitutes a replay clock on recovery so timers fire at their recorded instants
 // independent of the wall clock at recovery time. It defaults to
 // state.SystemClock(); supply a deterministic fake (state.NewFakeClock) in a test.
 func WithRunnerClock[S comparable, E comparable, C any](c state.Clock) Option[S, E, C] {

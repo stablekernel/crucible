@@ -12,10 +12,12 @@ import (
 // its host driver (the state.Scheduler armed and ticked by the durable Handle) —
 // the kernel's Fire step never reads a clock. The Runner therefore wraps the real
 // state.Clock in a recordingClock on the live path and a replayClock on recovery,
-// so every Now() reading the scheduler consumes is journaled and returned
-// verbatim on replay. This makes timer firing wall-clock-independent: a recovered
-// instance re-derives the same deadlines and fires the same timers at the same
-// recorded instants, regardless of the wall clock at recovery time.
+// so the Now() readings of each recorded step are journaled and returned verbatim
+// on replay. Two kinds of reading belong to no step and aren't journaled: the one Start
+// takes arming the initial state's timers, and an idle Tick's reads. This makes timer
+// firing wall-clock-independent: a recovered instance re-derives the same deadlines and
+// fires the same timers at the same recorded instants, regardless of the wall clock at
+// recovery time.
 //
 // # What triggers a clock read
 //
@@ -33,7 +35,9 @@ import (
 // which they occurred (the step whose Fire/Tick produced them), in read order.
 // Replay is order-driven, not step-keyed: the replayClock walks every recorded
 // JournalClockRead across the loaded tail in recorded order and returns each
-// reading once, so the scheduler re-derives identical deadlines.
+// reading once, so the scheduler re-derives identical deadlines. Re-arming
+// checkpointed timers holds the clock on a fixed instant instead, and replay skips
+// the readings of an older journal's idle tick Record.
 
 // recordingClock wraps a real state.Clock and records every Now() reading as a
 // JournalClockRead into a shared buffer, in read order. After delegates to the
@@ -98,6 +102,17 @@ func (c *recordingClock) markBuf() int {
 	return len(*c.buf)
 }
 
+// dropFrom discards the readings recorded at index i and after, under the clock mutex:
+// an idle Tick drops its own reads this way and keeps the ones before them, which an
+// earlier, still unrecorded parent Fire took.
+func (c *recordingClock) dropFrom(i int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i >= 0 && i < len(*c.buf) {
+		*c.buf = (*c.buf)[:i]
+	}
+}
+
 // armReadingAt returns the clock reading recorded at index i, ok false when the
 // buffer holds no entry there (no read was appended). Taken under the clock mutex
 // so it does not race a concurrent Now().
@@ -116,8 +131,8 @@ func (c *recordingClock) armReadingAt(i int) (time.Time, bool) {
 // recordingClock: Now advances a cursor over the recorded JournalClockRead
 // readings and returns each once.
 //
-// When the cursor is exhausted — a Now() beyond the recorded readings, which
-// happens on the live re-arm after replay — it falls through to a real clock so
+// When the cursor is exhausted — a Now() once replay has consumed or skipped every
+// reading, on live continuation after Recover — it falls through to a real clock so
 // post-recovery timing continues against wall time. The fallthrough never affects
 // the replayed prefix, which is fully determined by the journal.
 type replayClock struct {
@@ -125,11 +140,12 @@ type replayClock struct {
 	readings []int64
 	cursor   int
 	fallback state.Clock
-	last     time.Time // the reading Now last returned
+	held     *time.Time // a fixed reading set by hold, nil otherwise
+	last     time.Time  // the reading Now last returned outside a hold
 }
 
 // newReplayClock builds a replayClock over the recorded readings, falling through
-// to fallback once the readings are exhausted (the live re-arm after replay).
+// to fallback once the readings are exhausted (live continuation after Recover).
 func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 	return &replayClock{readings: readings, fallback: fallback}
 }
@@ -139,6 +155,9 @@ func newReplayClock(readings []int64, fallback state.Clock) *replayClock {
 func (c *replayClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.held != nil {
+		return *c.held
+	}
 	if c.cursor < len(c.readings) {
 		c.last = time.Unix(0, c.readings[c.cursor]).UTC()
 		c.cursor++
@@ -154,6 +173,41 @@ func (c *replayClock) lastRead() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.last
+}
+
+// skipTo moves the cursor forward to reading n and never back, past readings no replayed
+// step consumes.
+func (c *replayClock) skipTo(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cursor < n {
+		c.cursor = n
+	}
+}
+
+// clockReadCount returns how many clock readings rec holds.
+func clockReadCount(rec *Record) int {
+	n := 0
+	for _, e := range rec.Entries {
+		if e.Kind == state.JournalClockRead {
+			n++
+		}
+	}
+	return n
+}
+
+// hold makes Now return t without consuming a reading, until release.
+func (c *replayClock) hold(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = &t
+}
+
+// release ends a hold.
+func (c *replayClock) release() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = nil
 }
 
 // After delegates to the fallback clock; replay drives elapses through Now + Tick

@@ -17,7 +17,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   onError was refused because a context ended, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
 - **`Record.Format`** records the journal format of the version that wrote the Record,
-  which is 2 from this version. Replay arms the timers and services an actor-driven
+  which is 3 from this version. Replay arms the timers and services an actor-driven
   parent Fire's state declares only for a Record of format 1 or later. `Recover` sends a
   tick's and a service settle's effects, and replay hands a tick's timer transitions'
   effects to the service runner, only for a Record of format 2 or later.
@@ -86,8 +86,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   entry with no event, replays as the zero event. An older `durable` also ignores the
   recorded ended actors and spawns them again, and replays a step that records actor
   entries as a delivery, skipping its event, settle or tick. It also spawns a running
-  actor as new, so a message the actor sent its parent as it started applies twice. Don't downgrade a Store this version has
-  written to.
+  actor as new, so a message the actor sent its parent as it started applies twice. An
+  older `durable`'s `Recover` re-arms a baseline's or checkpoint's timers only after the
+  tail, so it misses one a tail tick fired, with no error, and its `StateAt` ignores a
+  baseline's timers. Don't downgrade a Store this version has written to.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
   recorded with a delivery's last Fire still replays into that transition. Only steps
@@ -243,6 +245,32 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   the step that tried it. A retry the Store refuses as not advancing means the first
   write landed, and counts as written. Any other checkpoint failure is returned, and
   after that only the next step the policy makes due tries again.
+- **Timers survive recovery.** `Start` now arms the initial state's timers, which it never
+  did, so a new instance starting in a timed state fires a timer it didn't before. It
+  carries them in the baseline; an instance started earlier keeps its initial timer
+  unarmed. It arms them even when the initial entry failed, as it already starts that
+  state's services and actors. Recovery re-arms checkpointed timers before the tail
+  replays, so one fired in the tail isn't missed. `StateAt` re-arms baseline timers too,
+  so its result changes when one fires in the window, and it fails if a timer's event won't decode with
+  the options passed; `transport`'s time-travel view passes none, so it fails there for a
+  machine whose timer events need a custom codec.
+- **A replayed tick must fire what it recorded.** `Recover` and `StateAt` now fail when a
+  tick of journal format 3 or later fires a different number of timers on replay than
+  its Record says, rather than replaying the following steps in another state. An older
+  Record isn't checked: an older version's recovery re-armed a checkpoint's timers after
+  the tail, so a journal it continued can record a timer the tail had fired or canceled
+  firing again. A canceled one it revived usually fired into a refusal, and replays to
+  the same state. If the state it was in then takes the timer's event, or the timer
+  fired twice, replay diverges from that run with no error, as that version's own replay
+  did.
+- **A tick that fires nothing records nothing.** It used to append a Record every time,
+  so a timer loop grew the journal while a timer was pending. An idle `Tick` doesn't touch
+  the Store, so it can't report `ErrFenced` or a Store failure: a stale owner finds out on
+  its next real step. An idle tick also takes no step number and doesn't count toward
+  `WithCheckpointEvery`. Replay reads an older journal's idle tick Record as nothing fired.
+  A recorded reading no replayed step consumed is no longer returned to the first timer
+  armed after `Recover`. An older journal whose settle put its clock read in the next
+  Record can still arm a replayed timer at the wrong instant (#262).
 - **Effects reach the handler from `Start`, `Tick` and `RunService`.** They were only
   dispatched from `Fire`. `Start` applies the initial entry's effects after encoding the
   baseline and before writing it, and only if the entry succeeded. Those effects are

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -90,10 +91,10 @@ func (v *TimeTravelView[S, E, C]) Snapshot() state.Snapshot[S, E, C] { return v.
 func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 
 // StateAt reconstructs a durable instance's state AS OF the recorded step, read-only:
-// it restores the start baseline and replays the recorded driving events, service
-// settlements, actor transitions, and clock reads forward up to step, returning a
-// detached view of the instance at that point. It runs no service, re-instantiates
-// no actor, reads no wall clock, and dispatches no domain effect — every result is a
+// it restores the start baseline, re-arms the timers the baseline carries, and replays
+// the recorded driving events, service settlements, actor transitions, and clock reads
+// forward up to step, returning a detached view of the instance at that point. It runs
+// no service, re-instantiates no actor, reads no wall clock, and dispatches no domain effect — every result is a
 // pure replay of recorded values — and it mutates neither the live instance nor the
 // Store. The same functional options a Runner takes are accepted (the event codec,
 // the service registry and actor palette needed to settle recorded results, the
@@ -102,7 +103,9 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 //
 // step must be in [BaselineStep, lastRecordedStep]; a step outside that range
 // reports ErrStepOutOfRange, an unknown instance reports ErrInstanceNotFound, and an
-// ended ctx reports its error.
+// ended ctx reports its error. It also fails when a baseline timer's event won't decode
+// with the event codec passed, and when a tick of journal format 3 or later fires a
+// different number of timers on replay than it recorded.
 func StateAt[S comparable, E comparable, C any](
 	ctx context.Context,
 	m *state.Machine[S, E, C],
@@ -133,12 +136,13 @@ func StateAt[S comparable, E comparable, C any](
 	bounded := boundRecords(records, step)
 	repClock := newReplayClock(clockReadings(bounded), cfg.clock)
 
-	inst, err := restoreBaseline(m, baseline, repClock)
+	env := unmarshalCheckpoint(baseline)
+	inst, err := restoreBaseline(m, env, repClock)
 	if err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded, unmarshalCheckpoint(baseline).Format); err != nil {
+	if err := replayThrough(ctx, inst, &cfg, bounded, env, repClock); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -195,15 +199,14 @@ func lastStep(records []Record) int {
 
 // restoreBaseline unwraps the baseline checkpoint envelope and restores a detached
 // kernel instance from it under the bounded replay clock, so the reconstruction
-// reads recorded instants rather than the wall clock. The baseline carries no armed
-// timers (it is the pre-event cast), so its envelope's timer table is empty and only
-// the snapshot matters here.
+// reads recorded instants rather than the wall clock. The timers the baseline carries
+// are re-armed by replayThrough.
 func restoreBaseline[S comparable, E comparable, C any](
 	m *state.Machine[S, E, C],
-	baseline []byte,
+	env checkpointEnvelope,
 	repClock state.Clock,
 ) (*state.Instance[S, E, C], error) {
-	snap, err := state.UnmarshalSnapshot[S, E, C](unmarshalCheckpoint(baseline).Snapshot)
+	snap, err := state.UnmarshalSnapshot[S, E, C](env.Snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling baseline snapshot: %w", err)
 	}
@@ -229,15 +232,31 @@ func replayThrough[S comparable, E comparable, C any](
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
 	bounded []Record,
-	format int,
+	env checkpointEnvelope,
+	repClock *replayClock,
 ) error {
 	sched := state.NewScheduler(inst)
+
+	// Re-arm the baseline's timers before the window replays, because it can fire them.
+	// As in Recover, the deadlines are absolute, so a held instant keeps this read from
+	// consuming a recorded reading.
+	armedAt := time.Unix(0, 0).UTC()
+	reEffects, _, err := reArmEffects(cfg.eventCodec, env.Timers, armedAt)
+	if err != nil {
+		return fmt.Errorf("re-arming baseline timers: %w", err)
+	}
+	if len(reEffects) > 0 {
+		repClock.hold(armedAt)
+		sched.Absorb(ctx, reEffects)
+		repClock.release()
+	}
 
 	svc := newReplayServiceRunner(inst, cfg)
 	if svc != nil {
 		svc.Absorb(ctx, inst.StartEffects())
 	}
 
+	reads := 0 // clock readings through the current Record
 	for i := range bounded {
 		// A canceled context can stop a replayed settle or tick with no error, leaving
 		// state short of the journal, so check it before each Record.
@@ -246,12 +265,15 @@ func replayThrough[S comparable, E comparable, C any](
 		}
 		// A domain effect is never dispatched here: a time-travel read applies no
 		// side effect.
-		if err := checkFormat(format, &bounded[i]); err != nil {
+		if err := checkFormat(env.Format, &bounded[i]); err != nil {
 			return err
 		}
+		reads += clockReadCount(&bounded[i])
 		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
 			return err
 		}
+		// Leave none of the Record's readings for the next one, as Recover does.
+		repClock.skipTo(reads)
 	}
 	// A canceled context can stop a replayed settle or tick without an error reaching
 	// here, which would hand back a view short of the journal.

@@ -158,3 +158,34 @@ func TestRecover_OlderVersionsFireEffectIsSentWithoutEnvelopes(t *testing.T) {
 	}
 	assertAppliedOnceAsLive(t, live, healthy, 1)
 }
+
+// asFormatOne copies src's journal for id into a fresh MemStore with the checkpoint and
+// every Record of journal format 1, older than tickDriversFormat: a version that still
+// recorded idle ticks and left a settle's clock read for the next Record, so a test can
+// hand-build the Records such a version left.
+func asFormatOne(t *testing.T, src *durable.MemStore, id durable.InstanceID) *durable.MemStore {
+	t.Helper()
+	return asFormat(t, src, id, 1)
+}
+
+// asFormat copies src's journal for id into a fresh MemStore with the checkpoint and
+// every Record of journal format `format`, as a version that wrote it left them.
+func asFormat(t *testing.T, src *durable.MemStore, id durable.InstanceID, format int) *durable.MemStore {
+	t.Helper()
+	ctx := context.Background()
+	snap, recs, err := src.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dst := durable.NewMemStore()
+	if err = dst.Checkpoint(ctx, id, withCheckpointFormat(t, snap, format), -1); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	for _, rec := range recs {
+		rec.Format = format
+		if _, err = dst.Append(ctx, id, rec); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	return dst
+}
