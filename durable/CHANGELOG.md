@@ -208,6 +208,33 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   settled, fails replay under one; a decoder that returns JSON's generic form for that
   event settles or replays it. A parked Record or checkpoint is new to this version: an
   older `durable` replays a parked Record as a settled result.
+- **An actor's done-data and error reach `Assign` as the live run delivered them,**
+  through the same decode a service result and a `WithEventData` payload get, so a
+  retried effect can't differ from the first attempt. The done-data is decoded through
+  the `WithEventDataDecoder` decoder for the parent's onDone event, live as the settle
+  routes it and as replay re-fires it: a decoder for that event hands `Assign` its type,
+  and without one the done-data arrives in JSON's generic form, a struct as a map and an
+  integer as a `float64` (#256). On main, `Assign` saw the actor's own Go value live and
+  JSON's generic form on replay. The journal records the JSON the live settle decoded
+  and the done-data's Go type, with its import path, and replay holds the decoder to the
+  type as the live settle did, failing `Recover` and `StateAt` with `ErrEventDataEncoding`
+  when the decoder returns another type; JSON's generic form, and nil, are always
+  accepted. An actor's error is message-only live and on replay: an error with the same
+  message, any invalid UTF-8 replaced, which `errors.Is` and `errors.As` no longer match.
+  An error whose `Error` method panics, such as a typed nil, settles with a message
+  saying the actor error panicked, its invalid UTF-8 replaced, rather than the panic
+  failing the Handle or crashing the host, live and on replay alike.
+- **There is no parking for an actor outcome.** A done-data payload that won't decode,
+  or decodes as another type than the actor produced, aborts the settle through the new
+  `ActorSystem.WithSettleTransform` before it fires anything, so no `Assign` runs, and
+  `DeliverToActor` — and the `Fire`, `Tick` or `RunService` whose absorb drove the
+  settle — fail the Handle with `ErrHandleFailed` wrapping `ErrEventDataEncoding` and
+  record nothing, so a recovered Handle runs the actor from its initial state and the
+  delivery again. An actor outcome is never parked, as a service result that won't
+  decode is, because the service already ran but the actor can run again. `Start` and
+  `Recover` fail the same way when a settle their spawns drive aborts; no Handle
+  exists yet, so their error wraps `ErrEventDataEncoding` directly. A done-data
+  payload with no JSON form fails the Handle the same way, before any `Assign` runs.
 - **A step that may not have been recorded fails the Handle.** That call and every later
   one return `ErrHandleFailed`, wrapping the cause. A step that was recorded while
   another goroutine failed the Handle also returns `ErrHandleFailed`, saying the step was

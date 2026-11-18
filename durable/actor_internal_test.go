@@ -14,7 +14,7 @@ func TestReplayActorData(t *testing.T) {
 	errMsg := "boom"
 
 	t.Run("error", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Error: &errMsg})
+		got, err := replayActorData(actorMessagePayload{Error: &errMsg}, "childDone", decodeAny[string])
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -25,7 +25,7 @@ func TestReplayActorData(t *testing.T) {
 	})
 
 	t.Run("valid data", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{"k":1}`)})
+		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{"k":1}`)}, "childDone", decodeAny[string])
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -36,7 +36,7 @@ func TestReplayActorData(t *testing.T) {
 	})
 
 	t.Run("no data", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{})
+		got, err := replayActorData(actorMessagePayload{}, "childDone", decodeAny[string])
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -46,7 +46,7 @@ func TestReplayActorData(t *testing.T) {
 	})
 
 	t.Run("corrupt data surfaces error", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{not json`)})
+		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{not json`), Type: "int"}, "childDone", decodeAny[string])
 		if err == nil {
 			t.Fatal("want an error for undecodable done-data, got nil")
 		}
