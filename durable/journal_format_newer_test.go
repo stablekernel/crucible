@@ -81,7 +81,7 @@ func mustBeNewer(t *testing.T, what string, err error) {
 // names.
 func mustBeNewerFormat(t *testing.T, what string, err error, format int) {
 	t.Helper()
-	want := fmt.Sprintf("durable: %q was written by a newer version (journal format %d; this version reads up to 4)", "scn-1", format)
+	want := fmt.Sprintf("durable: %q was written by a newer version (journal format %d; this version reads up to 5)", "scn-1", format)
 	if err == nil || err.Error() != want {
 		t.Fatalf("%s = %v, want %q", what, err, want)
 	}

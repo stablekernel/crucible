@@ -9,12 +9,15 @@ import (
 // surfaced-error path: an onError payload becomes an error, a valid onDone payload
 // decodes to its value, an absent payload is nil, and a corrupt done-data payload
 // is reported rather than silently dropped (so replay fails loudly instead of
-// re-firing the parent with nil data it never saw live).
+// re-firing the parent with nil data it never saw live). An older Record (decoded
+// false) decodes its done-data in JSON's generic form through no decoder, as the
+// version that wrote it did; one of this version's format carries the transform's
+// decode (see the actor outcome replay tests).
 func TestReplayActorData(t *testing.T) {
 	errMsg := "boom"
 
 	t.Run("error", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Error: &errMsg})
+		got, err := replayActorData(actorMessagePayload{Error: &errMsg}, "childDone", decodeAny[string], true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -24,8 +27,8 @@ func TestReplayActorData(t *testing.T) {
 		}
 	})
 
-	t.Run("valid data", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{"k":1}`)})
+	t.Run("valid data of an older format", func(t *testing.T) {
+		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{"k":1}`)}, "childDone", decodeAny[string], false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -36,7 +39,7 @@ func TestReplayActorData(t *testing.T) {
 	})
 
 	t.Run("no data", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{})
+		got, err := replayActorData(actorMessagePayload{}, "childDone", decodeAny[string], true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -45,8 +48,18 @@ func TestReplayActorData(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupt data surfaces error", func(t *testing.T) {
-		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{not json`)})
+	t.Run("corrupt data of an older format surfaces error", func(t *testing.T) {
+		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{not json`)}, "childDone", decodeAny[string], false)
+		if err == nil {
+			t.Fatal("want an error for undecodable done-data, got nil")
+		}
+		if got != nil {
+			t.Fatalf("want nil value alongside the error, got %#v", got)
+		}
+	})
+
+	t.Run("corrupt data of this format surfaces error", func(t *testing.T) {
+		got, err := replayActorData(actorMessagePayload{Data: json.RawMessage(`{not json`), Type: "int"}, "childDone", decodeAny[string], true)
 		if err == nil {
 			t.Fatal("want an error for undecodable done-data, got nil")
 		}
