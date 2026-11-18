@@ -962,14 +962,20 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	}
 	// A parent Fire that leaves a state stops its actors (see left): the states its
 	// trace reports it exited, which a durable instance always records (see Start and
-	// Recover), mark every spawn one declares as for an activation that ended. Its
-	// effects can also stop an actor explicitly, while the actor's state stays active
-	// (see stoppedByFire).
-	for _, s := range nf.pf.Result.Trace.ExitedStates {
-		if p.exited == nil {
-			p.exited = map[string]bool{}
+	// Recover), mark every spawn one declares as for an activation that ended. A failed
+	// Fire marks none: its trace names the states its exit cascade began — recorded
+	// before the exit actions ran — but the failure left the configuration unchanged, so
+	// every state it names stayed active, and a spawn one declares isn't for an
+	// activation that ended. Its effects can also stop an actor explicitly, while the
+	// actor's state stays active (see stoppedByFire); a failed Fire emits no effects (the
+	// kernel returns none on every failure path), so that scan needs no such guard.
+	if nf.pf.Result.Err == nil {
+		for _, s := range nf.pf.Result.Trace.ExitedStates {
+			if p.exited == nil {
+				p.exited = map[string]bool{}
+			}
+			p.exited[s] = true
 		}
-		p.exited[s] = true
 	}
 	for _, eff := range nf.pf.Result.Effects {
 		if e, ok := eff.(state.StopActor); ok {
