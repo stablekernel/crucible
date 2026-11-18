@@ -1,6 +1,8 @@
 package durable
 
 import (
+	"reflect"
+	"strconv"
 	"testing"
 
 	alpha "github.com/stablekernel/crucible/durable/internal/typefixture/alpha/model"
@@ -91,5 +93,55 @@ func TestTypeName_InterfaceFieldKeepsTheImportPath(t *testing.T) {
 	}
 	if got, want := typeName(struct{ X any }{}), "struct { X interface {} }"; got != want {
 		t.Fatalf("typeName = %q, want %q", got, want)
+	}
+}
+
+// TestFullTypeName_CacheIsBounded answers whether runtime-minted types can grow
+// typeNameCache without end: reflect.StructOf mints a new reflect.Type for every
+// shape a caller asks, so spelling more distinct structs than the cap must leave
+// the cache at the cap, with every spelling still the one its own type spells.
+func TestFullTypeName_CacheIsBounded(t *testing.T) {
+	const cap = 4
+	oldLimit := typeNameCacheLimit
+	typeNameCacheLimit = cap
+	defer func() { typeNameCacheLimit = oldLimit }()
+	typeNameCache.Range(func(k, _ any) bool { typeNameCache.Delete(k); return true })
+	typeNameCacheLen.Store(0)
+
+	fields := []reflect.StructField{{Name: "A", Type: reflect.TypeOf(0)}}
+	for i := 0; i < 3*cap; i++ {
+		fields = append(fields, reflect.StructField{
+			Name: "F" + strconv.Itoa(i),
+			Type: reflect.TypeOf(0),
+		})
+		minted := reflect.StructOf(fields)
+		if got, want := fullTypeName(minted), spellTypeName(minted); got != want {
+			t.Fatalf("fullTypeName(%s) = %q, want the uncached %q", minted, got, want)
+		}
+	}
+
+	entries := 0
+	typeNameCache.Range(func(_, _ any) bool { entries++; return true })
+	if entries > cap {
+		t.Fatalf("typeNameCache holds %d entries, want at most the cap of %d", entries, cap)
+	}
+}
+
+// BenchmarkFullTypeName_DeepUnnamedType measures spelling a deeply unnamed type: a
+// struct literal of a map of slices of funcs and chans built over two packages'
+// named types, the shape a settle's result type is spelled from for every result of
+// that type.
+func BenchmarkFullTypeName_DeepUnnamedType(b *testing.B) {
+	t := reflect.TypeOf(struct {
+		Roster map[string][]func(alpha.Result) (*beta.Result, error)
+		Feeds  []chan struct{ Head *alpha.Result }
+	}{})
+	b.ReportAllocs()
+	var sink string
+	for i := 0; i < b.N; i++ {
+		sink = fullTypeName(t)
+	}
+	if sink == "" {
+		b.Fatal("fullTypeName spelled nothing")
 	}
 }

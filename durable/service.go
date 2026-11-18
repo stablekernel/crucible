@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -526,8 +528,49 @@ func typeName(v any) string {
 // place of its package name, so two packages' model.Result differ wherever they
 // appear: in a pointer, slice, array, map or chan, a func's parameters and results, an
 // interface's methods, and a struct literal's fields, whose tags and unexported names'
-// packages are part of the type too.
+// packages are part of the type too. Each type's spelling is cached on its
+// reflect.Type, since the same result types are spelled again and again: a settle,
+// a park and a replay type check each ask, and an unnamed type's spelling walks its
+// whole shape. The cache never changes the spelling, only who computes it.
 func fullTypeName(t reflect.Type) string {
+	if cached, ok := typeNameCache.Load(t); ok {
+		return cached.(string)
+	}
+	name := spellTypeName(t)
+	if typeNameCacheLen.Load() < typeNameCacheLimit {
+		if _, loaded := typeNameCache.LoadOrStore(t, name); !loaded {
+			typeNameCacheLen.Add(1)
+		}
+	}
+	return name
+}
+
+// typeNameCache holds each type's full spelling keyed by the reflect.Type itself:
+// two reflect.Types compare equal exactly when the types are identical, so a cached
+// spelling is always the one its own type spells. It is bounded: without a cap,
+// runtime-minted types - reflect.StructOf mints a new reflect.Type for every shape
+// a caller asks - would grow it without end, so past the cap a type is spelled and
+// returned unstored, and the hit path is what the cache exists for.
+var typeNameCache sync.Map // map[reflect.Type]string
+
+// typeNameCacheCap is the most entries typeNameCache holds. It is far more than
+// the handful of result types that settle again and again, and far less than the
+// types a StructOf-driven run can mint. The bound is approximate: a check-then-
+// store race lets a few racing spellings past it, never the steady growth it stops.
+const typeNameCacheCap = 4096
+
+// typeNameCacheLimit is the cap fullTypeName enforces, an int64 so it loads whole
+// beside the counter. A test lowers it to exercise the bound; production runs at
+// typeNameCacheCap.
+var typeNameCacheLimit = int64(typeNameCacheCap)
+
+// typeNameCacheLen counts typeNameCache's entries, so a load can check the cap
+// without ranging the map. It is incremented only when a LoadOrStore stores, so
+// the same type never counts twice.
+var typeNameCacheLen atomic.Int64
+
+// spellTypeName computes t's full name, the spelling fullTypeName caches.
+func spellTypeName(t reflect.Type) string {
 	if name := t.Name(); name != "" {
 		if pkg := t.PkgPath(); pkg != "" {
 			return pkg + "." + name
