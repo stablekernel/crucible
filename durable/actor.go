@@ -56,13 +56,19 @@ import (
 // consistent with the kernel's EventPayload contract and the polyglot serializable
 // boundary the durable runtime records every nondeterministic result across (the
 // clock and service seams record JSON too). The recorded value round-trips through
-// encoding/json and is re-fired through the parent transition's Assign exactly as on
-// the live run. The limitation this carries: a parent reducer that type-asserts a
-// concrete, non-JSON Go type from AssignCtx.Event will observe the JSON-decoded
-// shape (for example a map[string]any rather than a struct) on the replayed onDone,
-// the same boundary the service seam documents. A typed-codec option to record and
-// replay the concrete Go value is reserved for a later, additive change and is not
-// built here.
+// encoding/json. A done-data payload is decoded through the Runner's
+// WithEventDataDecoder for the parent's onDone event before it reaches the parent,
+// live as on replay, as a WithEventData payload is: a decoder for that event hands
+// the parent's Assign the decoder's type, and without one the payload arrives in
+// JSON's generic form (a struct as a map, an integer as a float64, which loses
+// precision above 2^53) — the same boundary the service seam documents. The journal
+// records the JSON the live settle decoded and the done-data's Go type, so replay
+// decodes the same bytes and holds the decoder to the type the live settle did. An
+// error is message-only: an error with the same message, any invalid UTF-8 replaced,
+// live and on replay. A done-data payload that won't decode, or a decoder that
+// returns another type than the actor produced, aborts the settle — nothing fires —
+// and the step fails the Handle, so the actor runs again on Recover; there is no
+// parking for actors, as a service result that won't decode has (see RunService).
 
 // actorMessagePayload is the wire form of one recorded parent transition the actor
 // system drove: the parent Event it fired, and — for the settling onDone / onError
@@ -83,6 +89,12 @@ type actorMessagePayload struct {
 	// reconstructed into an error and carried into the parent transition's Assign so
 	// a reducer reading an error from AssignCtx.Event observes it as on the live run.
 	Error *string `json:"error,omitempty"`
+	// Type is the done-data's Go type, with its import path (see typeName): the type
+	// the actor's completion produced. Every settling onDone fire of a Record of
+	// format 5 or later records it, so replay holds the decoder to it, as the live
+	// settle did. It is empty for an error, and for a Record an older version wrote,
+	// whose done-data replays in JSON's generic form, as that version replayed it.
+	Type string `json:"type,omitempty"`
 	// HasData reports whether the parent fire carried a separate actor outcome
 	// payload (Data or Error) via WithEventData. A settling onDone / onError fire sets
 	// it; a message-driven fire (SendParent) leaves it false so replay re-fires the
@@ -106,6 +118,18 @@ type actorMessagePayload struct {
 // the done-data, error, or parent-driving message it routes is journaled as a
 // JournalActorMessage correlated by the actor id so recovery replays it without
 // re-instantiating the actor.
+//
+// The done-data reaches the parent's onDone Assign decoded for that event, live as
+// on replay: through the Runner's WithEventDataDecoder when one covers it, else in
+// JSON's generic form. An error is message-only: an error with the same message, any
+// invalid UTF-8 replaced, which errors.Is and errors.As no longer match, and an
+// Error method that panics settles with a message saying so. A done-data payload
+// that won't decode, or decodes as another type than the actor produced, aborts the
+// settle before it fires anything: DeliverToActor returns ErrHandleFailed, wrapping
+// ErrEventDataEncoding, no Assign ran, and nothing is recorded — an actor outcome is
+// never parked, as a service result that won't decode is (see RunService), because
+// the actor can run again. The Handle stays failed: Recover with a decoder that
+// decodes the payload, then deliver the event again, and the actor re-runs.
 //
 // It returns whether the actor was found running: false for a ref that names no live
 // actor (already settled, stopped, or never spawned), or false and an error when no
@@ -152,6 +176,15 @@ func (h *Handle[S, E, C]) DeliverToActor(ctx context.Context, ref state.ActorRef
 	if err := stepCanceled(ctx, parentFireErrs(fires)...); err != nil {
 		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, err))
 	}
+	// The actor's done-data wouldn't decode for its onDone event, or decodes as another
+	// type than the actor produced: the settle aborted, firing nothing, so no Assign ran
+	// and the instance saw nothing for it. There is no parking for an actor outcome, as
+	// a service result that won't decode has (see RunService): the service already ran,
+	// but the actor can run again. Fail the Handle and record nothing, so a recovered
+	// Handle runs the actor from its initial state and the delivery again.
+	if abort := h.actorFires.takeAborts(); abort != nil {
+		return true, h.fail(fmt.Errorf("durable: delivering to actor %q for %q: %w", ref.ID, h.id, abort))
+	}
 
 	entries, err := recordParentFires(fires, false)
 	if err != nil {
@@ -188,10 +221,10 @@ func (h *Handle[S, E, C]) ActorRef(id string) (state.ActorRef, bool) {
 // recordParentFires builds the JournalActorMessage entries for the parent Fires an
 // actor system drove, in fire order, each under the actor it came from. before marks
 // Fires that ran before the step's own work.
-func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) ([]state.JournalEntry, error) {
+func recordParentFires[S comparable](fires []notedFire[S], before bool) ([]state.JournalEntry, error) {
 	entries := make([]state.JournalEntry, 0, len(fires))
-	for _, pf := range fires {
-		entry, err := actorEntry(pf, before)
+	for _, nf := range fires {
+		entry, err := actorEntry(nf, before)
 		if err != nil {
 			return nil, err
 		}
@@ -202,9 +235,11 @@ func recordParentFires[S comparable](fires []state.ParentFire[S], before bool) (
 
 // actorEntry builds one JournalActorMessage entry: the parent Fire's event payload,
 // whether the live Fire was refused, and, for a Fire that settled an actor, the
-// actor's outcome, which it passed as event data, so replay re-fires the same onDone
-// or onError with it.
-func actorEntry[S comparable](pf state.ParentFire[S], before bool) (state.JournalEntry, error) {
+// actor's outcome as the settle decoded it — the JSON the transform decoded for the
+// onDone event and its Go type (see replayableOutcome), which it passed as event
+// data — so replay re-fires the same onDone or onError with it.
+func actorEntry[S comparable](nf notedFire[S], before bool) (state.JournalEntry, error) {
+	pf := nf.pf
 	var mp actorMessagePayload
 	mp.Event = append(json.RawMessage(nil), pf.Result.Trace.EventPayload...)
 	mp.Refused = pf.Result.Err != nil
@@ -215,12 +250,11 @@ func actorEntry[S comparable](pf state.ParentFire[S], before bool) (state.Journa
 		case pf.Err != nil:
 			msg := pf.Err.Error()
 			mp.Error = &msg
-		case pf.Output != nil:
-			raw, err := json.Marshal(pf.Output)
-			if err != nil {
-				return state.JournalEntry{}, fmt.Errorf("marshaling actor output: %w", err)
-			}
-			mp.Data = raw
+		case len(nf.settled.raw) > 0:
+			// The JSON the settle decoded, which the journal keeps as the bytes replay
+			// decodes, with the Go type it recorded, which replay holds the decoder to.
+			mp.Data = append(json.RawMessage(nil), nf.settled.raw...)
+			mp.Type = nf.settled.typ
 		}
 	}
 	payload, err := json.Marshal(mp)
@@ -258,11 +292,15 @@ func splitActorEntries(rec *Record) (before, rest []decodedActorEntry, err error
 // re-fires the parent's event — carrying the recorded done-data / error via
 // WithEventData for a settling fire, or plainly for a message-driven fire — so the
 // kernel re-derives the same parent transition with the same data, running no actor
-// behavior. It returns the effects of a re-fired transition that applied, so the caller
-// arms the timers and services it declares, as the live run did. It reports an error
-// only when the recorded entry cannot be decoded or the re-fired transition fails (a
-// corrupt or mis-ordered journal).
-func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], entry decodedActorEntry) ([]state.Effect, error) {
+// behavior. A settling onDone fire of a Record of format 5 or later (decoded) carries
+// its done-data decoded through decode for that event, held to the recorded type, as
+// the live settle's transform did; an older Record's replays in JSON's generic form,
+// as the version that wrote it replayed it. It returns the effects of a re-fired
+// transition that applied, so the caller arms the timers and services it declares, as
+// the live run did. It reports an error only when the recorded entry cannot be decoded
+// or the re-fired transition fails (a corrupt or mis-ordered journal), or the recorded
+// done-data won't decode for its event, as the live settle refused it.
+func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], decode EventDataDecoder[E], entry decodedActorEntry, decoded bool) ([]state.Effect, error) {
 	mp := entry.mp
 	// A Fire refused before the kernel saw it (middleware that denied it) has no event
 	// to re-fire; replay is refused the same way.
@@ -275,7 +313,7 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 	}
 	var res state.FireResult[S]
 	if mp.HasData {
-		data, derr := replayActorData(mp)
+		data, derr := replayActorData(mp, event, decode, decoded)
 		if derr != nil {
 			return nil, fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.actorID, derr)
 		}
@@ -298,22 +336,36 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 
 // replayActorData reconstructs the actor outcome a settling fire carried into the
 // parent transition's Assign: the reconstructed error for an onError fire, the
-// JSON-decoded done-data for an onDone fire, or nil when the actor completed with no
-// output. A done-data payload that fails to decode is surfaced as an error rather
-// than silently dropped, so a corrupt journal fails replay loudly instead of
-// re-firing the parent with nil data it never saw on the live path.
-func replayActorData(mp actorMessagePayload) (any, error) {
+// done-data for an onDone fire, or nil when the actor completed with no output. For a
+// Record of format 5 or later (decoded), the done-data goes through the transform the
+// live settle used (see replayableOutcome), as the recorded JSON the live run decoded,
+// held to the recorded type; one that won't decode fails the replay, as the live
+// settle refused it. An older Record's done-data replays in JSON's generic form,
+// through no decoder and no type check, as the version that wrote it replayed it. A
+// payload that fails to decode is surfaced as an error rather than silently dropped,
+// so a corrupt journal fails replay loudly instead of re-firing the parent with nil
+// data it never saw on the live path.
+func replayActorData[E comparable](mp actorMessagePayload, event E, decode EventDataDecoder[E], decoded bool) (any, error) {
 	if mp.Error != nil {
 		return errors.New(*mp.Error), nil
 	}
-	if len(mp.Data) > 0 {
+	if len(mp.Data) > 0 && !decoded {
 		var data any
 		if err := json.Unmarshal(mp.Data, &data); err != nil {
 			return nil, fmt.Errorf("unmarshaling actor done-data: %w", err)
 		}
 		return data, nil
 	}
-	return nil, nil
+	if len(mp.Data) == 0 {
+		return nil, nil
+	}
+	// The transform decodes the recorded JSON for the onDone event, as it did live,
+	// and holds the decoder to the recorded type. An abort is the decode's refusal.
+	out, _, abort := replayableOutcome(decode, nil, "actor done-data", "actor error")(event, recordedResult{raw: mp.Data, typ: mp.Type}, nil)
+	if abort != nil {
+		return nil, abort
+	}
+	return out, nil
 }
 
 // actorEntries returns the recorded actor transitions carried by a single Record,

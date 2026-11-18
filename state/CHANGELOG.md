@@ -46,6 +46,21 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `SettleError` return false with `abort` in `FireResult.Err`, and `Tick` returns that
   `FireResult` as its one element. An unbound service still settles through onError: a
   transform that returns no error for its `UnboundRefError` doesn't make it succeed.
+- **`ActorSystem.WithSettleTransform`** is the actor seam's new counterpart: it rewrites
+  every actor outcome before it settles, whether a delivery, a panic the actor raised
+  while stepping, or `SettleError` settles it, so a host that records outcomes can give
+  the live run and a replay the same value. The transform takes the event that will
+  carry the outcome, the invocation's onDone for an output and its onError for an
+  error: `func(event E, output any, err error) (out any, outErr error, abort error)`.
+  It runs before any event fires and before the actor is marked done. A non-nil `abort`
+  stops the settle: no event fires, the actor stays running, the settle reports the
+  abort as `ServiceRunner.WithResultTransform`'s does, and the system's `Tick` returns
+  that `FireResult` as one element of its slice. An actor stopped or settled while the
+  transform ran reports no abort, as a stale settle does. This is new API, additive
+  within v1.1.0.
+  An abort from a settle that a delivery drives isn't reported to
+  `Deliver`'s caller: the actor stays running, and the host sees it by calling `Tick`
+  or `SettleError`.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new

@@ -17,7 +17,7 @@ import (
 // and StateAt refuse it before replaying anything.
 
 // TestRecover_OlderRecordMidTailIsRefused: a format-1 checkpoint, then this version's
-// format-4 Record that parks a result, then an older replica's format-1 Fire. The older
+// format-5 Record that parks a result, then an older replica's format-1 Fire. The older
 // replica reads the park as a settle (see TestRecover_OlderVersionAfterAParkIsRefused),
 // so the two versions disagree about the journal, and Recover must refuse it, naming
 // the older version, as it does when the checkpoint itself is newer.
@@ -40,8 +40,8 @@ func TestRecover_OlderRecordMidTailIsRefused(t *testing.T) {
 	_, ran, err := h.RunService(ctx, state.InvokeID("fork", "loading", 0))
 	mustPark(t, "RunService", ran, err)
 	_, recs, err := st.Load(ctx, "o1")
-	if err != nil || len(recs) != 1 || recs[0].Format != 4 {
-		t.Fatalf("the journal holds %+v (err %v), want the park's one format-4 Record", recs, err)
+	if err != nil || len(recs) != 1 || recs[0].Format != 5 {
+		t.Fatalf("the journal holds %+v (err %v), want the park's one format-5 Record", recs, err)
 	}
 	// The older replica fires "next" after it, in its format.
 	if _, err = st.Append(ctx, "o1", durable.Record{Step: recs[0].Step + 1, Event: []byte(`"next"`), Format: 1}); err != nil {

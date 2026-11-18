@@ -128,7 +128,11 @@ type Record struct {
 	// checkpoint's timers before the tail, and replay fails on a tick that fires a
 	// different number of timers than TickSteps. From format 4 the live run decoded each
 	// service result through WithEventDataDecoder, and replay does too; a result in an
-	// older Record replays in JSON's generic form, as that version replayed it. A Store
+	// older Record replays in JSON's generic form, as that version replayed it. From
+	// format 5 the live run decoded each actor's done-data through WithEventDataDecoder
+	// and recorded its Go type, and replay does too, holding the decoder to the type;
+	// done-data in an older Record replays in JSON's generic form, as that version
+	// replayed it. A Store
 	// keeps it as it keeps Step. A version reads up to the format it writes: Recover,
 	// StateAt and Steps refuse a journal with a Record or checkpoint of a higher format,
 	// one a newer version wrote. Versions built before that check don't refuse one.
