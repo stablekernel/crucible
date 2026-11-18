@@ -297,6 +297,19 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **An actor stopped in the step that spawns it, or before it respawns, is recorded
+  as ended.** An explicit `StopActor` that a step's own effects hold, or a parent
+  `Fire` an earlier spawn drove, while the actor's state stays active, skipped the
+  actor's spawn but noted nothing — not even an attempt — so the journal recorded the
+  actor unstarted, and a `Recover` spawned it fresh and ran its behavior a second time.
+  Now every skipped spawn is noted as stopped, so the journal records the actor ended
+  and a `Recover` runs none of them. An explicit stop no longer counts as the actor's
+  state being left: a stop followed by a re-entry of the same state later in the same
+  step doesn't skip the new activation's spawn, whose actor runs, live and on
+  `Recover`, as a stop the step absorbs between the two supersedes. And a stop a
+  parent `Fire` notes while `Recover` respawns a batch of running actors, before its
+  target respawns, now applies to the actors the batch respawned, so both the
+  recovering `Handle` and a later `Recover` end the actor.
 - **A parent transition an actor drives dispatches its domain effects.** A domain
   effect a parent `Fire` emitted, where an actor drove that Fire — a failed spawn's
   onError during a `Fire`, a `Tick`, or a service settle's transition, or a settle or

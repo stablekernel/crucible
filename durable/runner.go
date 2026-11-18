@@ -421,8 +421,15 @@ func (h *Handle[S, E, C]) absorbServices(ctx context.Context, effects []state.Ef
 // absorbActors feeds the system one effect at a time. It's so too when a later effect
 // of the step stops the actor (see stoppedLater): one in effects, or in later, the
 // effects a later call of the same step absorbs, as when a later timer of a Tick
-// leaves the state. A spawn the step's effects then make for a new activation of the
-// state isn't skipped, unless a parent Fire left that one too.
+// leaves the state. And it's so when a parent Fire stopped the actor explicitly, while
+// its state stayed active (see parentFires.fireStopped): a Recover replays the Fire
+// before it respawns, so it ends the actor, and the live Handle must not run it. Every
+// skipped spawn is noted as stopped (see actorLifecycle.stopped), so the journal
+// records the actor ended rather than unstarted, and a Recover doesn't run its
+// behavior fresh. A spawn the step's effects then make for a new activation of the
+// state isn't skipped, unless a parent Fire left that one too: a StopActor for the
+// actor that precedes it in the effects the step absorbs supersedes an explicit stop a
+// Fire noted (see parentFires.spent).
 func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects, later []state.Effect) {
 	if h.actors == nil {
 		return
@@ -431,7 +438,10 @@ func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects, 
 	for i := range effects {
 		switch eff := effects[i].(type) {
 		case state.SpawnActor:
-			if h.actorFires.left(eff) || stoppedLater(eff, effects[i+1:], later) {
+			if h.actorFires.left(eff) || stoppedLater(eff, effects[i+1:], later) || h.actorFires.fireStopped(eff) {
+				one := effects[i : i+1 : i+1]
+				h.actorFires.attempt(one)
+				h.actorFires.stoppedSpawn(one)
 				continue
 			}
 		case state.ForwardEvent:
@@ -439,6 +449,11 @@ func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects, 
 			if event == nil {
 				continue
 			}
+		case state.StopActor:
+			// A stop the step absorbs for an actor supersedes one a parent Fire noted
+			// for it: the activation that stop ended is over, and a spawn of the actor
+			// that follows is for a new activation of its state.
+			h.actorFires.spent(eff.ID)
 		}
 		one := effects[i : i+1 : i+1]
 		h.actorFires.attempt(one)
@@ -808,25 +823,34 @@ type parentFires[S comparable] struct {
 	mu        sync.Mutex
 	ctx       context.Context // the context of the step driving the system, for arm
 	fires     []notedFire[S]
-	settled   recordedResult // the JSON and Go type the settle routing the next Fire decoded
-	aborts    []error        // the aborts the settles since the last takeAborts returned
+	settled   recordedResult  // the JSON and Go type the settle routing the next Fire decoded
+	aborts    []error         // the aborts the settles since the last takeAborts returned
 	spawned   map[string]bool // actors whose latest spawn this step started
 	attempted map[string]bool // actors the system was asked to spawn this step
 	failed    map[string]bool // actors whose latest spawn failed and whose declared onError applied, or was refused for a reason other than a context ending
 	respawned map[string]bool // actors whose latest spawn was a respawn of one running at the journal's end, whose start the journal holds
-	exited    map[string]bool // actors a parent Fire noted since the last take stopped: the activation of their state that spawned them ended
+	stopped   map[string]bool // actors whose spawn this step skipped for a stop, so the journal records them ended rather than unstarted (see absorbActors)
+	exited    map[string]bool // the states, by label, a parent Fire noted since the last take exited: a spawn one declares is for an activation that ended (see left)
+	// stoppedByFire holds the actors a parent Fire's effects stopped since the last
+	// take. A spawn of one the step hasn't absorbed yet is for an activation the stop
+	// ended, so absorbActors skips it and notes it stopped, as a Recover, which replays
+	// the Fire before it respawns, ends the actor. A StopActor the step absorbs for the
+	// actor later supersedes the mark (see spent): the spawn after it is for a new
+	// activation of its state, which the stop didn't end.
+	stoppedByFire map[string]bool
 }
 
 // actorLifecycle is what a step did to the actors: the ones it asked the system to
 // spawn, and of those, the ones that started, failed with an onError the journal holds,
-// or were respawned, so the journal already holds their start.
+// were respawned, so the journal already holds their start, or were stopped instead of
+// started, so the journal records them ended.
 type actorLifecycle struct {
-	spawned, attempted, failed, respawned map[string]bool
+	spawned, attempted, failed, respawned, stopped map[string]bool
 }
 
 // empty reports whether the step did nothing to the actors.
 func (l actorLifecycle) empty() bool {
-	return len(l.attempted) == 0 && len(l.spawned) == 0 && len(l.failed) == 0 && len(l.respawned) == 0
+	return len(l.attempted) == 0 && len(l.spawned) == 0 && len(l.failed) == 0 && len(l.respawned) == 0 && len(l.stopped) == 0
 }
 
 // attempt notes the actors effects ask the system to spawn.
@@ -846,6 +870,7 @@ func (p *parentFires[S]) attempt(effects []state.Effect) {
 			delete(p.spawned, sp.ID)
 			delete(p.failed, sp.ID)
 			delete(p.respawned, sp.ID)
+			delete(p.stopped, sp.ID)
 		}
 	}
 }
@@ -877,8 +902,8 @@ func (p *parentFires[S]) takeLifecycle() actorLifecycle {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	lc := actorLifecycle{spawned: p.spawned, attempted: p.attempted, failed: p.failed, respawned: p.respawned}
-	p.spawned, p.attempted, p.failed, p.respawned = nil, nil, nil, nil
+	lc := actorLifecycle{spawned: p.spawned, attempted: p.attempted, failed: p.failed, respawned: p.respawned, stopped: p.stopped}
+	p.spawned, p.attempted, p.failed, p.respawned, p.stopped = nil, nil, nil, nil, nil
 	return lc
 }
 
@@ -918,13 +943,23 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 		}
 		p.failed[pf.ActorID] = true
 	}
-	// A parent Fire that leaves a state stops its actors (see left).
+	// A parent Fire that leaves a state stops its actors (see left): the states its
+	// trace reports it exited, which a durable instance always records (see Start and
+	// Recover), mark every spawn one declares as for an activation that ended. Its
+	// effects can also stop an actor explicitly, while the actor's state stays active
+	// (see stoppedByFire).
+	for _, s := range nf.pf.Result.Trace.ExitedStates {
+		if p.exited == nil {
+			p.exited = map[string]bool{}
+		}
+		p.exited[s] = true
+	}
 	for _, eff := range nf.pf.Result.Effects {
 		if e, ok := eff.(state.StopActor); ok {
-			if p.exited == nil {
-				p.exited = map[string]bool{}
+			if p.stoppedByFire == nil {
+				p.stoppedByFire = map[string]bool{}
 			}
-			p.exited[e.ID] = true
+			p.stoppedByFire[e.ID] = true
 		}
 	}
 	ctx := p.ctx
@@ -1004,23 +1039,75 @@ func (p *parentFires[S]) take() []notedFire[S] {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fires := p.fires
-	p.fires, p.exited = nil, nil
+	p.fires, p.exited, p.stoppedByFire = nil, nil, nil
 	return fires
 }
 
 // left reports whether a parent Fire noted since the last take left the state that
 // declares sp, so sp, a spawn a step's own transitions produced before that Fire, is
-// for an activation of the state that has ended: the Fire stopped sp's actor. Spawning
-// it would run an actor for a state that isn't active, or, if a later Fire entered the
-// state again, a second time for one activation, when that Fire spawned its own. A
-// dynamic spawn, which declares no state, is never left. It's safe on a nil collector.
+// for an activation of the state that has ended: the Fire exited the state, stopping
+// its actors. Spawning it would run an actor for a state that isn't active, or, if a
+// later Fire entered the state again, a second time for one activation, when that Fire
+// spawned its own. An explicit StopActor a Fire's effects holds doesn't mark the state
+// left: the state stays active, and a spawn of it the step absorbs later, for a new
+// activation the stop didn't end, runs — the stop ends only the spawns that were
+// pending when the Fire noted it (see stoppedByFire). A dynamic spawn, which declares
+// no state, is never left. It's safe on a nil collector.
 func (p *parentFires[S]) left(sp state.SpawnActor) bool {
 	if p == nil || sp.State == "" {
 		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.exited[sp.ID]
+	return p.exited[sp.State]
+}
+
+// fireStopped reports whether a parent Fire noted since the last take stopped sp's
+// actor while its state stayed active, so sp, a spawn the step hasn't absorbed yet, is
+// for an activation the stop ended: skipping it keeps the live Handle in step with a
+// Recover, which replays the Fire before it respawns, and so ends the actor. A dynamic
+// spawn, which declares no state, is never stopped this way, as for stoppedLater. It's
+// safe on a nil collector.
+func (p *parentFires[S]) fireStopped(sp state.SpawnActor) bool {
+	if p == nil || sp.State == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stoppedByFire[sp.ID]
+}
+
+// spent forgets the mark a parent Fire's stop left on an actor: the step has absorbed
+// a StopActor for it since, so the activation the stop ended is over, and a spawn of it
+// that follows is for a new activation of its state, which the mark must not skip. It's
+// safe on a nil collector.
+func (p *parentFires[S]) spent(id string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	delete(p.stoppedByFire, id)
+	p.mu.Unlock()
+}
+
+// stoppedSpawn notes the actors effects ask the system to spawn as stopped instead of
+// started: the step was asked for them, and stopped them, so the journal records them
+// ended rather than unstarted, and a Recover doesn't run their behavior fresh. Call it
+// after attempt, which forgets the mark. It's safe on a nil collector.
+func (p *parentFires[S]) stoppedSpawn(effects []state.Effect) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	for _, eff := range effects {
+		if sp, ok := eff.(state.SpawnActor); ok {
+			if p.stopped == nil {
+				p.stopped = map[string]bool{}
+			}
+			p.stopped[sp.ID] = true
+		}
+	}
+	p.mu.Unlock()
 }
 
 // stoppedLater reports whether a StopActor for sp's actor follows sp in the effects a
@@ -1554,9 +1641,11 @@ func (r *recordedSet) note(now *ActorSet) {
 // and those that aren't running and haven't ended, and remembers them for the next
 // step. A declared actor that isn't running has ended when it settled (the actor system
 // keeps a settled actor), or when this step asked the system to spawn it and the latest
-// of those spawns started it (then something stopped it), or, when this step didn't try
-// to spawn it, when it was running or ended at the previous step. A spawn whose onError
-// applied, or whose onError was refused for a reason other than a context ending,
+// of those spawns started it (then something stopped it) or was stopped instead of
+// started, as when the same step that spawns it stops it while its state stays active,
+// or, when this step didn't try to spawn it, when it was running or ended at the
+// previous step. A spawn whose onError applied, or whose onError was refused for a
+// reason other than a context ending,
 // also counts as ended, since the journal holds that onError, or the refusal replay
 // meets again. So an actor whose spawn failed with no onError declared, or whose
 // onError a context's ending refused, which left the step that drove it recording
@@ -1592,7 +1681,7 @@ func (h *Handle[S, E, C]) actorSets() (ended, unstarted *ActorSet) {
 		switch {
 		case ran:
 		case lc.attempted[id]:
-			ran = lc.spawned[id] || lc.failed[id]
+			ran = lc.spawned[id] || lc.failed[id] || lc.stopped[id]
 			journaled = lc.respawned[id]
 		default:
 			ran = h.seen[id]
@@ -1720,7 +1809,11 @@ func startsExcept[T state.Effect](effects []state.Effect, ids []string, id func(
 // running actor whose respawn fails. The new actors go through absorbActors, which
 // skips such a spawn. The running ones respawn together, so one whose state such a Fire
 // left respawns all the same; respawn then stops each whose state isn't active, as a
-// Recover from the journal, replaying that Fire, never runs it.
+// Recover from the journal, replaying that Fire, never runs it. A Fire the batch drove
+// can also stop one of them explicitly, before its respawn: the stop found nothing
+// running and did nothing, though the journal holds it, so respawn applies it to the
+// actors the batch respawned (see fireStopped), and both the recovering Handle and a
+// Recover from its journal end the actor.
 func (h *Handle[S, E, C]) respawn(ctx context.Context, effects []state.Effect, unstarted *ActorSet) {
 	var running, fresh []state.Effect
 	for _, eff := range effects {
@@ -1741,13 +1834,15 @@ func (h *Handle[S, E, C]) respawn(ctx context.Context, effects []state.Effect, u
 		return
 	}
 	// Every one of them was declared by an active leaf before the spawns, so one whose
-	// state isn't active now is one such a Fire left. Stopping one that isn't running, as
-	// one whose state that Fire left after it respawned, so the Fire stopped it, is a
-	// no-op.
+	// state isn't active now is one such a Fire left. One a Fire the batch drove stopped
+	// explicitly, before its respawn and while its state stayed active, is one the stop
+	// must end here. Stopping one that isn't running, as one whose state that Fire left
+	// after it respawned, so the Fire stopped it, is a no-op.
 	var stops []state.Effect
 	active := declaredActors(h.inst.StartEffects())
 	for _, eff := range running {
-		if sp := eff.(state.SpawnActor); !slices.Contains(active, sp.ID) {
+		sp := eff.(state.SpawnActor)
+		if !slices.Contains(active, sp.ID) || (h.actorFires.fireStopped(sp) && !h.actorFires.left(sp)) {
 			stops = append(stops, state.StopActor{ID: sp.ID})
 		}
 	}
