@@ -1083,4 +1083,10 @@ func TestTimerCheckpoint_BarriersCannotStepOverTheInterval(t *testing.T) {
 	if live, got := handleSnapshot(t, h), handleSnapshot(t, recovered); got != live {
 		t.Fatalf("recovered instance differs from live:\n live: %s\n got:  %s", live, got)
 	}
+	// The recovered Handle's re-armed timer fires, and its tick appends.
+	clk.Advance(time.Second)
+	fired, err := recovered.Tick(ctx)
+	if err != nil || len(fired) != 1 {
+		t.Fatalf("recovered Tick = %d fired, %v, want 1", len(fired), err)
+	}
 }

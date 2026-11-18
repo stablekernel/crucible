@@ -248,9 +248,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **`WithCheckpointEvery` now bounds the tail of a timer-driven instance.** A `Tick` that
   fires timers takes several step ordinals, so it could skip the interval forever and the
   tail grew without limit. A checkpoint now lands on the first step that reaches or passes
-  the interval. Such an instance now compacts, so on a Store without `HistoryStore`,
+  a multiple of n. Such an instance now compacts, so on a Store without `HistoryStore`,
   `StateAt` can't reach the steps before its latest checkpoint: it returns the
-  checkpoint's later state with a nil error, or `ErrStepOutOfRange` if the tail is empty.
+  checkpoint's later state with a nil error. With an empty tail, any step after
+  `BaselineStep` returns `ErrStepOutOfRange`.
 - **Timers survive recovery.** `Start` now arms the initial state's timers, which it never
   did, so a new instance starting in a timed state fires a timer it didn't before. It
   carries them in the baseline; an instance started earlier keeps its initial timer
