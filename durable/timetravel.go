@@ -127,8 +127,8 @@ func StateAt[S comparable, E comparable, C any](
 	if baseline == nil {
 		return nil, fmt.Errorf("durable: instance %q has no baseline to reconstruct", id)
 	}
-	format := unmarshalCheckpoint(baseline).Format
-	if err = checkJournal(id, format, records); err != nil {
+	env := unmarshalCheckpoint(baseline)
+	if err = checkJournal(id, env.Format, records); err != nil {
 		return nil, err
 	}
 
@@ -144,7 +144,6 @@ func StateAt[S comparable, E comparable, C any](
 	bounded := boundRecords(records, step)
 	repClock := newReplayClock(clockReadings(bounded), cfg.clock)
 
-	env := unmarshalCheckpoint(baseline)
 	inst, err := restoreBaseline(m, env, repClock)
 	if err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
