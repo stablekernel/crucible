@@ -126,12 +126,7 @@ type Record struct {
 	// runner and the actor system, so replay starts and stops their services as it did;
 	// an older Record replays as that version ran it. From format 3 Recover re-arms a
 	// checkpoint's timers before the tail, and replay fails on a tick that fires a
-	// different number of timers than TickSteps. From format 4 the live run decoded each
-	// service result through WithEventDataDecoder, and replay does too; a result in an
-	// older Record replays in JSON's generic form, as that version replayed it. A Store
-	// keeps it as it keeps Step. A version reads up to the format it writes: Recover,
-	// StateAt and Steps refuse a journal with a Record or checkpoint of a higher format,
-	// one a newer version wrote. Versions built before that check don't refuse one.
+	// different number of timers than TickSteps. A Store keeps it as it keeps Step.
 	Format int `json:",omitempty"`
 }
 

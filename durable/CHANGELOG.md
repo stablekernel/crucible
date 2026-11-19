@@ -17,12 +17,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   onError was refused because a context ended, so `Recover` can tell them
   from the actors that were running. A Store must keep an empty set distinct from nil.
 - **`Record.Format`** records the journal format of the version that wrote the Record,
-  which is 4 from this version. Replay arms the timers and services an actor-driven
+  which is 3 from this version. Replay arms the timers and services an actor-driven
   parent Fire's state declares only for a Record of format 1 or later. `Recover` sends a
   tick's and a service settle's effects, and replay hands a tick's timer transitions'
-  effects to the service runner, only for a Record of format 2 or later. Replay decodes
-  a service result through `WithEventDataDecoder` only for a Record of format 4 or
-  later.
+  effects to the service runner, only for a Record of format 2 or later.
   **For Store authors:** a Store must keep `Format`, `EndedActors` and
   `UnstartedActors`, and keep an empty set distinct from nil. A Store that drops them, or
   maps an empty set to nil as an SQL array column or a protobuf repeated field can,
@@ -92,31 +90,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   older `durable`'s `Recover` re-arms a baseline's or checkpoint's timers only after the
   tail, so it misses one a tail tick fired, with no error, and its `StateAt` ignores a
   baseline's timers. Don't downgrade a Store this version has written to.
-- **Don't run mixed versions on one instance.** During a rolling deploy, let only
-  replicas of one version own a given instance: drain an instance's owner before a
-  replica of another version recovers it (#253). An older replica that appends to a
-  journal this version wrote stamps a lower journal format after this version's
-  checkpoint or Records. This version's `Recover` and stateless `Fire` then fail with an
-  error saying an older version appended to a newer journal, before replaying any of it,
-  so a refused journal sends no effect. `StateAt` and `Steps` fail with it too, on
-  whatever step `StateAt` targets, even one before the lower-format Record, so they
-  refuse the journals `Recover` refuses. This version
-  can't replay such a Record by the older format's rules, because the older version
-  reads the journal differently, settling a parked result through onDone, for one. A
-  version older than this one checks no journal format, so it reads the mixed journal
-  without refusing it, and that can't be fixed for binaries already built. When this version is the older one, it
-  refuses a later version's journal, with an error saying a newer version wrote it,
-  whenever the checkpoint or any Record it loads records a format above its own, and
-  doesn't then look for a lower-format Record among them. Each version checks only
-  what it loads, so none of this makes mixed versions safe.
-- **A journal a newer version wrote is refused.** `Recover`, a stateless
-  `Runner.Fire`, `StateAt` and `Steps` fail, before they restore or replay anything,
-  on a journal whose checkpoint or any Record records a journal format above this
-  version's, with an error naming both formats, also when the checkpoint's envelope has
-  a shape this version can't unmarshal, such as a field whose type changed, rather than
-  restore it as a bare snapshot and fail later. A version from this one onward refuses
-  a newer journal, so a rollback across a later format bump fails cleanly instead of
-  replaying the journal as its own. Versions already built don't refuse one.
 - **A journal an older version wrote replays as it did.** Its actor entries carry no
   refusal, so `Recover` still fails on one whose parent Fire was refused, and an output
   recorded with a delivery's last Fire still replays into that transition. Only steps
@@ -190,10 +163,7 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   panicked, its invalid UTF-8 replaced too. The journal records the JSON the live settle
   decoded, so replay decodes the same bytes, even for a decoder whose type doesn't
   survive a round trip through its own encoding. A result with no JSON form fails the
-  Handle, as before, but now before any `Assign` runs. A service result in a Record an
-  older version wrote, of format 3 or lower, replays as that version replayed it: in JSON's
-  generic form, through no decoder, so a decoder added for its onDone event can't fail
-  `Recover` on it.
+  Handle, as before, but now before any `Assign` runs.
 - **A service result that won't decode is parked.** `RunService` returns
   `ErrEventDataEncoding`, not `ErrHandleFailed`, before any onDone or onError `Assign`
   runs. The decode aborts the settle through `ServiceRunner.WithResultTransform`'s abort
@@ -305,11 +275,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   registry. `Recover` without a registry still refuses a journal tail that holds a
   service's settle or park.
 - **`Recover` and `StateAt` fail when a Store loses `Record.Format`.** The Start baseline
-  and every checkpoint record the journal format too, and a Record with a lower format
-  than the checkpoint or any Record before it fails replay, before any Record replays, where it used to replay as an older journal's and silently skip
-  the timers and services an actor-driven Fire armed. The error says the Store didn't
-  keep `Record.Format` for a Record with no format, and that an older version appended
-  it, a mixed-version deploy, for one with a lower format.
+  and every checkpoint record the journal format too, and a Record after one with a lower
+  format fails replay, where it used to replay as an older journal's and silently skip
+  the timers and services an actor-driven Fire armed.
 - **A step that touches no actor doesn't recompute the actor sets.** Each append rebuilt
   the declared actors from every active state; it now reuses the last sets while the
   configuration, the running actors and the step's spawns are unchanged.

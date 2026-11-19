@@ -369,3 +369,23 @@ func TestServiceResult_RecordedResultThatWontDecode_RunsNoAssignOnReplay(t *test
 		t.Fatalf("after StateAt: onDone ran %d times and onError %d, want no more than live's 1 and 0", a.done, a.fails)
 	}
 }
+
+// TestRunService_ResultEncodingErrorsMatchTheirSentinels pins which sentinel each
+// failed settle wraps. A result that won't decode is parked: RunService returns
+// ErrEventDataEncoding with the Handle healthy. A result with no JSON form fails the
+// Handle: RunService returns ErrHandleFailed, not ErrEventDataEncoding, whose Handle
+// stays usable.
+func TestRunService_ResultEncodingErrorsMatchTheirSentinels(t *testing.T) {
+	t.Run("won't decode", func(t *testing.T) {
+		_, runErr, _ := scnRun(t, returning(scnUser{ID: 7, Name: "ann"}, nil), failingDecoder())
+		if !errors.Is(runErr, durable.ErrEventDataEncoding) || errors.Is(runErr, durable.ErrHandleFailed) {
+			t.Errorf("RunService = %v, want ErrEventDataEncoding without ErrHandleFailed", runErr)
+		}
+	})
+	t.Run("won't encode", func(t *testing.T) {
+		_, runErr, _ := scnRun(t, returning(make(chan int), nil))
+		if !errors.Is(runErr, durable.ErrHandleFailed) || errors.Is(runErr, durable.ErrEventDataEncoding) {
+			t.Errorf("RunService = %v, want ErrHandleFailed without ErrEventDataEncoding", runErr)
+		}
+	})
+}

@@ -103,13 +103,9 @@ func (v *TimeTravelView[S, E, C]) Step() int { return v.step }
 //
 // step must be in [BaselineStep, lastRecordedStep]; a step outside that range
 // reports ErrStepOutOfRange, an unknown instance reports ErrInstanceNotFound, and an
-// ended ctx reports its error. A journal a newer version wrote, whose baseline or any
-// Record records a journal format above this version's, is refused whatever the step,
-// as Recover refuses it, and so is one mixed versions wrote, where any Record, before
-// or after step, records a lower format than one before it.
-// It also fails when a baseline timer's event won't decode with the event codec passed,
-// and when a tick of journal format 3 or later fires a different number of timers on
-// replay than it recorded.
+// ended ctx reports its error. It also fails when a baseline timer's event won't decode
+// with the event codec passed, and when a tick of journal format 3 or later fires a
+// different number of timers on replay than it recorded.
 func StateAt[S comparable, E comparable, C any](
 	ctx context.Context,
 	m *state.Machine[S, E, C],
@@ -126,10 +122,6 @@ func StateAt[S comparable, E comparable, C any](
 	}
 	if baseline == nil {
 		return nil, fmt.Errorf("durable: instance %q has no baseline to reconstruct", id)
-	}
-	format := unmarshalCheckpoint(baseline).Format
-	if err = checkJournal(id, format, records); err != nil {
-		return nil, err
 	}
 
 	last := lastStep(records)
@@ -160,14 +152,10 @@ func StateAt[S comparable, E comparable, C any](
 // can drive StateAt across the run (for example to render an audit timeline). It
 // reports only externally fired and service/actor steps — the ordinals a StateAt
 // target may name — and is read-only. An unknown instance reports
-// ErrInstanceNotFound, and a journal a newer version, or mixed versions, wrote is
-// refused, as StateAt refuses it.
+// ErrInstanceNotFound.
 func Steps(ctx context.Context, st Store, id InstanceID) ([]int, error) {
-	baseline, records, err := loadHistory(ctx, st, id)
+	_, records, err := loadHistory(ctx, st, id)
 	if err != nil {
-		return nil, err
-	}
-	if err = checkJournal(id, unmarshalCheckpoint(baseline).Format, records); err != nil {
 		return nil, err
 	}
 	out := make([]int, 0, len(records))
@@ -175,20 +163,6 @@ func Steps(ctx context.Context, st Store, id InstanceID) ([]int, error) {
 		out = append(out, records[i].Step)
 	}
 	return out, nil
-}
-
-// checkJournal refuses a journal Recover refuses, whatever step a reader targets: one
-// a newer version wrote (see checkNotNewer), or one mixed versions wrote (see
-// checkFormats). It checks every loaded Record, not only those up to a target step, so
-// StateAt and Steps refuse the same journals at every step.
-func checkJournal(id InstanceID, baseline int, records []Record) error {
-	if err := checkNotNewer(id, baseline, records); err != nil {
-		return err
-	}
-	if err := checkFormats(baseline, records); err != nil {
-		return fmt.Errorf("durable: reading %q: %w", id, err)
-	}
-	return nil
 }
 
 // loadHistory returns an instance's baseline snapshot and full ordered Record log,
@@ -252,8 +226,7 @@ func restoreBaseline[S comparable, E comparable, C any](
 // It is the bounded, read-only analog of Recover's replay loop: it builds its own
 // service host driver (to settle recorded outcomes) and ticks a scheduler over the
 // instance's recorded-instant clock, consuming exactly the records the caller bounded
-// to the target step. StateAt has already checked the formats of every Record, those
-// past the window too.
+// to the target step.
 func replayThrough[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
@@ -292,6 +265,9 @@ func replayThrough[S comparable, E comparable, C any](
 		}
 		// A domain effect is never dispatched here: a time-travel read applies no
 		// side effect.
+		if err := checkFormat(env.Format, &bounded[i]); err != nil {
+			return err
+		}
 		reads += clockReadCount(&bounded[i])
 		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
 			return err

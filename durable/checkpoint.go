@@ -3,7 +3,6 @@ package durable
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"sort"
 	"time"
 
@@ -116,9 +115,7 @@ type checkpointEnvelope struct {
 	ParkedServices []parkedServiceWire `json:"parkedServices,omitempty"`
 	// Format is the journal format of the version that wrote the checkpoint, as
 	// Record.Format is. Zero means a checkpoint from before this field. A Record after
-	// it with a lower Format means the Store lost the field, and replay fails. A Format
-	// above this version's journalFormat means a newer version wrote it, and every reader
-	// refuses the journal.
+	// it with a lower Format means the Store lost the field, and replay fails.
 	Format int `json:"format,omitempty"`
 }
 
@@ -159,36 +156,15 @@ func marshalCheckpoint(env checkpointEnvelope, timers map[string]pendingTimer) (
 // tolerates a bare (pre-envelope) snapshot: bytes that are not a checkpoint envelope
 // are returned as the snapshot with no timers and a zero ordinal, so an older
 // checkpoint still restores. A checkpoint envelope is distinguished by carrying a
-// non-empty "snapshot" member. Bytes this version's envelope can't unmarshal but whose
-// "format" member is a number above journalFormat are a newer version's envelope, one
-// that may have changed a field's type: they keep that Format, so checkNotNewer
-// refuses them rather than restore them as a bare snapshot. A bare kernel snapshot has
-// no "format" member.
+// non-empty "snapshot" member.
 func unmarshalCheckpoint(b []byte) checkpointEnvelope {
 	var env checkpointEnvelope
 	if err := json.Unmarshal(b, &env); err != nil || len(env.Snapshot) == 0 {
 		// Not an envelope (or an envelope without the wrapped snapshot member): treat
-		// the bytes as a bare kernel snapshot, the pre-timer-survival checkpoint form,
-		// unless they record a newer format.
-		return checkpointEnvelope{Snapshot: b, Format: newerFormatOf(b)}
+		// the bytes as a bare kernel snapshot, the pre-timer-survival checkpoint form.
+		return checkpointEnvelope{Snapshot: b}
 	}
 	return env
-}
-
-// newerFormatOf returns the "format" member of b, a JSON object, when it is an integer
-// above journalFormat, capped to fit an int on any platform, and zero otherwise.
-func newerFormatOf(b []byte) int {
-	var probe struct {
-		Format json.Number `json:"format"`
-	}
-	if json.Unmarshal(b, &probe) != nil {
-		return 0
-	}
-	f, err := probe.Format.Int64()
-	if err != nil || f <= journalFormat {
-		return 0
-	}
-	return int(min(f, math.MaxInt32))
 }
 
 // decodeTimerEvent decodes a persisted timer event wire back into the machine's

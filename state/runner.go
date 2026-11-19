@@ -260,15 +260,16 @@ func (r *ServiceRunner[S, E, C]) settleActivation(ctx context.Context, id string
 
 // WithResultTransform sets a function that rewrites every outcome before it settles,
 // whether Tick, SettleDone or SettleError settles it, and returns the runner. f gets
-// the event that will carry the outcome: the invocation's onDone for a result, its
-// onError for an error. A host that records outcomes uses it to give the live run and
+// the invocation's onDone event for an incoming result, its onError event for an
+// incoming error. A host that records outcomes uses it to give the live run and
 // a replay the same value, decoded for that event.
 //
 // f returns the outcome to settle with, out and outErr. A non-nil outErr settles
 // through onError, and a nil one through onDone with out, except for an
 // UnboundRefError: a nil outErr leaves the UnboundRefError, so an unbound service
 // still settles through onError. LastResult and LastError report the rewritten
-// outcome.
+// outcome. f sees the event for the outcome as it came in: an outErr f returns
+// settles through onError even when f was handed the onDone event of a result.
 //
 // A non-nil abort stops the settle instead: no event fires, so no Assign, middleware
 // or inspector runs, and the service stays in flight, so it can be settled again.

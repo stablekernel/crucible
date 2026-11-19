@@ -62,9 +62,7 @@ type serviceResultPayload struct {
 	// SettleDone outcome: the bytes the live settle decoded. Replay decodes them through
 	// the Runner's EventDataDecoder for the onDone event and re-fires them through
 	// onDone, so the transition's Assign reads from AssignCtx.Event the value the live
-	// run's decode gave (see replayableOutcome). A Record of a format before
-	// decodedResultsFormat replays them in JSON's generic form, as the version that
-	// wrote it did.
+	// run's decode gave (see replayableOutcome).
 	Result json.RawMessage `json:"result,omitempty"`
 	// Error is the failure message for a SettleError outcome. It is reconstructed
 	// into an error and re-fired through onError so the transition's Assign reads it
@@ -80,7 +78,7 @@ type serviceResultPayload struct {
 	// holds the decoder to that type, as the live settle did, and every successful
 	// settle records it, the one that settles a parked result too, so replay holds the
 	// decoder to it as the settle did. It is empty for an error, and for a result
-	// recorded before this field, which replays with no type check.
+	// recorded with no type, which replays with no type check.
 	Type string `json:"type,omitempty"`
 }
 
@@ -376,8 +374,7 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 // replayService fails the replay. A parked result settles as a recordedResult that
 // carries its Go type, and the decoder must return that type, or JSON's generic form,
 // as live. A result with no JSON form aborts the settle too, with no JSON to park, and
-// serviceStep fails the Handle. A legacyResult, which replay passes for a Record of an
-// older format, settles as it is, as that version replayed it.
+// serviceStep fails the Handle.
 //
 // An error becomes an error with its message as a Store keeps it (see
 // normalizedErrorMessage), live and on replay. An Error method that panics settles
@@ -391,9 +388,6 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], settled *settle
 				msg = validUTF8(perr.Error())
 			}
 			return nil, errors.New(msg), nil
-		}
-		if legacy, ok := result.(legacyResult); ok {
-			return legacy.value, nil, nil
 		}
 		recorded, replay := result.(recordedResult)
 		b := []byte(recorded.raw)
@@ -466,11 +460,6 @@ func (s *settledJSON) take() recordedResult {
 	return r
 }
 
-// legacyResult is a service result recorded in a Record of a format before
-// decodedResultsFormat, decoded as that version replayed it: into an any, with no
-// decoder or type check. The transform settles it as it is.
-type legacyResult struct{ value any }
-
 // resultType returns the Go type a park, or a successful settle, records for result:
 // the recorded one on replay, else the ServiceFn's value's.
 func resultType(recorded recordedResult, replay bool, result any) string {
@@ -486,8 +475,8 @@ func resultType(recorded recordedResult, replay bool, result any) string {
 type recordedResult struct {
 	raw json.RawMessage
 	// typ is the result's Go type, as typeName gives it, which a park and every
-	// successful settle record; empty for a result recorded before settles recorded it,
-	// which replay doesn't type-check.
+	// successful settle record; empty for a result recorded with no type, which replay
+	// doesn't type-check.
 	typ string
 	// rtype is the result's Go type itself, which only a result this Handle parked
 	// carries: typ can't tell apart two types of the same name and package, such as two
@@ -650,20 +639,22 @@ func qualifiedName(pkg, name string) string {
 // generic form are always accepted. A result this Handle parked keeps its type, and is
 // held to it as live held it; one read from the journal or a checkpoint is held to its
 // name, which a type of the same name and package, such as another function-local type,
-// also has. An empty name, a result recorded before settles recorded the type, accepts
-// anything.
+// also has. An empty name, a result recorded with no type, accepts anything.
 func decodedAsRecorded(value any, recorded recordedResult) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
 	}
-	if recorded.rtype != nil && reflect.TypeOf(value) != recorded.rtype {
-		return fmt.Errorf("%w: a %s service result decodes as another type, %v, of the same name or not; decode it as the service's own %s with WithEventDataDecoder",
-			ErrEventDataEncoding, typ, reflect.TypeOf(value), typ)
-	}
 	if got := typeName(value); got != typ {
 		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
 			ErrEventDataEncoding, typ, got, typ)
+	}
+	// The names agree, so only a result this Handle parked, which carries its type
+	// itself, can be another type: one of the same name and package, such as another
+	// function-local type.
+	if recorded.rtype != nil && reflect.TypeOf(value) != recorded.rtype {
+		return fmt.Errorf("%w: a %s service result decodes as another type of the same name; decode it as the service's own type with WithEventDataDecoder",
+			ErrEventDataEncoding, typ)
 	}
 	return nil
 }
@@ -742,13 +733,10 @@ func recordServiceOutcome(id string, settled recordedResult, lastErr error) (sta
 // SettleError (with the reconstructed error), so the kernel re-fires the same
 // onDone / onError event with the same data and re-derives identical context. It
 // returns the settle's effects, so the caller arms the timers its state declares, as
-// the live RunService did. sp is entry's decoded payload. A result in a Record of a
-// format before decodedResultsFormat (decoded false) replays as the version that wrote
-// it replayed it, in JSON's generic form through no decoder: that version's live run
-// saw the ServiceFn's own value, which no decoder of this one can be held to. It
-// reports an error only when the recorded result cannot be decoded or names no
-// in-flight service (a corrupt or mis-ordered journal).
-func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry, sp serviceResultPayload, decoded bool) ([]state.Effect, error) {
+// the live RunService did. sp is entry's decoded payload. It reports an error only when
+// the recorded result cannot be decoded or names no in-flight service (a corrupt or
+// mis-ordered journal).
+func replayService[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], entry state.JournalEntry, sp serviceResultPayload) ([]state.Effect, error) {
 	if svc == nil {
 		return nil, errors.New("durable: replaying a service result requires a service registry (supply WithServiceRegistry)")
 	}
@@ -762,16 +750,7 @@ func replayService[S comparable, E comparable, C any](ctx context.Context, svc *
 	// The transform decodes the recorded JSON for the onDone event, as it did live. One
 	// that won't decode aborts the settle before it fires anything.
 	var result any
-	switch {
-	case !decoded:
-		var v any
-		if len(sp.Result) > 0 {
-			if err := json.Unmarshal(sp.Result, &v); err != nil {
-				return nil, fmt.Errorf("durable: decoding recorded service %q result: %w", entry.CorrelationID, err)
-			}
-		}
-		result = legacyResult{value: v}
-	case len(sp.Result) > 0:
+	if len(sp.Result) > 0 {
 		// The recorded type holds the decoder to it, as the settle did.
 		result = recordedResult{raw: sp.Result, typ: sp.Type}
 	}

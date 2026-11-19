@@ -50,3 +50,22 @@ func TestRunService_ServiceFnCantChangeItsActivation(t *testing.T) {
 		t.Fatalf("the journal holds %d Records, want the settle's", got)
 	}
 }
+
+// forkMachine invokes fetch in loading. "next" is declared in loading and in ready,
+// with different targets, so a journal replayed from the wrong state still replays,
+// to the wrong place.
+func forkMachine(fn state.ServiceFn[svcCtx]) *state.Machine[string, string, svcCtx] {
+	return state.ForgeFor[svcCtx]("fork").
+		Service("fetch", fn).
+		State("loading").Invoke("fetch", state.WithInvokeOnDone("done"), state.WithInvokeOnError("fail")).
+		State("ready").
+		State("canceled").Final().
+		State("shipped").Final().
+		State("failed").Final().
+		Initial("loading").
+		Transition("loading").On("done").GoTo("ready").
+		Transition("loading").On("fail").GoTo("failed").
+		Transition("loading").On("next").GoTo("canceled").
+		Transition("ready").On("next").GoTo("shipped").
+		Quench()
+}

@@ -39,8 +39,8 @@ counts as an additive (minor) versus breaking (major) change. Use the
 - **`ServiceRunner.WithResultTransform`** rewrites every service outcome before it
   settles, whether `Tick`, `SettleDone` or `SettleError` settles it, so a host that records
   outcomes can give the live run and a replay the same value. The transform takes the
-  event that will carry the outcome, the invocation's onDone for a result and its onError
-  for an error: `func(event E, result any, err error) (out any, outErr error, abort error)`.
+  invocation's onDone event for an incoming result and its onError event for an incoming
+  error: `func(event E, result any, err error) (out any, outErr error, abort error)`.
   It runs before any event fires and before the service is dropped. A non-nil `abort`
   stops the settle: no event fires, the service stays in flight, `SettleDone` and
   `SettleError` return false with `abort` in `FireResult.Err`, and `Tick` returns that

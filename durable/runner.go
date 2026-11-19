@@ -1662,12 +1662,9 @@ func (h *Handle[S, E, C]) respawn(ctx context.Context, effects []state.Effect, u
 // effect not yet marked dispatched, so it returns ErrEffectDispatch and no Handle while
 // the effect handler keeps failing. With an effect handler wired, it refuses a Store
 // that isn't a DispatchStore with ErrNoDispatchStore before it loads anything, whether
-// or not an effect is waiting. It refuses a journal a newer version of this module
-// wrote, whose checkpoint or any Record records a journal format above this version's,
-// before it restores or replays anything; that error wraps none of the package's
-// sentinel errors. It re-arms the checkpoint's timers before replaying the tail, and
-// fails when a tick of journal format 3 or later fires a different number of timers on
-// replay than it recorded.
+// or not an effect is waiting. It re-arms the checkpoint's timers before replaying the
+// tail, and fails when a tick of journal format 3 or later fires a different number of
+// timers on replay than it recorded.
 func Recover[S comparable, E comparable, C any](ctx context.Context, m *state.Machine[S, E, C], st Store, id InstanceID, opts ...Option[S, E, C]) (*Handle[S, E, C], error) {
 	r := NewRunner(m, st, opts...)
 	return r.recover(ctx, id)
@@ -1693,14 +1690,6 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// deadlines of the timers armed at the checkpoint, and the next step ordinal. A bare
 	// (pre-envelope) checkpoint yields the snapshot with no persisted timers.
 	env := unmarshalCheckpoint(snapBytes)
-	if err = checkNotNewer(id, env.Format, tail); err != nil {
-		return nil, err
-	}
-	// Refuse a journal mixed versions wrote before replaying any of it, so a refused one
-	// sends no effect.
-	if err = checkFormats(env.Format, tail); err != nil {
-		return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
-	}
 	kernelSnap, persistedTimers, checkpointNext := env.Snapshot, env.Timers, env.NextStep
 
 	snap, err := state.UnmarshalSnapshot[S, E, C](kernelSnap)
@@ -1799,6 +1788,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		// The mirror tracks the still-pending timers in armed as replay arms, cancels and
 		// fires them, with deadlines drawn from the recorded clock reads, not the live
 		// wall clock.
+		if err := checkFormat(env.Format, rec); err != nil {
+			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
+		}
 		reads += clockReadCount(rec)
 		stepEffects, err := replayRecord(ctx, inst, &r.cfg, sched, svc, rec, mirror, armsActorFires(rec))
 		if err != nil {
@@ -2311,7 +2303,7 @@ func replayRecord[S comparable, E comparable, C any](
 				mirror.park(entry.CorrelationID, recordedResult{raw: sp.Result, typ: sp.Type})
 				continue
 			}
-			effects, err := replayService(ctx, svc, entry, sp, rec.Format >= decodedResultsFormat)
+			effects, err := replayService(ctx, svc, entry, sp)
 			if err != nil {
 				return stepEffects, fmt.Errorf("at step %d: %w", rec.Step, err)
 			}
@@ -2384,52 +2376,12 @@ func replayActors[S comparable, E comparable, C any](
 	return nil
 }
 
-// checkFormats fails when a Record in records has a lower journal Format than the
-// checkpoint's that replay starts from, or than any Record before it (see checkFormat).
-// A journal's format never goes down, so this catches an older version's Record
-// appended after a newer one's anywhere in the tail, not only after a newer checkpoint.
-// Recover calls it on its tail, and StateAt and Steps on every Record they load, past
-// the step StateAt targets too, before any of them replays one.
-func checkFormats(checkpoint int, records []Record) error {
-	highest := checkpoint
-	for i := range records {
-		if err := checkFormat(highest, &records[i]); err != nil {
-			return err
-		}
-		highest = max(highest, records[i].Format)
-	}
-	return nil
-}
-
-// checkFormat fails when rec's journal Format is lower than highest, the highest format
-// the journal records before it: the checkpoint's, or an earlier Record's. A version
-// doesn't write an older format than it did, so either an older version appended rec to
-// a journal a newer one wrote, which a rolling deploy that runs mixed versions on one
-// instance does, or, for a Record with no format, the Store lost the field. Either way
-// the two versions may read the journal differently (an older one settles a parked
-// result, for one), so replaying rec by its own format's rules would recover wrong.
-func checkFormat(highest int, rec *Record) error {
-	switch {
-	case rec.Format >= highest:
-		return nil
-	case rec.Format == 0:
-		return fmt.Errorf("durable: step %d records no journal format after one of format %d: the Store didn't keep Record.Format, or a version from before that field appended the Record (mixed versions on one instance)", rec.Step, highest)
-	}
-	return fmt.Errorf("durable: step %d was appended by an older version, of journal format %d, after one of format %d: don't run mixed versions on one instance", rec.Step, rec.Format, highest)
-}
-
-// checkNotNewer fails when id's checkpoint, of journal format checkpoint, or any of its
-// records was written in a journal format above journalFormat: by a newer version, whose
-// journal this version can't tell from its own, so replaying it could recover wrong.
-// Every reader calls it on what it loaded before it restores or replays anything. The
-// error wraps no sentinel.
-func checkNotNewer(id InstanceID, checkpoint int, records []Record) error {
-	format := checkpoint
-	for i := range records {
-		format = max(format, records[i].Format)
-	}
-	if format > journalFormat {
-		return fmt.Errorf("durable: %q was written by a newer version (journal format %d; this version reads up to %d)", id, format, journalFormat)
+// checkFormat fails when rec's journal Format is lower than the checkpoint's that replay
+// started from: a version doesn't write an older format than it did, so the Store lost
+// the field, and replaying the Record as an older format's would recover wrong.
+func checkFormat(checkpoint int, rec *Record) error {
+	if rec.Format < checkpoint {
+		return fmt.Errorf("durable: step %d records journal format %d after a checkpoint of format %d: the Store didn't keep Record.Format", rec.Step, rec.Format, checkpoint)
 	}
 	return nil
 }
@@ -2448,10 +2400,8 @@ func armsActorFires(rec *Record) bool {
 	return rec.Format >= actorArmsFormat
 }
 
-// journalFormat is the format this version writes in every Record and checkpoint, and
-// the highest it reads: Recover, the stateless Fire, StateAt and Steps refuse a journal
-// whose checkpoint or any Record records a higher one (see checkNotNewer). It is
-// decodedResultsFormat. actorArmsFormat is the first format that arms the timers and
+// journalFormat is the format this version writes in every Record and checkpoint. It is
+// timersFirstFormat. actorArmsFormat is the first format that arms the timers and
 // services an actor-driven parent Fire's state declares. dispatchedStepsFormat is the
 // first that dispatches a tick's and a service settle's domain effects, so Recover sends
 // them. tickDriversFormat is the first whose Tick hands its timer transitions' effects
@@ -2460,17 +2410,12 @@ func armsActorFires(rec *Record) bool {
 // before the tail, so its replayed ticks fire exactly the timers they record. An older
 // version's recovery re-armed them after the tail, so a journal it continued can record
 // a tick replay can't reproduce: a timer the tail had fired or canceled, fired again.
-// decodedResultsFormat is the first whose service results the live run decoded through
-// WithEventDataDecoder, so replay decodes them the same way; it is also the first that
-// can park a result. A result in a Record of an older format replays as that version
-// replayed it, in JSON's generic form.
 const (
 	actorArmsFormat       = 1
 	dispatchedStepsFormat = 2
 	tickDriversFormat     = 2
 	timersFirstFormat     = 3
-	decodedResultsFormat  = 4
-	journalFormat         = decodedResultsFormat
+	journalFormat         = timersFirstFormat
 )
 
 // replayArm arms the timers and services a replayed Fire's effects declare, as the live
