@@ -77,6 +77,14 @@ counts as an additive (minor) versus breaking (major) change. Use the
   was dropped. The quiet now rides the call chain that spawns each actor, and ends when
   `AbsorbRespawn` returns.
 
+- **`FakeClock.After`** now fires only once `Advance` moves the clock to or past
+  its deadline, sending the deadline as before. It used to fire at once, so a
+  test that selected on it saw every timeout elapse with no advance. A test that
+  received from it without calling `Advance` now blocks: advance the clock to
+  the deadline first. `After(d)` with `d` of zero or less still fires at once
+  with the current instant, as `time.After` does; a negative `d` used to send an
+  instant in the past.
+
 ## [1.0.0] — 2026-06-13
 
 The first stable release. It freezes the data model, the serialized IR, the
