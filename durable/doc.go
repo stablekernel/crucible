@@ -41,6 +41,25 @@
 // well as on replay, so a reducer gets the same value both ways; WithEventDataDecoder
 // decodes it as the type the caller passed.
 //
+// A service result is decoded the same way, live and on replay. When
+// WithEventDataDecoder covers the invocation's onDone event, the result arrives as the
+// decoder's type; otherwise it arrives in JSON's generic form, a struct as a
+// map[string]any and a number as a float64. A decoder that fails, or returns a type
+// other than the service's result, parks the result: RunService returns
+// ErrEventDataEncoding and no onDone or onError reducer runs, but the result is
+// recorded and the Handle stays healthy, so the service never runs again. The decoder
+// is part of the Runner's options, so the Handle that parked the result never sees a
+// fix: Recover with the fixed decoder, then call RunService, and it settles the parked
+// result. The decoder must return the type the service returned, by import path and
+// name, or JSON's generic form, so settle parked results before moving or renaming that
+// type; after a move, only a decoder that returns the generic form settles them.
+// A Fire or timer that leaves the state that declares the service stops it and
+// discards the parked result. A service error stays message-only. Register the decoder before recording results: replay decodes the
+// journal with the recovering Runner's decoder, held to the Go type the service
+// returned, which every settle records, so a decoder changed after results were
+// recorded to return another type fails Recover, unless it returns JSON's generic form,
+// and one added later for the service's type changes what replay produces.
+//
 // The kernel stays pure and dependency-free. The durable module is host-side:
 // database drivers, cloud SDKs, and I/O libraries live in the caller or in out-
 // of-tree Store backends, never in this module. The in-tree MemStore and

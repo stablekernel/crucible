@@ -3,7 +3,6 @@ package durable_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -35,13 +34,18 @@ func outcomeMachine(fn state.ServiceFn[svcCtx], seen *[]string) *state.Machine[s
 		Quench()
 }
 
-// TestRunService_ResultThatEncodesButWontDecode_FailsTheStep proves a result whose
-// JSON form a replay can't decode, such as a number beyond float64, fails RunService
-// with ErrHandleFailed and records nothing, as a result that won't encode does, so the
-// instance stays recoverable with the service in flight again.
-func TestRunService_ResultThatEncodesButWontDecode_FailsTheStep(t *testing.T) {
+// TestRunService_ResultThatEncodesButWontDecode_ParksIt proves a result whose JSON
+// form won't decode, such as a number beyond float64, makes RunService return
+// ErrEventDataEncoding before any onDone or onError Assign runs, and parks the result:
+// the Handle stays healthy, and the recovered instance has the service parked, so
+// RunService doesn't run it again.
+func TestRunService_ResultThatEncodesButWontDecode_ParksIt(t *testing.T) {
 	ctx := context.Background()
-	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return json.RawMessage("1e400"), nil }
+	var runs int
+	fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) {
+		runs++
+		return json.RawMessage("1e400"), nil
+	}
 	var seen []string
 	m := outcomeMachine(fn, &seen)
 	st := durable.NewMemStore()
@@ -51,18 +55,25 @@ func TestRunService_ResultThatEncodesButWontDecode_FailsTheStep(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	id := state.InvokeID("outcome", "loading", 0)
-	if _, _, err = h.RunService(ctx, id); !errors.Is(err, durable.ErrHandleFailed) {
-		t.Fatalf("RunService: %v, want ErrHandleFailed", err)
+	_, ran, err := h.RunService(ctx, id)
+	mustPark(t, "RunService", ran, err)
+	if len(seen) != 0 {
+		t.Fatalf("an Assign saw %q, want none to run for a result that won't decode", seen)
 	}
-	if _, recs, lerr := st.Load(ctx, "i1"); lerr != nil || len(recs) != 0 {
-		t.Fatalf("journal holds %d Records (err %v), want none", len(recs), lerr)
+	if _, recs, lerr := st.Load(ctx, "i1"); lerr != nil || len(recs) != 1 {
+		t.Fatalf("journal holds %d Records (err %v), want the one that parks the result", len(recs), lerr)
 	}
 	recovered, err := durable.Recover(ctx, m, st, "i1", opts...)
 	if err != nil {
 		t.Fatalf("Recover: %v, want the instance recoverable", err)
 	}
 	if got := recovered.Instance().Current(); got != "loading" {
-		t.Fatalf("recovered in %q, want loading with the service in flight again", got)
+		t.Fatalf("recovered in %q, want loading with the service parked", got)
+	}
+	_, ran, err = recovered.RunService(ctx, id)
+	mustPark(t, "RunService after Recover", ran, err)
+	if runs != 1 || len(seen) != 0 {
+		t.Fatalf("the ServiceFn ran %d times and Assigns saw %q; want 1 and none", runs, seen)
 	}
 }
 

@@ -60,6 +60,15 @@ type pendingTimerWire struct {
 	Event json.RawMessage `json:"event,omitempty"`
 }
 
+// parkedServiceWire is a parked service result as a checkpoint envelope carries it: the
+// service id, the result's JSON and its Go type, as the parked journal entry records
+// them.
+type parkedServiceWire struct {
+	ID     string          `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Type   string          `json:"type,omitempty"`
+}
+
 // checkpointEnvelope is the durable layer's wrapper around the bytes a Store keeps
 // for a checkpoint: the opaque state.Snapshot bytes, the pending-timer table armed at
 // the checkpoint instant, and the next step ordinal. The durable layer fully owns the checkpoint
@@ -98,6 +107,12 @@ type checkpointEnvelope struct {
 	// settled isn't one. None, as in a Start baseline or an older checkpoint, means
 	// Recover starts every declared service.
 	EndedServices []string `json:"endedServices,omitempty"`
+	// ParkedServices are the results parked at the checkpoint, by service id, sorted:
+	// each didn't decode for its onDone event, so its service is in flight and not
+	// settled, and a later RunService settles the recorded result rather than run the
+	// ServiceFn again. A checkpoint compacts the Record that parked it, so it carries
+	// them. None, as in a Start baseline or an older checkpoint, means none is parked.
+	ParkedServices []parkedServiceWire `json:"parkedServices,omitempty"`
 	// Format is the journal format of the version that wrote the checkpoint, as
 	// Record.Format is. Zero means a checkpoint from before this field. A Record after
 	// it with a lower Format means the Store lost the field, and replay fails.

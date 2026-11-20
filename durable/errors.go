@@ -47,7 +47,11 @@ var (
 	// its state.WithEventData payload has no JSON form that decodes again, decodes as a
 	// different type than the caller passed (see WithEventDataDecoder), panics while
 	// encoding (such as an error that's a typed nil), or exceeds WithMaxEventDataBytes.
-	// Nothing applied, so the Handle stays usable.
+	// Nothing applied, so the Handle stays usable. RunService returns it, with the Handle
+	// healthy, for a service result that won't decode for its onDone event, or decodes as
+	// another type than the service returned: the result is parked, and a RunService
+	// once the decoder decodes it settles it. Recover and StateAt return it for a settled
+	// result that won't decode. No onDone or onError Assign runs for that result.
 	ErrEventDataEncoding = errors.New(errorPrefix + errorEventDataEncoding)
 
 	// ErrRecordTooLarge is reported by FileStore.Append for a Record whose journal line
