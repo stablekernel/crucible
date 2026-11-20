@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,12 @@ import (
 // rewriteServiceTypes stands in for one, to alpha.Result.
 func alphaAlias() durable.Option[string, string, svcCtx] {
 	return durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, alpha.Result{})
+}
+
+// betaAlias is the option mapping the same recorded name to beta.Result, which with
+// alphaAlias claims one name for two types.
+func betaAlias() durable.Option[string, string, svcCtx] {
+	return durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, beta.Result{})
 }
 
 // settledAlpha settles an alpha.Result for scn-1 live, under a decoder for it, and
@@ -279,27 +286,36 @@ func TestResultTypeAlias_RenamedParkedResultThroughCheckpoint(t *testing.T) {
 }
 
 // TestResultTypeAlias_OnlyTheAliasedName: an alias for one old name admits only the
-// type it names. A decoder for another type, whose JSON is the result's, is refused;
-// so is a decoder for the aliased type when the alias covers a different old name.
+// type it names. A decoder for another type, whose JSON is the result's, is refused
+// with a message naming both the recorded type and the aliased type, and saying to
+// decode as the aliased one; so is a decoder for the aliased type when the alias
+// covers a different old name.
 func TestResultTypeAlias_OnlyTheAliasedName(t *testing.T) {
 	ctx := context.Background()
 	m, a, reg, store := renamedSettled(t)
+	betaType := typeNameOf(t, beta.Result{})
 	for _, wrong := range []struct {
 		name string
 		opts []durable.Option[string, string, svcCtx]
+		want string
 	}{
 		{"another type under the aliased name", []durable.Option[string, string, svcCtx]{
 			decoderFor("done", durable.DecodeAs[beta.Result]), alphaAlias(),
-		}},
+		}, "a " + movedFromType + " service result, aliased to " + alphaResultType +
+			" by WithResultTypeAlias, decodes as " + betaType + "; decode it as " + alphaResultType + " with WithEventDataDecoder"},
 		{"the aliased type under an alias for another name", []durable.Option[string, string, svcCtx]{
 			decoderFor("done", durable.DecodeAs[alpha.Result]),
 			durable.WithResultTypeAlias[string, string, svcCtx]("example.com/gone/model.Old", alpha.Result{}),
-		}},
+		}, "a " + movedFromType + " service result decodes as " + alphaResultType +
+			"; decode it as " + movedFromType + " with WithEventDataDecoder"},
 	} {
 		done := a.done
 		_, err := durable.Recover(ctx, m, store, "scn-1", append([]durable.Option[string, string, svcCtx]{reg}, wrong.opts...)...)
 		if !errors.Is(err, durable.ErrEventDataEncoding) {
 			t.Fatalf("Recover with %s: %v, want ErrEventDataEncoding", wrong.name, err)
+		}
+		if !strings.Contains(err.Error(), wrong.want) {
+			t.Fatalf("Recover with %s: %q, want it to contain %q", wrong.name, err, wrong.want)
 		}
 		if a.done != done || a.fails != 0 {
 			t.Fatalf("Recover with %s ran an Assign: onDone %d (was %d), onError %d", wrong.name, a.done, done, a.fails)
@@ -309,8 +325,9 @@ func TestResultTypeAlias_OnlyTheAliasedName(t *testing.T) {
 
 // TestResultTypeAlias_BadInputIgnored: bad input changes nothing, as the other Runner
 // options: an empty recorded name, a nil current value, a name aliased to the type's
-// own current name, and one recorded name given for two different types, where the
-// first stands and the repeat is ignored. The strict check stands for each, exactly as
+// own current name, and one recorded name given for two different types, which drops
+// the alias for that name, whichever order the two arrive in — a third registration,
+// for any type, can't bring it back. The strict check stands for each, exactly as
 // with no option at all, and the same alias twice is the one alias.
 func TestResultTypeAlias_BadInputIgnored(t *testing.T) {
 	ctx := context.Background()
@@ -329,16 +346,16 @@ func TestResultTypeAlias_BadInputIgnored(t *testing.T) {
 			durable.WithResultTypeAlias[string, string, svcCtx](alphaResultType, alpha.Result{}),
 		}, false},
 		{"another type after the alias for a name", []durable.Option[string, string, svcCtx]{
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, alpha.Result{}),
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, beta.Result{}),
-		}, true},
+			alphaAlias(), betaAlias(),
+		}, false},
 		{"the alias after another type for a name", []durable.Option[string, string, svcCtx]{
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, beta.Result{}),
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, alpha.Result{}),
+			betaAlias(), alphaAlias(),
+		}, false},
+		{"a third registration after a conflict", []durable.Option[string, string, svcCtx]{
+			alphaAlias(), betaAlias(), alphaAlias(),
 		}, false},
 		{"the same alias twice", []durable.Option[string, string, svcCtx]{
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, alpha.Result{}),
-			durable.WithResultTypeAlias[string, string, svcCtx](movedFromType, alpha.Result{}),
+			alphaAlias(), alphaAlias(),
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,7 +364,7 @@ func TestResultTypeAlias_BadInputIgnored(t *testing.T) {
 			_, err := durable.Recover(ctx, m, store, "scn-1", opts...)
 			if tc.settles {
 				if err != nil {
-					t.Fatalf("Recover: %v, want the first alias to stand", err)
+					t.Fatalf("Recover: %v, want the alias to stand", err)
 				}
 				if got := len(a.seen); got != 2 {
 					t.Fatalf("onDone's Assign ran %d times, want live and replay", got)
@@ -399,10 +416,29 @@ func TestResultTypeAlias_KeepsTheHandleParkedResultItsType(t *testing.T) {
 	mustPark(t, "RunService", ran, err)
 	_, ran, err = h.RunService(ctx, id)
 	mustPark(t, "RunService settling the parked result", ran, err)
+	// The refusal names the recorded type and the type the decoder returned, and says
+	// the result is held to the type the Handle parked, not the alias.
+	want := "a " + alphaResultType + " service result decodes as " + typeNameOf(t, beta.Result{}) +
+		"; the result is held to the type this Handle parked, not the alias, so decode it as the service's own type with WithEventDataDecoder"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("RunService settling the parked result: %q, want it to contain %q", err, want)
+	}
 	if got := atomic.LoadInt64(runs); got != 1 {
 		t.Fatalf("the ServiceFn ran %d times, want 1", got)
 	}
 	if a.done != 0 || a.fails != 0 {
 		t.Fatalf("an Assign ran: onDone %d, onError %d", a.done, a.fails)
 	}
+}
+
+// typeNameOf spells v's type the way the journal records it, with the import path in
+// place of the package name, as the refusal messages and the alias option do.
+func typeNameOf(t *testing.T, v any) string {
+	t.Helper()
+	typ := reflect.TypeOf(v)
+	name := typ.Name()
+	if pkg := typ.PkgPath(); pkg != "" {
+		name = pkg + "." + name
+	}
+	return name
 }

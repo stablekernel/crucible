@@ -17,10 +17,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   name is held to strictly, exactly as before. A parked result the Handle itself holds
   is still held to its own type, as live. The option takes the recorded name and a
   value of the type the name now means, can be repeated for several renames, and maps
-  one hop, never chaining through another alias. Bad input — an empty recorded name, a
-  nil value, a name aliased to the type's own current name, or one recorded name for
-  two different types — is ignored, like the other Runner options, leaving the strict
-  check in place.
+  one hop, never chaining through another alias. One recorded name given for two
+  different types drops that name's alias entirely, whichever order the registrations
+  arrive in, and a later registration, for any type, can't revive it, so the strict
+  check stands for that name; an empty recorded name, a nil value or a name aliased to
+  the type's own current name is ignored, like the other Runner options, leaving the
+  strict check in place. A refusal names the recorded type and, when an alias covers
+  the name, the aliased type to decode as.
 - **`Record.EndedActors` and `ActorSet`** record the declared child-machine actors that
   ran and have ended, settled or stopped, so `Recover` doesn't spawn them again. A Store
   must keep an empty set distinct from nil.

@@ -644,8 +644,10 @@ func qualifiedName(pkg, name string) string {
 // generic form are always accepted. A name aliases maps, from WithResultTypeAlias, to
 // the type the decoded value has is accepted too: the type was renamed or moved after
 // the result was recorded, and the alias says what the recorded name now means; every
-// other name is checked strictly, as without any alias. A result this Handle parked
-// keeps its type, and is held to it as live held it; one read from the journal or a
+// other name is checked strictly, as without any alias. A refusal names the recorded
+// type, and, when an alias covers the name, the aliased type to decode as. A result
+// this Handle parked keeps its type, and is held to it as live held it — through an
+// alias too, which a parked result ignores — or as one read from the journal or a
 // checkpoint is held to its name, which a type of the same name and package, such as
 // another function-local type, also has. An empty name, a result recorded with no
 // type, accepts anything.
@@ -654,16 +656,29 @@ func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]st
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
 	}
-	if got := typeName(value); got != typ && got != aliases[typ] {
+	got := typeName(value)
+	alias, aliased := aliases[typ]
+	if got != typ && (!aliased || got != alias) {
+		if aliased {
+			// The name is covered by an alias, so name the type it now means, which is
+			// the one to decode as, not the recorded name the type no longer has.
+			return fmt.Errorf("%w: a %s service result, aliased to %s by WithResultTypeAlias, decodes as %s; decode it as %s with WithEventDataDecoder",
+				ErrEventDataEncoding, typ, alias, got, alias)
+		}
 		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
 			ErrEventDataEncoding, typ, got, typ)
 	}
-	// The names agree, so only a result this Handle parked, which carries its type
-	// itself, can be another type: one of the same name and package, such as another
-	// function-local type.
+	// The name agrees — the recorded one or the alias's — so only a result this Handle
+	// parked, which carries its type itself, can be another type: through the alias,
+	// one the Handle never parked, or one of the same name and package, such as
+	// another function-local type.
 	if recorded.rtype != nil && reflect.TypeOf(value) != recorded.rtype {
-		return fmt.Errorf("%w: a %s service result decodes as another type of the same name; decode it as the service's own type with WithEventDataDecoder",
-			ErrEventDataEncoding, typ)
+		if got == typ {
+			return fmt.Errorf("%w: a %s service result decodes as another type of the same name; decode it as the service's own type with WithEventDataDecoder",
+				ErrEventDataEncoding, typ)
+		}
+		return fmt.Errorf("%w: a %s service result decodes as %s; the result is held to the type this Handle parked, not the alias, so decode it as the service's own type with WithEventDataDecoder",
+			ErrEventDataEncoding, typ, got)
 	}
 	return nil
 }

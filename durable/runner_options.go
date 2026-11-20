@@ -34,6 +34,12 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// default: every recorded name is held to strictly, exactly as recorded.
 	// WithResultTypeAlias fills it.
 	resultAliases map[string]string
+	// resultAliasConflicts holds the recorded names WithResultTypeAlias has been
+	// given for two different types, which drop the alias for that name entirely:
+	// the strict check stands for them, and a later registration, for any type,
+	// can't bring the alias back. It is nil by default; WithResultTypeAlias fills
+	// it.
+	resultAliasConflicts map[string]bool
 	// clock is the real time seam wrapped by the recording clock on the live path
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
@@ -223,14 +229,19 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 // or parked under the old name still replays after the rename: Recover, StateAt and a
 // RunService that settles a recorded result accept the decoded value when its type is
 // the one current is a value of, and every other recorded name is held to strictly,
-// exactly as without the alias. recorded is the name as the journal records it — the
-// same form the result's Go type gives, an import path and name, as
-// "example.com/app/model.Result" — and current is a value of the type the name now
-// means, matched by its own full name. A rename is one hop: the alias maps the recorded
-// name directly to current's type and never chains through another alias. The option
-// can be repeated, for several renames and for the same rename twice; a recorded name
-// given for two different types is ignored, as are an empty recorded, a nil current and
-// a name aliased to the type's own current name — as the other options, bad input
+// exactly as without the alias. recorded is the name as the journal records it, spelled
+// exactly as the result's Go type does: an import path and name, as
+// "example.com/app/model.Result", a pointer with a leading *, as
+// "*example.com/app/model.Result", and a generic instantiation with its type
+// arguments, as "example.com/app/pair.Pair[int]"; a refusal under ErrEventDataEncoding
+// prints the exact recorded name, to copy into recorded. current is a value of the
+// type the name now means, matched by its own full name. A rename is one hop: the
+// alias maps the recorded name directly to current's type and never chains through
+// another alias. The option can be repeated, for several renames and for the same
+// rename twice; a recorded name given for two different types drops the alias for
+// that name, whichever order the two arrive in, and a later registration, for any
+// type, can't bring it back. An empty recorded, a nil current and a name aliased to
+// the type's own current name are ignored too — as the other options, bad input
 // changes nothing, and the strict check stands, so a result recorded under a name no
 // alias covers still fails Recover and StateAt with ErrEventDataEncoding. The alias
 // applies to a recorded result's name only: a result parked by this Handle stays held
@@ -244,7 +255,17 @@ func WithResultTypeAlias[S comparable, E comparable, C any](recorded string, cur
 		if recorded == "" || current == nil || recorded == currentName {
 			return
 		}
+		// A name two types have claimed is void: drop the alias, and keep the name
+		// conflicted so no later registration, for any type, brings it back.
+		if c.resultAliasConflicts[recorded] {
+			return
+		}
 		if prev, ok := c.resultAliases[recorded]; ok && prev != currentName {
+			delete(c.resultAliases, recorded)
+			if c.resultAliasConflicts == nil {
+				c.resultAliasConflicts = map[string]bool{}
+			}
+			c.resultAliasConflicts[recorded] = true
 			return
 		}
 		if c.resultAliases == nil {
