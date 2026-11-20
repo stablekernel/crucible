@@ -198,6 +198,8 @@ longer matches. Register the decoder before you record results: replay decodes t
 with the recovering Runner's decoder, so a decoder added or changed after results were
 recorded changes what replay hands the reducer, and one that can't decode a settled result
 fails `Recover` and `StateAt` with `ErrEventDataEncoding`; a parked one doesn't fail them. A
+type moved or renamed after its results were recorded replays under its new name once
+told to the Runner with `WithResultTypeAlias`. A
 `WithEventData` payload is decoded from its JSON form live as well as on replay, so a
 reducer gets the same value both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per
 event, for example `durable.DecodeAs[Order]`. Without one, a payload decodes as JSON's own

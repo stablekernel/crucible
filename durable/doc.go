@@ -51,14 +51,17 @@
 // is part of the Runner's options, so the Handle that parked the result never sees a
 // fix: Recover with the fixed decoder, then call RunService, and it settles the parked
 // result. The decoder must return the type the service returned, by import path and
-// name, or JSON's generic form, so settle parked results before moving or renaming that
-// type; after a move, only a decoder that returns the generic form settles them.
+// name, or JSON's generic form, so settle parked results before moving or renaming
+// that type, or tell the Runner what the recorded name now means with
+// WithResultTypeAlias; after a move without an alias, only a decoder that returns the
+// generic form settles them.
 // A Fire or timer that leaves the state that declares the service stops it and
 // discards the parked result. A service error stays message-only. Register the decoder before recording results: replay decodes the
 // journal with the recovering Runner's decoder, held to the Go type the service
 // returned, which every settle records, so a decoder changed after results were
-// recorded to return another type fails Recover, unless it returns JSON's generic form,
-// and one added later for the service's type changes what replay produces.
+// recorded to return another type fails Recover, unless it returns JSON's generic form
+// or the recorded type's new name is aliased (WithResultTypeAlias), and one added later
+// for the service's type changes what replay produces.
 //
 // The kernel stays pure and dependency-free. The durable module is host-side:
 // database drivers, cloud SDKs, and I/O libraries live in the caller or in out-

@@ -733,7 +733,7 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*stat
 		return nil, nil
 	}
 	settled := &settledJSON{}
-	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, settled)), settled
+	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settled)), settled
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to

@@ -379,7 +379,12 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 // An error becomes an error with its message as a Store keeps it (see
 // normalizedErrorMessage), live and on replay. An Error method that panics settles
 // with a message saying so, normalized the same way.
-func replayableOutcome[E comparable](decode EventDataDecoder[E], settled *settledJSON) func(E, any, error) (any, error, error) {
+//
+// aliases carries the Runner's WithResultTypeAlias renames, which the recorded check
+// honors: a result recorded under a name an alias maps to the type the decoded value
+// has settles through the alias. Every other name is checked strictly, as without any
+// alias.
+func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, settled *settledJSON) func(E, any, error) (any, error, error) {
 	return func(event E, result any, err error) (any, error, error) {
 		settled.set(recordedResult{})
 		if err != nil {
@@ -410,7 +415,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], settled *settle
 		} else if !replay {
 			derr = decodedAsPassed(value, result, "service result", true)
 		} else {
-			derr = decodedAsRecorded(value, recorded)
+			derr = decodedAsRecorded(value, recorded, aliases)
 		}
 		if derr != nil {
 			rtype := recorded.rtype
@@ -636,16 +641,20 @@ func qualifiedName(pkg, name string) string {
 // decodedAsRecorded is decodedAsPassed for a recorded result, which records its type's
 // name rather than a value: it reports, as an ErrEventDataEncoding error, a value the
 // decoder returned as another type than the recorded one. As live, nil and JSON's
-// generic form are always accepted. A result this Handle parked keeps its type, and is
-// held to it as live held it; one read from the journal or a checkpoint is held to its
-// name, which a type of the same name and package, such as another function-local type,
-// also has. An empty name, a result recorded with no type, accepts anything.
-func decodedAsRecorded(value any, recorded recordedResult) error {
+// generic form are always accepted. A name aliases maps, from WithResultTypeAlias, to
+// the type the decoded value has is accepted too: the type was renamed or moved after
+// the result was recorded, and the alias says what the recorded name now means; every
+// other name is checked strictly, as without any alias. A result this Handle parked
+// keeps its type, and is held to it as live held it; one read from the journal or a
+// checkpoint is held to its name, which a type of the same name and package, such as
+// another function-local type, also has. An empty name, a result recorded with no
+// type, accepts anything.
+func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
 	}
-	if got := typeName(value); got != typ {
+	if got := typeName(value); got != typ && got != aliases[typ] {
 		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
 			ErrEventDataEncoding, typ, got, typ)
 	}

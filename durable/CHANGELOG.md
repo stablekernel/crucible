@@ -9,6 +9,18 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- **`WithResultTypeAlias`** tells the Runner that a service result type the journal
+  recorded under one full Go type name now goes by another, so a result settled or
+  parked under the old name still replays after a pure refactor moves or renames the
+  type: `Recover`, `StateAt` and a `RunService` that settles a recorded result accept
+  the decoded value when its type is the one the alias names, and every other recorded
+  name is held to strictly, exactly as before. A parked result the Handle itself holds
+  is still held to its own type, as live. The option takes the recorded name and a
+  value of the type the name now means, can be repeated for several renames, and maps
+  one hop, never chaining through another alias. Bad input — an empty recorded name, a
+  nil value, a name aliased to the type's own current name, or one recorded name for
+  two different types — is ignored, like the other Runner options, leaving the strict
+  check in place.
 - **`Record.EndedActors` and `ActorSet`** record the declared child-machine actors that
   ran and have ended, settled or stopped, so `Recover` doesn't spawn them again. A Store
   must keep an empty set distinct from nil.
