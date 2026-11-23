@@ -216,6 +216,16 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 // decodes the journal with the recovering Runner's decoder, so one added or changed
 // after results were recorded changes what replay produces, and one that can't decode
 // a settled result fails Recover and StateAt with ErrEventDataEncoding.
+//
+// The decoder also decodes an actor's done-data, for the parent's onDone event, live
+// as the settle decodes it and on every replay, held to the Go type the live settle
+// recorded, which WithResultTypeAlias renames as a service result's. A done-data
+// payload that won't decode, or that decodes as another type than the actor produced,
+// aborts the settle — nothing fires — and the step driving it fails the Handle,
+// ErrHandleFailed wrapping ErrEventDataEncoding, recording nothing, so the actor runs
+// again on Recover: an actor outcome is never parked, unlike a service result (see
+// RunService). An actor's error stays message-only too and doesn't reach the decoder,
+// and a settle that routes no completion consults no decoder at all.
 func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
 	return func(c *runnerConfig[S, E, C]) {
 		if d != nil {

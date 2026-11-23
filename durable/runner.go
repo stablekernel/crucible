@@ -751,7 +751,10 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*stat
 // The system settles through the same transform the ServiceRunner does (see
 // replayableOutcome), so an actor's output reaches the parent decoded for its onDone
 // event, live as a replay of the recorded JSON does, and an error arrives as an error
-// with the message a Store keeps. The wrapper hands the JSON the transform decoded to
+// with the message a Store keeps. The transform runs only when the settle routes a
+// completion (see WithSettleTransform), so one that routes nothing — a spawn with no
+// onDone for its outcome — consults no decoder, aborts nothing and journals nothing.
+// The wrapper hands the JSON the transform decoded to
 // the collector — the Fire it is about to drive journals it — and notes an abort, so
 // the step driving the system fails the Handle and the actor runs again on Recover:
 // an actor outcome is never parked, as a service result can be.
@@ -770,7 +773,9 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.
 			fires.aborted(abort)
 		} else {
 			// An error outcome leaves nothing here, which clears whatever a settle that
-			// routed nothing left.
+			// fired nothing — one whose actor was respawned under it while its transform
+			// ran — left. A settle that routes nothing runs no transform at all, so it
+			// leaves nothing to clear.
 			fires.settling(settleJSON.take())
 		}
 		return out, outErr, abort
@@ -900,8 +905,9 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
 	// The transform of the settle routing this Fire left the JSON it decoded (see
 	// newActorSystem); take it, so the Fire journals the bytes its own settle decoded.
-	// A Fire no settle drove leaves whatever a settle that routed nothing left, which
-	// the next settle's transform overwrites.
+	// A Fire no settle drove leaves whatever a settle that fired nothing left — one
+	// whose actor was respawned under it while its transform ran, since a settle that
+	// routes nothing runs no transform — which the next settle's transform overwrites.
 	nf := notedFire[S]{pf: pf, settled: p.settled}
 	p.settled = recordedResult{}
 	p.fires = append(p.fires, nf)

@@ -69,6 +69,10 @@ import (
 // returns another type than the actor produced, aborts the settle — nothing fires —
 // and the step fails the Handle, so the actor runs again on Recover; there is no
 // parking for actors, as a service result that won't decode has (see RunService).
+// A settle that routes no completion — the actor was spawned with neither the onDone
+// an output settles through nor the onError a failure does — runs no transform: it
+// consults no decoder, so a done-data that won't encode can't fail the step, and it
+// journals nothing for the settle.
 
 // actorMessagePayload is the wire form of one recorded parent transition the actor
 // system drove: the parent Event it fired, and — for the settling onDone / onError
@@ -132,7 +136,10 @@ type actorMessagePayload struct {
 //
 // It returns whether the actor was found running: false for a ref that names no live
 // actor (already settled, stopped, or never spawned), or false and an error when no
-// palette is wired, the Handle has failed, or ctx ended before the delivery. Once the
+// palette is wired, the Handle has failed, or ctx ended before the delivery. A
+// completion that routes nothing — the actor was spawned with no onDone for its
+// outcome — is a no-op: no decoder is consulted, nothing is recorded for the settle,
+// and the Handle stays healthy, whatever the actor's output encodes as. Once the
 // actor ran it returns true with any error. A result that won't encode, a ctx that ended
 // by the end of the delivery, or a parent Fire refused because a context ended (ctx, or
 // one middleware derived from it) returns ErrHandleFailed and records nothing: a ctx

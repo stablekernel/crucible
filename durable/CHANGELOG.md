@@ -233,7 +233,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   settle — fail the Handle with `ErrHandleFailed` wrapping `ErrEventDataEncoding` and
   record nothing, so a recovered Handle runs the actor from its initial state and the
   delivery again. An actor outcome is never parked, as a service result that won't
-  decode is, because the service already ran but the actor can run again. `Start` and
+  decode is, because the service already ran but the actor can run again. The
+  transform runs only when the settle routes a completion — the actor's spawn wired
+  the onDone an output settles through or the onError a failure does; a settle that
+  routes nothing consults no decoder, journals nothing, and can't fail the step,
+  exactly as on main. `Start` and
   `Recover` fail the same way when a settle their spawns drive aborts; no Handle
   exists yet, so their error wraps `ErrEventDataEncoding` directly. A done-data
   payload with no JSON form fails the Handle the same way, before any `Assign` runs.

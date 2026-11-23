@@ -581,9 +581,12 @@ func (s *ActorSystem[S, E, C]) IsRunning(id string) bool {
 // completion is routed to the parent. It returns whether the actor was found
 // running. An abort a WithSettleTransform function returns for a settle the
 // delivery drives isn't reported to Deliver's caller: the abort went to the
-// delivery's Tick, whose results Deliver drops, so the actor stays running and the
-// host sees the abort by calling Tick or SettleError itself; the durable Runner
-// reports it through the Handle. Deliver is the delivery mechanism the sendTo /
+// delivery's Tick, whose results Deliver drops, so the actor stays running — and
+// it's never recoverable through Deliver, which drained the mailbox, so a later
+// Tick of the actor returns early, without the abort. It's visible only to a host
+// that drives Tick itself, or through SettleError, which settles the still-running
+// actor again; the durable Runner's Handle, which reports it, is the intended
+// channel. Deliver is the delivery mechanism the sendTo /
 // sendParent / respond / forwardTo action sugar routes through; a host (or a test)
 // may also call it directly to inject an event into an actor from outside.
 func (s *ActorSystem[S, E, C]) Deliver(ctx context.Context, ref ActorRef, event any) bool {
@@ -799,11 +802,12 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 
 // settle routes the actor's completion through the parent: on success the parent's
 // onDone fires (carrying output via LastOutput), on failure onError. A
-// WithSettleTransform function runs first, before the actor is marked done and
-// before the routing Fire, so one that aborts, or panics, leaves the actor running;
-// an abort is reported as the ServiceRunner's is (see WithSettleTransform). It
-// returns the parent FireResult and true when a routing event fired, or false when
-// the actor routes no completion or is unknown.
+// WithSettleTransform function runs first for a settle that routes a completion —
+// before the actor is marked done and before the routing Fire — so one that aborts,
+// or panics, leaves the actor running; an abort is reported as the ServiceRunner's
+// is (see WithSettleTransform). A settle that routes nothing runs no transform,
+// settling exactly as with none set. It returns the parent FireResult and true when
+// a routing event fired, or false when the actor routes no completion or is unknown.
 //
 // When the actor FAILED and no onError was wired, settle does not silently swallow
 // the failure: it escalates to the parent as a typed, observable ActorEscalation
@@ -816,12 +820,21 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	if !ok {
 		return FireResult[S]{}, false
 	}
+	// The transform runs only when the settle routes a completion: the actor
+	// succeeded and its invocation wired an onDone (ra.hasDone), or failed and wired
+	// an onError (ra.hasError). A settle that routes nothing — a success with no
+	// onDone, a failure with no onError — runs no transform, exactly as with none
+	// set: nothing consumes the outcome, so nothing may rewrite or abort it, and
+	// LastOutput and LastError report the raw outcome. ra's routing fields are
+	// written only at its spawn, before it is published under the lock, so reading
+	// them here, outside it, is safe.
+	routed := (err == nil && ra.hasDone) || (err != nil && ra.hasError)
 	// The transform runs outside the lock, before the actor is marked done, so an
 	// abort, or a panic in the transform, leaves the actor running and settleable
 	// again. It may stop the actor and spawn another under the same id while it
 	// runs, so from here the settle holds to ra, the actor it began for: only that
 	// actor, still running, settles or reports an abort.
-	if s.transform != nil {
+	if s.transform != nil && routed {
 		var abort error
 		if output, err, abort = s.applySettleTransform(ra, output, err); abort != nil {
 			// An actor stopped, settled, or respawned under the same id while the
@@ -989,12 +1002,19 @@ func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S]
 	return s
 }
 
-// WithSettleTransform sets a function that rewrites every outcome before it settles,
-// whether a delivery, a panic the actor raised while stepping, or SettleError settles
-// it, and returns the system. f gets the event that will carry the outcome: the
-// invocation's onDone for an output, its onError for an error. A host that records
-// outcomes uses it to give the live run and a replay the same value, decoded for that
-// event.
+// WithSettleTransform sets a function that rewrites the outcome a settle routes
+// before it settles, whether a delivery, a panic the actor raised while stepping, or
+// SettleError settles it, and returns the system. f gets the event that will carry
+// the outcome: the invocation's onDone for an output, its onError for an error. A
+// host that records outcomes uses it to give the live run and a replay the same
+// value, decoded for that event.
+//
+// The transform runs only when the settle routes a completion: the actor succeeded
+// and its invocation wired an onDone, or failed and wired an onError. A settle that
+// routes nothing — a success with no onDone, a failure with no onError — runs no
+// transform and can abort nothing, exactly as with none set: nothing fires, a host
+// journaling outcomes records no entry for it, and LastOutput and LastError report
+// the raw outcome.
 //
 // f returns the outcome to settle with, out and outErr. A non-nil outErr settles
 // through onError, and a nil one through onDone with out, except for an
@@ -1007,9 +1027,12 @@ func (s *ActorSystem[S, E, C]) WithParentFireObserver(observe func(ParentFire[S]
 // settle reports the abort as the ServiceRunner's does: SettleError returns false
 // with the abort, as given, in FireResult.Err, and the system's Tick returns that
 // FireResult as one element of its slice. A settle a delivery drives isn't reported
-// to Deliver's caller: Deliver returns only whether it found the actor running, so
-// the actor stays running and the host sees the abort by calling Tick or SettleError
-// itself; the durable Runner reports it through the Handle. An actor stopped,
+// to Deliver's caller: Deliver returns only whether it found the actor running, and
+// the mailbox it drained is left empty, so a later Tick of the actor returns early,
+// without the abort, and nothing recovers it through Deliver. It's visible only to a
+// host that drives Tick itself, or through SettleError, which settles the
+// still-running actor again; the durable Runner reports it through the Handle,
+// which is the intended channel. An actor stopped,
 // settled, or respawned under the same id while the transform ran reports no abort,
 // as a stale settle does. LastOutput and LastError still report the previous settle.
 //

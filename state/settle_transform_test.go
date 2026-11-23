@@ -2,7 +2,9 @@ package state_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -303,5 +305,149 @@ func TestWithSettleTransform_AnAbortedDeliveryFiresNothing(t *testing.T) {
 	}
 	if out, none := sys.LastOutput(); none {
 		t.Fatalf("LastOutput = %q after the abort, want none", out)
+	}
+}
+
+// unroutedParentMachine spawns its child through the spawn action with neither an
+// onDone nor an onError — a dynamic spawn routes no completion, where an invoked
+// actor always routes, firing the zero event its unset outcome leaves, which the
+// parent refuses — so the child's settle routes nothing and its completion is a
+// fire-and-forget no-op, exactly as with no transform.
+func unroutedParentMachine() *state.Machine[string, string, *trec] {
+	return state.ForgeFor[*trec]("unroutedparent").
+		State("idle").
+		State("supervising").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("supervising").Spawn("child", unroutedChildID).
+		Quench()
+}
+
+// unroutedChildID is the explicit id of the dynamically spawned, routing-less child
+// the unrouted-settle tests settle.
+const unroutedChildID = "unrouted-child"
+
+// finishingChild returns an ActorBehavior whose child completes with the fixed output
+// once delivered "finish", whatever the output encodes as.
+func finishingChild(output any) state.ActorBehavior {
+	child := state.ForgeFor[*trec]("finchild").
+		State("working").
+		State("done").Final().
+		Initial("working").
+		Transition("working").On("finish").GoTo("done").
+		Quench()
+	return func(map[string]any) (state.ActorInstance, error) {
+		inst := child.Cast(&trec{}, state.WithInitialState[string]("working"))
+		return state.NewActor(inst, func(*state.Instance[string, string, *trec]) any {
+			return output
+		}), nil
+	}
+}
+
+// unroutedHarness casts unroutedParentMachine, wiring its actor system with the given
+// transform and a child that completes with output, so the routing-less child is
+// ready to settle.
+func unroutedHarness(t *testing.T, transform func(string, any, error) (any, error, error), output any) (
+	*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec], string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	m := unroutedParentMachine()
+	parent := m.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sys := state.NewActorSystem(parent).Register("child", finishingChild(output))
+	if transform != nil {
+		sys.WithSettleTransform(transform)
+	}
+	res := parent.Fire(ctx, "start")
+	sys.Absorb(ctx, res.Effects)
+	if parent.Current() != "supervising" {
+		t.Fatalf("parent state = %q, want supervising", parent.Current())
+	}
+	return parent, sys, unroutedChildID
+}
+
+// TestWithSettleTransform_AnUnroutedSettleRunsNoTransform proves the transform runs
+// only when the settle routes a completion. The child was spawned with neither an
+// onDone nor an onError, so its settle routes nothing and behaves exactly as with no
+// transform set: the transform is never consulted — not for an output that won't
+// encode, whose transform would abort as the durable Runner's does; not for the zero
+// event an onDone-less settle would hand it, which a decoder that refuses that event
+// would abort on; and not for a failure, which escalates to the parent as it does
+// without a transform — nothing fires, and LastOutput and LastError report the raw
+// outcome.
+func TestWithSettleTransform_AnUnroutedSettleRunsNoTransform(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		output    any  // the child's completion output, when it completes
+		fail      bool // settle the child as a failure through SettleError
+		transform func(*int) func(string, any, error) (any, error, error)
+	}{
+		{"an output that won't encode", make(chan int), false, func(calls *int) func(string, any, error) (any, error, error) {
+			return func(event string, output any, err error) (any, error, error) {
+				*calls++
+				if _, jerr := json.Marshal(output); jerr != nil {
+					return nil, nil, fmt.Errorf("won't encode: %w", jerr)
+				}
+				return output, err, nil
+			}
+		}},
+		{"the zero event", "payload", false, func(calls *int) func(string, any, error) (any, error, error) {
+			return func(event string, output any, err error) (any, error, error) {
+				*calls++
+				if event == "" {
+					return nil, nil, errors.New("refuses the zero event")
+				}
+				return output, err, nil
+			}
+		}},
+		{"a failure with no onError", nil, true, func(calls *int) func(string, any, error) (any, error, error) {
+			return func(string, any, error) (any, error, error) {
+				*calls++
+				return nil, nil, errors.New("no recording")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			parent, sys, id := unroutedHarness(t, tc.transform(&calls), tc.output)
+
+			// Drive the unrouted settle: a failure through SettleError, a success
+			// through a delivery.
+			if tc.fail {
+				res, ok := sys.SettleError(ctx, id, errors.New("boom"))
+				if ok || res.Err != nil {
+					t.Fatalf("SettleError = %+v, %v; want false with no Err: nothing routed and nothing aborted", res, ok)
+				}
+			} else if !sys.DeliverByID(ctx, id, "finish") {
+				t.Fatal("DeliverByID returned false; the actor was running")
+			}
+
+			if calls != 0 {
+				t.Fatalf("the transform ran %d times for an unrouted settle, want none", calls)
+			}
+			if parent.Current() != "supervising" {
+				t.Fatalf("parent state = %q, want supervising: nothing fired", parent.Current())
+			}
+			if n := len(parent.Entity().notes); n != 0 {
+				t.Fatalf("the unrouted settle ran %d Assigns, want none", n)
+			}
+			// The actor is done, as a routed settle's is, having settled with no
+			// event to fire.
+			if sys.IsRunning(id) || sys.Running() != 0 {
+				t.Fatalf("the unrouted actor didn't settle: IsRunning(%v), Running %d", sys.IsRunning(id), sys.Running())
+			}
+			if tc.fail {
+				// The raw failure escalated, as it does without a transform, and
+				// LastError keeps it.
+				if esc := sys.LastEscalation(); esc == nil || esc.ActorID != id {
+					t.Fatalf("LastEscalation = %v, want the unrouted failure escalated as without a transform", esc)
+				}
+				if err := sys.LastError(); err == nil || err.Error() != "boom" {
+					t.Fatalf("LastError = %v, want the raw failure", err)
+				}
+			} else if out, got := sys.LastOutput(); !got || out != tc.output {
+				t.Fatalf("LastOutput = %v, %v; want the raw output %v, exactly as with no transform", out, got, tc.output)
+			}
+		})
 	}
 }
