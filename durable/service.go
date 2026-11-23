@@ -393,7 +393,7 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 // with a message saying so, normalized the same way.
 //
 // aliases carries the Runner's WithResultTypeAlias renames, which the recorded check
-// honors: a result recorded under a name an alias maps to the type the decoded value
+// honors: an outcome recorded under a name an alias maps to the type the decoded value
 // has settles through the alias. Every other name is checked strictly, as without any
 // alias.
 func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, settled *settledJSON, what, errWhat string) func(E, any, error) (any, error, error) {

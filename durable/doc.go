@@ -64,11 +64,12 @@
 //
 // An actor's done-data gets the same decode, live as on replay: when the decoder covers
 // the parent's onDone event it arrives as the decoder's type, and without one in JSON's
-// generic form. An actor's error is message-only too, and one whose Error method
-// panics settles with a message saying so. An actor outcome is never parked: done-data
-// that won't decode, or decodes as a type other than the actor produced, fails the
-// Handle — the delivery, or the Fire, Tick or RunService whose absorb drove the settle
-// — and records nothing, so the actor runs again on Recover.
+// generic form, held to the recorded Go type, which an alias from WithResultTypeAlias
+// can rename as a service result's. An actor's error is message-only too, and one whose
+// Error method panics settles with a message saying so. An actor outcome is never
+// parked: done-data that won't decode, or decodes as a type other than the actor
+// produced, fails the Handle — the delivery, or the Fire, Tick or RunService whose
+// absorb drove the settle — and records nothing, so the actor runs again on Recover.
 //
 // The kernel stays pure and dependency-free. The durable module is host-side:
 // database drivers, cloud SDKs, and I/O libraries live in the caller or in out-

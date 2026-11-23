@@ -224,10 +224,12 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 	}
 }
 
-// WithResultTypeAlias tells the Runner that a service result type the journal recorded
-// under the full Go type name recorded now goes by current's type, so a result settled
-// or parked under the old name still replays after the rename: Recover, StateAt and a
-// RunService that settles a recorded result accept the decoded value when its type is
+// WithResultTypeAlias tells the Runner that a service result type, or an actor
+// done-data type, the journal recorded under the full Go type name recorded now goes
+// by current's type, so a result settled or parked under the old name, and an actor's
+// done-data settled under it, still replay after the rename: Recover, StateAt and a
+// RunService that settles a recorded result, and the replay of a recorded actor's
+// done-data, accept the decoded value when its type is
 // the one current is a value of, and every other recorded name is held to strictly,
 // exactly as without the alias. recorded is the name as the journal records it, spelled
 // exactly as the result's Go type does: an import path and name, as
@@ -243,7 +245,8 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 // type, can't bring it back. An empty recorded, a nil current and a name aliased to
 // the type's own current name are ignored too — as the other options, bad input
 // changes nothing, and the strict check stands, so a result recorded under a name no
-// alias covers still fails Recover and StateAt with ErrEventDataEncoding. The alias
+// alias covers still fails Recover and StateAt with ErrEventDataEncoding, naming the
+// outcome — a service result or an actor's done-data — that wouldn't decode. The alias
 // applies to a recorded result's name only: a result parked by this Handle stays held
 // to its own type, exactly as live (see WithEventDataDecoder).
 func WithResultTypeAlias[S comparable, E comparable, C any](recorded string, current any) Option[S, E, C] {

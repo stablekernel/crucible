@@ -2472,7 +2472,7 @@ func replayActors[S comparable, E comparable, C any](
 	actorArms bool,
 ) error {
 	for _, entry := range entries {
-		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, entry)
+		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, cfg.resultAliases, entry)
 		if err != nil {
 			return fmt.Errorf("at step %d: %w", rec.Step, err)
 		}

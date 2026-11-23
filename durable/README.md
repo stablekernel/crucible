@@ -205,7 +205,8 @@ settles with a message saying so. A done-data payload that won't decode, or that
 as a type other than the actor produced, is never parked: the settle fires nothing,
 `DeliverToActor` fails the Handle with `ErrEventDataEncoding` wrapped in
 `ErrHandleFailed`, nothing is recorded, and a `Recover` runs the actor again. A
-type moved or renamed after its results were recorded replays under its new name once
+type moved or renamed after its results — or an actor's done-data — were recorded
+replays under its new name once
 told to the Runner with `WithResultTypeAlias`. A
 `WithEventData` payload is decoded from its JSON form live as well as on replay, so a
 reducer gets the same value both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per

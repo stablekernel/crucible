@@ -9,12 +9,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **`WithResultTypeAlias`** tells the Runner that a service result type the journal
-  recorded under one full Go type name now goes by another, so a result settled or
-  parked under the old name still replays after a pure refactor moves or renames the
-  type: `Recover`, `StateAt` and a `RunService` that settles a recorded result accept
-  the decoded value when its type is the one the alias names, and every other recorded
-  name is held to strictly, exactly as before. A parked result the Handle itself holds
+- **`WithResultTypeAlias`** tells the Runner that a service result type, or an actor
+  done-data type, the journal recorded under one full Go type name now goes by another,
+  so a result settled or parked under the old name, and an actor's done-data settled
+  under it, still replay after a pure refactor moves or renames the type: `Recover`,
+  `StateAt` and a `RunService` that settles a recorded result, and the replay of a
+  recorded actor's done-data — from the journal, a checkpoint's tail or `StateAt` —
+  accept the decoded value when its type is the one the alias names, and every other
+  recorded name is held to strictly, exactly as before. A parked result the Handle itself holds
   is still held to its own type, as live. The option takes the recorded name and a
   value of the type the name now means, can be repeated for several renames, and maps
   one hop, never chaining through another alias. One recorded name given for two
