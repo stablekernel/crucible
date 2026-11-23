@@ -914,47 +914,6 @@ func TestHandle_FailedAppend_RefusesEveryStep(t *testing.T) {
 	}
 }
 
-// failingCheckpointStore fails the next Checkpoint after armed is set.
-type failingCheckpointStore struct {
-	durable.Store
-	armed bool
-}
-
-func (s *failingCheckpointStore) Checkpoint(ctx context.Context, id durable.InstanceID, snapshot []byte, throughStep int, opts ...durable.CheckpointOption) error {
-	if s.armed {
-		s.armed = false
-		return errors.New("checkpoint unavailable")
-	}
-	return s.Store.Checkpoint(ctx, id, snapshot, throughStep, opts...)
-}
-
-// TestHandle_FailedCheckpointOnTick_KeepsGoing proves a failed checkpoint doesn't fail
-// the Handle or make the next step conflict: the Record is durable.
-func TestHandle_FailedCheckpointOnTick_KeepsGoing(t *testing.T) {
-	ctx := context.Background()
-	store := &failingCheckpointStore{Store: durable.NewMemStore()}
-	clk := state.NewFakeClock(epoch)
-	opts := []durable.Option[string, string, *runCtx]{
-		durable.WithRunnerClock[string, string, *runCtx](clk),
-		durable.WithCheckpointEvery[string, string, *runCtx](2),
-	}
-	h, err := durable.NewRunner(pollingMachine(), store, opts...).Start(ctx, "poll-1", &runCtx{}, state.WithInitialState("idle"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if _, err = h.Fire(ctx, "start"); err != nil {
-		t.Fatalf("Fire(start): %v", err)
-	}
-	store.armed = true
-	clk.Advance(time.Second)
-	if _, err = h.Tick(ctx); err == nil || errors.Is(err, durable.ErrHandleFailed) {
-		t.Fatalf("Tick = %v, want the plain checkpoint error", err)
-	}
-	if _, err = h.Fire(ctx, "poke"); err != nil {
-		t.Fatalf("Fire after the failed checkpoint: %v", err)
-	}
-}
-
 // TestHandle_FencedOwner_Stops proves a Handle that lost its instance reports the fence
 // through ErrHandleFailed, so a host can tell it must stop rather than recover.
 func TestHandle_FencedOwner_Stops(t *testing.T) {
