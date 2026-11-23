@@ -28,6 +28,18 @@ type runnerConfig[S comparable, E comparable, C any] struct {
 	// eventDataDecoder rebuilds a recorded WithEventData payload; it defaults to
 	// DecodeAs[any].
 	eventDataDecoder EventDataDecoder[E]
+	// resultAliases maps a recorded service result's Go type name, as typeName gives
+	// it, to the full name of the type that name now means, so a result settled or
+	// parked under a name a refactor moved or renamed still replays. It is nil by
+	// default: every recorded name is held to strictly, exactly as recorded.
+	// WithResultTypeAlias fills it.
+	resultAliases map[string]string
+	// resultAliasConflicts holds the recorded names WithResultTypeAlias has been
+	// given for two different types, which drop the alias for that name entirely:
+	// the strict check stands for them, and a later registration, for any type,
+	// can't bring the alias back. It is nil by default; WithResultTypeAlias fills
+	// it.
+	resultAliasConflicts map[string]bool
 	// clock is the real time seam wrapped by the recording clock on the live path
 	// and replaced by the replay clock on recovery. It defaults to
 	// state.SystemClock(); a test supplies a deterministic fake.
@@ -186,11 +198,80 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 // float64, map[string]any or []any) is accepted; a struct, an int or a typed slice is
 // refused with ErrEventDataEncoding until the decoder covers its event. A nil decoder is
 // ignored.
+//
+// The decoder also decodes a service's result, for the invocation's onDone event, live
+// in RunService and on every replay. A result whose onDone event the decoder covers
+// arrives as the decoder's type; otherwise it arrives in JSON's generic form, a struct
+// as a map[string]any and a number as a float64. A decoder that fails on a result, or
+// returns a type other than the service returned, parks the result: RunService returns
+// ErrEventDataEncoding before any onDone or onError Assign runs, records the result
+// without settling it, and keeps the Handle healthy. Recover with the fixed decoder,
+// then call RunService, to settle the parked result without running the service again;
+// the Handle that parked it never sees the fix (see Handle.RunService). The settling
+// decoder must return the type the service returned, by import path and name, or JSON's
+// generic form, so a type moved or renamed after the park or a settle settles only
+// through WithResultTypeAlias or a decoder that returns the generic form. A service
+// error stays message-only and
+// doesn't reach the decoder. Register the decoder before results are recorded: replay
+// decodes the journal with the recovering Runner's decoder, so one added or changed
+// after results were recorded changes what replay produces, and one that can't decode
+// a settled result fails Recover and StateAt with ErrEventDataEncoding.
 func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
 	return func(c *runnerConfig[S, E, C]) {
 		if d != nil {
 			c.eventDataDecoder = d
 		}
+	}
+}
+
+// WithResultTypeAlias tells the Runner that a service result type the journal recorded
+// under the full Go type name recorded now goes by current's type, so a result settled
+// or parked under the old name still replays after the rename: Recover, StateAt and a
+// RunService that settles a recorded result accept the decoded value when its type is
+// the one current is a value of, and every other recorded name is held to strictly,
+// exactly as without the alias. recorded is the name as the journal records it, spelled
+// exactly as the result's Go type does: an import path and name, as
+// "example.com/app/model.Result", a pointer with a leading *, as
+// "*example.com/app/model.Result", and a generic instantiation with its type
+// arguments, as "example.com/app/pair.Pair[int]"; a refusal under ErrEventDataEncoding
+// prints the exact recorded name, to copy into recorded. current is a value of the
+// type the name now means, matched by its own full name. A rename is one hop: the
+// alias maps the recorded name directly to current's type and never chains through
+// another alias. The option can be repeated, for several renames and for the same
+// rename twice; a recorded name given for two different types drops the alias for
+// that name, whichever order the two arrive in, and a later registration, for any
+// type, can't bring it back. An empty recorded, a nil current and a name aliased to
+// the type's own current name are ignored too — as the other options, bad input
+// changes nothing, and the strict check stands, so a result recorded under a name no
+// alias covers still fails Recover and StateAt with ErrEventDataEncoding. The alias
+// applies to a recorded result's name only: a result parked by this Handle stays held
+// to its own type, exactly as live (see WithEventDataDecoder).
+func WithResultTypeAlias[S comparable, E comparable, C any](recorded string, current any) Option[S, E, C] {
+	return func(c *runnerConfig[S, E, C]) {
+		var currentName string
+		if current != nil {
+			currentName = typeName(current)
+		}
+		if recorded == "" || current == nil || recorded == currentName {
+			return
+		}
+		// A name two types have claimed is void: drop the alias, and keep the name
+		// conflicted so no later registration, for any type, brings it back.
+		if c.resultAliasConflicts[recorded] {
+			return
+		}
+		if prev, ok := c.resultAliases[recorded]; ok && prev != currentName {
+			delete(c.resultAliases, recorded)
+			if c.resultAliasConflicts == nil {
+				c.resultAliasConflicts = map[string]bool{}
+			}
+			c.resultAliasConflicts[recorded] = true
+			return
+		}
+		if c.resultAliases == nil {
+			c.resultAliases = map[string]string{}
+		}
+		c.resultAliases[recorded] = currentName
 	}
 }
 

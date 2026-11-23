@@ -305,5 +305,5 @@ func newReplayServiceRunner[S comparable, E comparable, C any](
 	if cfg.serviceReg == nil {
 		return nil
 	}
-	return state.NewServiceRunner(inst, cfg.serviceReg)
+	return state.NewServiceRunner(inst, cfg.serviceReg).WithResultTransform(replayableOutcome(cfg.eventDataDecoder, cfg.resultAliases, nil))
 }

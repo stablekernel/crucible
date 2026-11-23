@@ -181,10 +181,25 @@ owner holds the instance, so stop. `Recover` retries an unapplied effect, and re
 Events, service done-data, actor done-data, and actor messages are recorded as their
 JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
 observes the JSON-decoded shape of actor done-data on a replayed `onDone`. A service's
-result is JSON-decoded live as well as on replay, so a reducer gets the same value both
-ways: a struct is a map and an integer a `float64`, which loses precision above 2^53, and
-an error an error with the same message, which `errors.Is` and `errors.As` no longer
-match. A
+result is decoded from its JSON form live as well as on replay, so a reducer gets the same
+value both ways. When `WithEventDataDecoder` covers the invocation's `onDone` event, the
+result arrives as the decoder's type, for example `durable.DecodeAs[User]`. Otherwise it
+arrives in JSON's generic form: a struct as a map and an integer as a `float64`, which
+loses precision above 2^53. A decoder that fails, or that returns a type other than the
+one the service returned, parks the result: `RunService` returns `ErrEventDataEncoding`
+and no `onDone` or `onError` reducer runs, but the journal records the result as the
+service returned it, and the Handle stays healthy. The service stays in flight and never
+runs again. The decoder is part of the Runner's options, so the Handle that parked the
+result never sees a fix: `Recover` with the fixed decoder, then call `RunService`, and it
+settles the parked result. Until then `RunService` keeps returning
+`ErrEventDataEncoding`. A checkpoint keeps a parked result, and a `Fire` or timer that
+leaves the state that declares the service stops the service and discards it. A service error stays message-only, an error with the same message, which `errors.Is` no
+longer matches. Register the decoder before you record results: replay decodes the journal
+with the recovering Runner's decoder, so a decoder added or changed after results were
+recorded changes what replay hands the reducer, and one that can't decode a settled result
+fails `Recover` and `StateAt` with `ErrEventDataEncoding`; a parked one doesn't fail them. A
+type moved or renamed after its results were recorded replays under its new name once
+told to the Runner with `WithResultTypeAlias`. A
 `WithEventData` payload is decoded from its JSON form live as well as on replay, so a
 reducer gets the same value both ways. `WithEventDataDecoder` decodes it as the type the caller passed, chosen per
 event, for example `durable.DecodeAs[Order]`. Without one, a payload decodes as JSON's own

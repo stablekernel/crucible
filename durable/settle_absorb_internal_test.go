@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -49,6 +50,17 @@ func absorbMachine(svcA, svcB state.ServiceFn[absorbCtx]) *state.Machine[string,
 		Quench()
 }
 
+// serviceArms reads how many service activations svc has armed: the ServiceRunner
+// numbers each one it absorbs, so the count is the activations it absorbed.
+func serviceArms[S comparable, E comparable, C any](t *testing.T, svc *state.ServiceRunner[S, E, C]) uint64 {
+	t.Helper()
+	f := reflect.ValueOf(svc).Elem().FieldByName("gen")
+	if !f.IsValid() {
+		t.Fatal("state.ServiceRunner has no gen field; update serviceArms")
+	}
+	return f.Uint()
+}
+
 // TestRunService_SettleArmsItsFollowOnServiceOnce: svcA's onDone enters a state that
 // invokes svcB. Live, the settle arms svcB once, as the replay of the journal does, so
 // the live runner and a recovered one have armed the same activations; a checkpoint
@@ -83,8 +95,16 @@ func TestRunService_SettleArmsItsFollowOnServiceOnce(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
+			if got := serviceArms(t, h.svc); got != 1 {
+				t.Fatalf("Start armed %d service activations, want 1 (svcA)", got)
+			}
 			if ok, rerr := runOnce(ctx, h, aID); rerr != nil || !ok {
 				t.Fatalf("RunService(svcA) = %v, %v", ok, rerr)
+			}
+			// svcA's activation, then svcB's, once.
+			live := serviceArms(t, h.svc)
+			if live != 2 {
+				t.Errorf("live: the runner armed %d service activations, want 2: the settle armed svcB more than once", live)
 			}
 			if len(h.timers) != 1 {
 				t.Errorf("live: the timer table is %v, want second's timer armed", h.timers)
@@ -96,6 +116,9 @@ func TestRunService_SettleArmsItsFollowOnServiceOnce(t *testing.T) {
 				if run, err = Recover(ctx, m, store, "a1", opts...); err != nil {
 					t.Fatalf("Recover: %v", err)
 				}
+				if got := serviceArms(t, run.svc); got != live {
+					t.Errorf("journal: the recovered runner armed %d service activations, the live one %d", got, live)
+				}
 			case "checkpoint":
 				snap, tail, lerr := store.Load(ctx, "a1")
 				if lerr != nil || len(tail) != 0 || snap == nil {
@@ -103,6 +126,10 @@ func TestRunService_SettleArmsItsFollowOnServiceOnce(t *testing.T) {
 				}
 				if run, err = Recover(ctx, m, store, "a1", opts...); err != nil {
 					t.Fatalf("Recover: %v", err)
+				}
+				// The checkpoint restores the one service in flight, svcB.
+				if got := serviceArms(t, run.svc); got != 1 {
+					t.Errorf("checkpoint: the recovered runner armed %d service activations, want 1 (svcB)", got)
 				}
 			}
 			if !run.svc.HasPending(bID) || run.svc.Pending() != 1 {
@@ -122,6 +149,37 @@ func TestRunService_SettleArmsItsFollowOnServiceOnce(t *testing.T) {
 			}
 			if got, want := run.inst.Snapshot().Context.Notes, []string{"a-1", "b-1"}; !reflect.DeepEqual(got, want) {
 				t.Errorf("%s: notes %v, want %v", mode, got, want)
+			}
+		})
+	}
+}
+
+// TestUndecodableResult_WrapsErrEventDataEncodingOnlyForADecodeFailure pins what the
+// abort replayableOutcome returns wraps: a result that won't decode wraps
+// ErrEventDataEncoding, as the park RunService returns does; one with no JSON form
+// wraps no sentinel, since serviceStep fails the Handle for it.
+func TestUndecodableResult_WrapsErrEventDataEncodingOnlyForADecodeFailure(t *testing.T) {
+	refuse := func(string, []byte) (any, error) { return nil, errors.New("decoder refused") }
+	for _, tc := range []struct {
+		name     string
+		result   any
+		wantRaw  bool
+		encoding bool
+	}{
+		{"won't decode", "ok", true, true},
+		{"won't encode", make(chan int), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, abort := replayableOutcome[string](refuse, nil, &settledJSON{})("done", tc.result, nil)
+			var derr *undecodableResult
+			if !errors.As(abort, &derr) {
+				t.Fatalf("abort = %v, want an *undecodableResult", abort)
+			}
+			if got := derr.raw != nil; got != tc.wantRaw {
+				t.Errorf("raw = %q, want raw %v", derr.raw, tc.wantRaw)
+			}
+			if got := errors.Is(derr, ErrEventDataEncoding); got != tc.encoding {
+				t.Errorf("errors.Is(%v, ErrEventDataEncoding) = %v, want %v", derr, got, tc.encoding)
 			}
 		})
 	}

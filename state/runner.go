@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -69,6 +70,10 @@ type running[E comparable] struct {
 	onDone  E
 	onError E
 	state   string
+	// gen identifies this activation: a service stopped and armed again under the same
+	// invoke id gets a new one, so a settle that captured the old activation can't
+	// settle the new one.
+	gen uint64
 }
 
 // ServiceRunner is the reusable host-driver that turns the kernel's StartService /
@@ -89,6 +94,7 @@ type ServiceRunner[S comparable, E comparable, C any] struct {
 
 	mu      sync.Mutex
 	running map[string]running[E]
+	gen     uint64 // the latest activation's gen, under mu
 
 	// lastResult holds the most recently settled service outcome so the host
 	// action bound to the onDone / onError transition can read the result or error
@@ -98,8 +104,9 @@ type ServiceRunner[S comparable, E comparable, C any] struct {
 	// snapshot.
 	lastResult atomic.Value // serviceOutcome
 
-	// transform, when set, rewrites a ServiceFn's outcome before Tick settles it.
-	transform func(any, error) (any, error)
+	// transform, when set, rewrites every outcome before it settles, given the event
+	// that will carry it, or aborts the settle.
+	transform func(event E, result any, err error) (out any, outErr error, abort error)
 }
 
 // serviceOutcome is the result/error pair a settled service exposes through
@@ -140,12 +147,14 @@ func (r *ServiceRunner[S, E, C]) Absorb(ctx context.Context, effects []Effect) {
 			if !ok {
 				continue
 			}
+			r.gen++
 			r.running[e.ID] = running[E]{
 				src:     e.Src,
 				input:   e.Input,
 				onDone:  done,
 				onError: erev,
 				state:   e.State,
+				gen:     r.gen,
 			}
 		case StopService:
 			delete(r.running, e.ID)
@@ -174,7 +183,10 @@ func (r *ServiceRunner[S, E, C]) HasPending(id string) bool {
 // and fires its OnDone event (carrying result) through the instance, then absorbs
 // the resulting effects so a chained invoke arms its successor. It returns the
 // FireResult and true, or the zero result and false when id names no in-flight
-// service (already stopped or settled). result is delivered to the onDone
+// service (already stopped or settled). When a WithResultTransform function aborts
+// the settle, it returns false and a FireResult whose Err is the abort error, fires
+// nothing, and leaves the service in flight, unless the service was stopped while the
+// transform ran: then the abort returns the zero result and false. result is delivered to the onDone
 // transition's effects through the instance entity by the host's actions — the
 // kernel routes the event; the action reads the result.
 func (r *ServiceRunner[S, E, C]) SettleDone(ctx context.Context, id string, result any) (FireResult[S], bool) {
@@ -184,21 +196,47 @@ func (r *ServiceRunner[S, E, C]) SettleDone(ctx context.Context, id string, resu
 // SettleError fails the in-flight service id: it drops the service and fires its
 // OnError event (carrying err) through the instance, then absorbs the resulting
 // effects. It returns the FireResult and true, or the zero result and false when
-// id names no in-flight service.
+// id names no in-flight service. When a WithResultTransform function aborts the
+// settle, it returns false and a FireResult whose Err is the abort error, fires
+// nothing, and leaves the service in flight, unless the service was stopped while the
+// transform ran: then the abort returns the zero result and false.
 func (r *ServiceRunner[S, E, C]) SettleError(ctx context.Context, id string, err error) (FireResult[S], bool) {
 	return r.settle(ctx, id, nil, err)
 }
 
-// settle is the shared body of SettleDone / SettleError: drop the running service
-// under lock, then fire its routing event and absorb the follow-on effects.
+// settle is the shared body of SettleDone / SettleError: it settles the activation
+// of id in flight now.
 func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result any, err error) (FireResult[S], bool) {
 	r.mu.Lock()
 	rs, ok := r.running[id]
-	if ok {
-		delete(r.running, id)
-	}
 	r.mu.Unlock()
 	if !ok {
+		return FireResult[S]{}, false
+	}
+	return r.settleActivation(ctx, id, rs, result, err)
+}
+
+// settleActivation settles rs, one activation of id: run the transform on the
+// outcome, drop the activation under lock, then fire its routing event and absorb the
+// follow-on effects. The transform runs outside the lock before the activation is
+// dropped, so one that aborts, or panics, leaves the service in flight. It returns
+// false and fires nothing when rs is no longer in flight, settled or stopped meanwhile,
+// even if the service was armed again under the same id: that new activation stays in
+// flight. That holds for an abort too: a stale abort returns no Err, as for an id not
+// in flight, since it leaves nothing in flight.
+func (r *ServiceRunner[S, E, C]) settleActivation(ctx context.Context, id string, rs running[E], result any, err error) (FireResult[S], bool) {
+	if r.transform != nil {
+		var abort error
+		if result, err, abort = r.applyTransform(rs, result, err); abort != nil {
+			if !r.current(id, rs, false) {
+				return FireResult[S]{}, false
+			}
+			return FireResult[S]{Err: abort}, false
+		}
+	}
+	ok := r.current(id, rs, true)
+	if !ok {
+		// Settled or stopped while the transform ran, and perhaps armed again.
 		return FireResult[S]{}, false
 	}
 	r.lastResult.Store(serviceOutcome{result: result, err: err})
@@ -220,16 +258,65 @@ func (r *ServiceRunner[S, E, C]) settle(ctx context.Context, id string, result a
 	return res, true
 }
 
-// WithResultTransform sets a function that rewrites a ServiceFn's outcome before Tick
-// settles it, and returns the runner. A host that records outcomes uses it to give the
-// live run the form a replay will see. LastResult and LastError then report the rewritten
-// outcome. It also runs on an UnboundRefError, where only a non-nil returned error is
-// used: a nil one leaves the UnboundRefError, so the service still settles through onError. It
-// doesn't apply to SettleDone or SettleError, which take the outcome as given. Set it
-// before the first Tick: the field isn't guarded.
-func (r *ServiceRunner[S, E, C]) WithResultTransform(f func(result any, err error) (any, error)) *ServiceRunner[S, E, C] {
+// WithResultTransform sets a function that rewrites every outcome before it settles,
+// whether Tick, SettleDone or SettleError settles it, and returns the runner. f gets
+// the invocation's onDone event for an incoming result, its onError event for an
+// incoming error. A host that records outcomes uses it to give the live run and
+// a replay the same value, decoded for that event.
+//
+// f returns the outcome to settle with, out and outErr. A non-nil outErr settles
+// through onError, and a nil one through onDone with out, except for an
+// UnboundRefError: a nil outErr leaves the UnboundRefError, so an unbound service
+// still settles through onError. LastResult and LastError report the rewritten
+// outcome. f sees the event for the outcome as it came in: an outErr f returns
+// settles through onError even when f was handed the onDone event of a result.
+//
+// A non-nil abort stops the settle instead: no event fires, so no Assign, middleware
+// or inspector runs, and the service stays in flight, so it can be settled again.
+// SettleDone and SettleError return false with abort, as given, in FireResult.Err;
+// Tick returns a one-element slice holding that FireResult. LastResult and LastError
+// still report the previous settle.
+//
+// f runs outside the runner's lock before the service is dropped, so it may run for a
+// settle that then finds the service stopped or settled by another goroutine, and
+// returns false. That holds even if the service was armed again under the same invoke
+// id meanwhile: the new activation stays in flight. Such a settle reports no abort:
+// SettleDone and SettleError return the zero result, and Tick an empty slice. A panic in f goes on out of the settle, leaving the service in
+// flight. Set f before the first settle: the field isn't guarded.
+func (r *ServiceRunner[S, E, C]) WithResultTransform(f func(event E, result any, err error) (out any, outErr error, abort error)) *ServiceRunner[S, E, C] {
 	r.transform = f
 	return r
+}
+
+// current reports whether rs is still the activation of id in flight, and with drop
+// removes it when it is.
+func (r *ServiceRunner[S, E, C]) current(id string, rs running[E], drop bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.running[id]
+	ok = ok && cur.gen == rs.gen
+	if ok && drop {
+		delete(r.running, id)
+	}
+	return ok
+}
+
+// applyTransform runs the transform on an outcome of rs. An UnboundRefError stays an
+// error: a transform that returns no error for it can't turn it into a success.
+func (r *ServiceRunner[S, E, C]) applyTransform(rs running[E], result any, err error) (any, error, error) {
+	ev := rs.onDone
+	if err != nil {
+		ev = rs.onError
+	}
+	out, terr, abort := r.transform(ev, result, err)
+	if abort != nil {
+		return nil, nil, abort
+	}
+	var unbound *UnboundRefError
+	if terr == nil && errors.As(err, &unbound) {
+		return nil, err, nil
+	}
+	return out, terr, nil
 }
 
 // Tick resolves and runs the in-flight service id against the bound registry,
@@ -242,7 +329,14 @@ func (r *ServiceRunner[S, E, C]) WithResultTransform(f func(result any, err erro
 // Scheduler.Tick and ActorSystem.Tick, or an empty slice when id is not in flight.
 // A missing registry / unresolved ServiceFn still settles the service as an error
 // (so the machine routes onError rather than hanging) and that routed result is
-// returned in the slice.
+// returned in the slice. When a WithResultTransform function aborts the settle, the
+// slice holds one FireResult whose Err is the abort error, no event fires, and the
+// service stays in flight. A service stopped while its ServiceFn or the transform ran
+// settles nothing and reports no abort, even if it was armed again under the same id:
+// Tick returns an empty slice, as for an id not in flight, and the new activation
+// stays in flight. So a non-empty slice always means the settle fired its event, or
+// was aborted with the service still in flight, whatever FireResult the Fire
+// returned.
 func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) []FireResult[S] {
 	r.mu.Lock()
 	rs, ok := r.running[id]
@@ -250,28 +344,25 @@ func (r *ServiceRunner[S, E, C]) Tick(ctx context.Context, id string) []FireResu
 	if !ok {
 		return nil
 	}
+	// Settle the activation the ServiceFn runs for, not one armed under id meanwhile.
 	fn := r.resolve(rs.src.Name)
 	if fn == nil {
-		var err error = &UnboundRefError{Kind: "service", Name: rs.src.Name}
-		if r.transform != nil {
-			// An unbound service always settles as an error: a transform that returns
-			// no error can't turn it into a success.
-			if _, terr := r.transform(nil, err); terr != nil {
-				err = terr
-			}
-		}
-		res, _ := r.SettleError(ctx, id, err)
-		return []FireResult[S]{res}
+		return tickResult(r.settleActivation(ctx, id, rs, nil, &UnboundRefError{Kind: "service", Name: rs.src.Name}))
 	}
 	out, err := fn(ctx, ServiceCtx[C]{Entity: r.inst.entity, Params: rs.src.Params, Input: rs.input})
-	if r.transform != nil {
-		out, err = r.transform(out, err)
-	}
 	if err != nil {
-		res, _ := r.SettleError(ctx, id, err)
-		return []FireResult[S]{res}
+		out = nil
 	}
-	res, _ := r.SettleDone(ctx, id, out)
+	return tickResult(r.settleActivation(ctx, id, rs, out, err))
+}
+
+// tickResult is Tick's return for a settle: the settle's FireResult when it fired or
+// was aborted, which leaves the abort in Err, and nothing when it found its
+// activation gone.
+func tickResult[S comparable](res FireResult[S], settled bool) []FireResult[S] {
+	if !settled && res.Err == nil {
+		return nil
+	}
 	return []FireResult[S]{res}
 }
 

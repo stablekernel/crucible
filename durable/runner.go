@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -141,9 +140,16 @@ type Handle[S comparable, E comparable, C any] struct {
 
 	svc    *state.ServiceRunner[S, E, C] // host driver for invoked services, nil when none wired
 	svcBuf *[]state.JournalEntry         // recording service-result accumulator, flushed per step
+	// svcJSON holds the JSON a successful settle decoded, which the step takes and
+	// journals; it holds nothing between steps.
+	svcJSON *settledJSON
 	// settled holds the services that settled in the current activation of the state
 	// that declares them, so a checkpoint records them and Recover doesn't start them.
 	settled map[string]bool
+	// parked holds the results recorded parked, by service id: each didn't decode for
+	// its onDone event, so the service is still in flight, and RunService settles the
+	// result rather than run the ServiceFn again. A checkpoint records them.
+	parked map[string]recordedResult
 
 	actors    *state.ActorSystem[S, E, C] // host driver for child-machine actors, nil when none wired
 	ended     recordedSet                 // the ended actors the journal last recorded
@@ -368,13 +374,14 @@ func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, event any, effects 
 // state the settle enters arms whatever it declares, such as a service whose onDone
 // spawns an actor. The ServiceRunner absorbed those effects itself as it settled, so
 // absorbSettle doesn't hand them to it again, which would arm each service it starts a
-// second time, where replay arms it once: it forgets the settled services the effects
-// start or stop, and arms the timers, then the actors, in absorbDrivers' order.
+// second time, where replay arms it once: it forgets the settled services and parked
+// results the effects start or stop, and arms the timers, then the actors, in
+// absorbDrivers' order.
 func (h *Handle[S, E, C]) absorbSettle(ctx context.Context, effects []state.Effect) {
 	if hasTimerEffect(effects) {
 		h.absorbTimers(ctx, effects)
 	}
-	forgetSettled(h.settled, effects)
+	h.forgetServices(effects)
 	h.absorbActors(ctx, nil, effects, nil)
 }
 
@@ -387,12 +394,12 @@ func (h *Handle[S, E, C]) absorbRunners(ctx context.Context, event any, effects 
 }
 
 // absorbServices feeds a transition's effects into the service runner, forgetting the
-// settled services each service the effects start or stop. Tick calls it for each
-// timer transition it fired, whose timers the scheduler already armed, before
-// absorbActors for any of them: a timer that leaves a state stops its services, and one
-// that enters a state starts them, as a Fire does.
+// settled services and parked results of each service the effects start or stop. Tick
+// calls it for each timer transition it fired, whose timers the scheduler already
+// armed, before absorbActors for any of them: a timer that leaves a state stops its
+// services, and one that enters a state starts them, as a Fire does.
 func (h *Handle[S, E, C]) absorbServices(ctx context.Context, effects []state.Effect) {
-	forgetSettled(h.settled, effects)
+	h.forgetServices(effects)
 	if h.svc != nil {
 		h.svc.Absorb(ctx, effects)
 	}
@@ -444,7 +451,7 @@ func (h *Handle[S, E, C]) absorbActors(ctx context.Context, event any, effects, 
 // does. Replay arms them the same way, in the same order, so the clock reads match. ctx
 // is the context of the step that drove the system.
 func (h *Handle[S, E, C]) absorbParentFire(ctx context.Context, effects []state.Effect) {
-	forgetSettled(h.settled, effects)
+	h.forgetServices(effects)
 	if hasTimerEffect(effects) {
 		h.absorbTimers(ctx, effects)
 	}
@@ -511,9 +518,19 @@ func dropUnscheduled[S comparable, E comparable, C any](timers map[string]pendin
 	}
 }
 
+// forgetServices drops from the settled services and the parked results each service
+// effects start or stop (see forgetSettled).
+func (h *Handle[S, E, C]) forgetServices(effects []state.Effect) {
+	forgetSettled(h.settled, effects)
+	forgetSettled(h.parked, effects)
+}
+
 // forgetSettled removes from settled each service effects start or stop: a state that
-// declares it was entered or exited, so the service is new or gone.
-func forgetSettled(settled map[string]bool, effects []state.Effect) {
+// declares it was entered or exited, so the service is new or gone. It forgets parked
+// results the same way: a stopped service's parked result is discarded, and a service
+// started again runs its ServiceFn. The Handle and the replay mirror call it for both
+// maps at once, through forgetServices and armMirror.forget.
+func forgetSettled[V any](settled map[string]V, effects []state.Effect) {
 	if len(settled) == 0 {
 		return
 	}
@@ -653,7 +670,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	// no service entries.
 	starts := inst.StartEffects()
 	svcBuf := make([]state.JournalEntry, 0)
-	svc := r.newServiceRunner(inst)
+	svc, svcJSON := r.newServiceRunner(inst)
 	if svc != nil {
 		svc.Absorb(ctx, starts)
 	}
@@ -675,6 +692,7 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		timers:     timers,
 		svc:        svc,
 		svcBuf:     &svcBuf,
+		svcJSON:    svcJSON,
 		actors:     actors,
 		actorFires: actorFires,
 		lock:       make(chan struct{}, 1),
@@ -709,12 +727,13 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 
 // newServiceRunner builds the kernel host driver for invoked services bound to
 // inst, or nil when no service registry was wired (a purely event/timer-driven
-// machine invokes none).
-func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) *state.ServiceRunner[S, E, C] {
+// machine invokes none), and the holder of the JSON each settle decodes.
+func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*state.ServiceRunner[S, E, C], *settledJSON) {
 	if r.cfg.serviceReg == nil {
-		return nil
+		return nil, nil
 	}
-	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome)
+	settled := &settledJSON{}
+	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settled)), settled
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to
@@ -1144,14 +1163,15 @@ func (h *Handle[S, E, C]) finishStep(ctx context.Context, rec *Record, des []dis
 // and the count of timers fired — so recovery re-derives the same timers at their
 // recorded instants. A tick that fires nothing records nothing and doesn't touch the
 // Store. Each fired transition's effects go to the service runner and the
-// actor system too, as a Fire's do: a timer that leaves a state stops its services and
-// its actors, and one that enters a state starts and spawns them. The tick journals the
-// parent Fires an actor it spawned drove, and a context's ending that refuses one fails
-// the Handle and records nothing, as for Fire. A message to an actor refused because
-// ctx ended is lost, as for Fire. A forwardTo on a timer's transition forwards the
-// timer's event, rebuilt with the Runner's event codec. If the codec can't rebuild it,
-// Tick forwards nothing, records the tick and dispatches its effects as usual, and
-// returns the results with the codec's error; the Handle carries on.
+// actor system too, as a Fire's do: a timer that leaves a state stops its services,
+// discarding a parked result, and its actors, and one that enters a state starts and
+// spawns them. The tick journals the parent Fires an actor it spawned drove, and a
+// context's ending that refuses one fails the Handle and records nothing, as for Fire.
+// A message to an actor refused because ctx ended is lost, as for Fire. A forwardTo on
+// a timer's transition forwards the timer's event, rebuilt with the Runner's event
+// codec. If the codec can't rebuild it, Tick forwards nothing, records the tick and
+// dispatches its effects as usual, and returns the results with the codec's error; the
+// Handle carries on.
 // It returns the FireResults of the timers it fired, in order. A
 // failed checkpoint returns them with that error, and the Handle carries on. If another
 // goroutine failed the Handle while this step was recording, it returns them with
@@ -1382,6 +1402,7 @@ func (h *Handle[S, E, C]) appendStep(ctx context.Context, step int, rec *Record)
 			EndedActors:     ended,
 			UnstartedActors: unstarted,
 			EndedServices:   h.endedServices(),
+			ParkedServices:  h.parkedServices(),
 			Format:          journalFormat,
 		}, h.timers)
 		if err != nil {
@@ -1520,6 +1541,35 @@ func (h *Handle[S, E, C]) endedServices() []string {
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+// parkedServices returns the parked results of the services the active states declare,
+// sorted by service id, for a checkpoint. It is nil with none parked. A Handle with no
+// service registry keeps the ones it recovered, so a later Recover with the registry
+// settles them rather than run their ServiceFns again.
+func (h *Handle[S, E, C]) parkedServices() []parkedServiceWire {
+	if len(h.parked) == 0 {
+		return nil
+	}
+	var ids []string
+	for _, eff := range h.inst.StartEffects() {
+		if sv, ok := eff.(state.StartService); ok {
+			if _, parked := h.parked[sv.ID]; parked {
+				ids = append(ids, sv.ID)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	out := make([]parkedServiceWire, len(ids))
+	for i, id := range ids {
+		p := h.parked[id]
+		out[i] = parkedServiceWire{ID: id, Result: p.raw, Type: p.typ}
+	}
+	return out
 }
 
 // declaredActors returns the ids of the actors effects spawn.
@@ -1669,7 +1719,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	restoredStarts := inst.StartEffects()
 	endedServices := env.EndedServices
 	svcBuf := make([]state.JournalEntry, 0)
-	svc := r.newServiceRunner(inst)
+	svc, svcJSON := r.newServiceRunner(inst)
 	if svc != nil {
 		svc.Absorb(ctx, startsExcept(restoredStarts, endedServices, func(sv state.StartService) string { return sv.ID }))
 	}
@@ -1694,6 +1744,11 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	mirror := &armMirror{armed: armed, clock: repClock}
 	for _, sv := range endedServices {
 		mirror.settle(sv)
+	}
+	// A result parked at the checkpoint is still parked: its service is armed above, in
+	// flight, and RunService settles the result rather than run the ServiceFn again.
+	for _, p := range env.ParkedServices {
+		mirror.park(p.ID, recordedResult{raw: p.Result, typ: p.Type})
 	}
 
 	// Re-arm the timers pending at the checkpoint before the tail replays, because the
@@ -1776,6 +1831,8 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	// clock: an older journal can leave one, such as a settle's read it put in the next
 	// Record.
 	repClock.skipTo(reads)
+	// The replayed settles left the JSON the last one decoded, which no step journals.
+	svcJSON.take()
 
 	// Drain any clock readings the replay re-recorded after the cursor exhausted
 	// (none in the common case where replay consumes exactly the recorded
@@ -1821,7 +1878,9 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		timers:     armed,
 		svc:        svc,
 		svcBuf:     &svcBuf,
+		svcJSON:    svcJSON,
 		settled:    mirror.settled,
+		parked:     mirror.parked,
 		actors:     actors,
 		actorFires: actorFires,
 		lock:       make(chan struct{}, 1),
@@ -1926,9 +1985,8 @@ func encodeEventData[E comparable](event E, opts []state.FireOption, maxBytes in
 		return payload, nil, fmt.Errorf("%w: %w", ErrEventDataEncoding, err)
 	}
 	if !isErr {
-		if got, want := reflect.TypeOf(value), reflect.TypeOf(data); got != want {
-			return payload, nil, fmt.Errorf("%w: a %v payload decodes as %v; decode it as %v with WithEventDataDecoder",
-				ErrEventDataEncoding, want, got, want)
+		if err := decodedAsPassed(value, data, "payload", false); err != nil {
+			return payload, nil, err
 		}
 	}
 	live := make([]state.FireOption, 0, len(opts)+1)
@@ -1984,19 +2042,24 @@ func eventDataTooLarge(size, maxBytes int) error {
 
 // decode returns the payload as a Fire sees it, live and when a replay re-Fires the
 // step: an error payload as an error with its message, and data through decode.
-func decodePayload[E comparable](p eventPayload, event E, decode EventDataDecoder[E]) (v any, err error) {
+func decodePayload[E comparable](p eventPayload, event E, decode EventDataDecoder[E]) (any, error) {
 	if p.errMsg != nil {
 		return errors.New(*p.errMsg), nil
 	}
 	if string(p.data) == "null" { // a nil payload stays nil, whatever the decoder
 		return nil, nil
 	}
+	return decodeData(event, p.data, decode)
+}
+
+// decodeData returns data through decode, or an error if decode panics.
+func decodeData[E comparable](event E, data []byte, decode EventDataDecoder[E]) (v any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("event data decoder panicked: %v", r)
 		}
 	}()
-	return decode(event, p.data)
+	return decode(event, data)
 }
 
 // EventDataDecoder rebuilds a state.WithEventData payload from its recorded JSON form,
@@ -2176,7 +2239,8 @@ func resultErrs[S comparable](results []state.FireResult[S]) []error {
 //   - A service settlement re-settles each recorded outcome through the same settle
 //     seam, in settle order; the settle absorbs its own follow-on StartService
 //     effects, so a chained invoke arms its successor for the next entry, and its
-//     timers are re-armed as RunService armed them.
+//     timers are re-armed as RunService armed them. A parked result settles nothing:
+//     its service stays in flight, and mirror keeps the result for RunService.
 //   - A tick barrier ticks the replay clock, which returns the recorded readings, so
 //     the same deadlines come due and the same timers fire at their recorded instants.
 //     Each fired transition starts or stops its services, as the live Tick did, for a
@@ -2226,7 +2290,20 @@ func replayRecord[S comparable, E comparable, C any](
 		stepEffects = res.Effects
 	case hasServiceEntry(rec):
 		for _, entry := range serviceEntries(rec) {
-			effects, err := replayService(ctx, svc, entry)
+			sp, err := decodeServiceEntry(entry)
+			if err != nil {
+				return stepEffects, fmt.Errorf("at step %d: %w", rec.Step, err)
+			}
+			if sp.Parked {
+				// Live, the result didn't decode, so nothing settled: park it again, for
+				// RunService to settle. Its service stays in flight.
+				if err = replayPark(svc, entry); err != nil {
+					return stepEffects, fmt.Errorf("at step %d: %w", rec.Step, err)
+				}
+				mirror.park(entry.CorrelationID, recordedResult{raw: sp.Result, typ: sp.Type})
+				continue
+			}
+			effects, err := replayService(ctx, svc, entry, sp)
 			if err != nil {
 				return stepEffects, fmt.Errorf("at step %d: %w", rec.Step, err)
 			}
@@ -2309,18 +2386,18 @@ func checkFormat(checkpoint int, rec *Record) error {
 	return nil
 }
 
-// armsActorFires reports whether rec was written by a version that arms the timers and
-// services an actor-driven parent Fire declares, from the journal Format it records.
-func armsActorFires(rec *Record) bool {
-	return rec.Format >= actorArmsFormat
-}
-
 // sendsReplayedEffects reports whether Recover sends the domain effects replaying rec
 // produces: every version dispatched a Fire's, and a tick's or a service settle's since
 // dispatchedStepsFormat. It reads the Record's format, not its effect envelopes, so a
 // Store that doesn't keep Record.Effects loses no effect.
 func sendsReplayedEffects(rec *Record) bool {
 	return len(rec.Event) > 0 || rec.Format >= dispatchedStepsFormat
+}
+
+// armsActorFires reports whether rec was written by a version that arms the timers and
+// services an actor-driven parent Fire declares, from the journal Format it records.
+func armsActorFires(rec *Record) bool {
+	return rec.Format >= actorArmsFormat
 }
 
 // journalFormat is the format this version writes in every Record and checkpoint. It is
@@ -2353,8 +2430,9 @@ func replayArm[S comparable, E comparable, C any](ctx context.Context, sched *st
 }
 
 // replayRunners starts or stops the services a replayed transition's effects declare,
-// and forgets the settles of each, as the live absorbRunners did. Replay runs no actor:
-// Recover spawns the actors of the states it ends in. svc may be nil.
+// and forgets the settles and parked results of each, as the live absorbRunners did.
+// Replay runs no actor: Recover spawns the actors of the states it ends in. svc may be
+// nil.
 func replayRunners[S comparable, E comparable, C any](ctx context.Context, svc *state.ServiceRunner[S, E, C], effects []state.Effect, mirror *armMirror) {
 	mirror.forget(effects)
 	if svc != nil {
@@ -2371,9 +2449,22 @@ type armMirror struct {
 	armed   map[string]pendingTimer
 	clock   *replayClock
 	settled map[string]bool
+	parked  map[string]recordedResult // the results parked and not yet settled, by service id
 }
 
-// settle notes that a replayed settle settled the service id.
+// park notes that the replayed journal parked the result of service id.
+func (m *armMirror) park(id string, r recordedResult) {
+	if m == nil {
+		return
+	}
+	if m.parked == nil {
+		m.parked = map[string]recordedResult{}
+	}
+	m.parked[id] = r
+}
+
+// settle notes that a replayed settle settled the service id, so no result of it is
+// parked, as Handle.markSettled does live.
 func (m *armMirror) settle(id string) {
 	if m == nil {
 		return
@@ -2382,15 +2473,17 @@ func (m *armMirror) settle(id string) {
 		m.settled = map[string]bool{}
 	}
 	m.settled[id] = true
+	delete(m.parked, id)
 }
 
-// forget drops from the settled services each one a replayed Fire's effects start or
-// stop, as the live step did.
+// forget drops from the settled services and the parked results each one a replayed
+// Fire's effects start or stop, as the live step did.
 func (m *armMirror) forget(effects []state.Effect) {
 	if m == nil {
 		return
 	}
 	forgetSettled(m.settled, effects)
+	forgetSettled(m.parked, effects)
 }
 
 // arm folds a replayed absorb's timer effects into the table, at the reading the

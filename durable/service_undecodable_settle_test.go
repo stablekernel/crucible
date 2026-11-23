@@ -80,98 +80,114 @@ func undecodableOptions(fn state.ServiceFn[svcCtx], p *undecodableProbe) []durab
 	}
 }
 
-// TestRunService_UndecodableResult_SettlesOnDoneBeforeFailing pins what a ServiceFn
-// result whose JSON form won't decode does today, and one with no JSON form at all,
-// which takes the same path on the raw result. The live settle runs the onDone
-// transition on a stand-in for the result: its Assign runs once and sees that
-// stand-in, an unexported durable type, and the state it enters spawns its actor.
-// Only then does recording refuse the result, so RunService fails the Handle with
-// ErrHandleFailed, records nothing and dispatches nothing. The onError Assign never
-// runs. A recovered Handle has the service in flight again and doesn't spawn the
-// actor, and running the service again fails the same way. A reducer that asserts
-// its event's type unchecked panics on the stand-in; the kernel turns that panic into
-// the settle's Fire error, so the Fire doesn't apply, nothing spawns, and RunService
-// still returns ErrHandleFailed rather than panicking.
-func TestRunService_UndecodableResult_SettlesOnDoneBeforeFailing(t *testing.T) {
+// TestRunService_UndecodableResult_ParksBeforeAnyAssign pins what a ServiceFn result
+// whose JSON form won't decode does, and one with no JSON form at all. A result that
+// encodes but won't decode is parked: RunService returns ErrEventDataEncoding, not
+// ErrHandleFailed, before the onDone or onError Assign runs, so the onDone state spawns
+// no actor and no effect dispatches. The journal holds one Record for the park, and
+// each later RunService records nothing more. A recovered Handle has the service in
+// flight and the result still parked, and its ServiceFn doesn't run again. A result
+// with no JSON form fails the Handle with ErrHandleFailed, also before any Assign, and
+// records nothing, so after Recover the ServiceFn runs again. A reducer that asserts
+// its event's type unchecked never sees the result, so it can't panic on it.
+func TestRunService_UndecodableResult_ParksBeforeAnyAssign(t *testing.T) {
 	ctx := context.Background()
-	results := map[string]struct {
-		result   any
-		seenType string
-	}{
-		"json.Number":        {json.Number("1e400"), "durable.undecodableResult"},
-		"custom MarshalJSON": {outOfRangeResult{}, "durable.undecodableResult"},
-		"json.RawMessage":    {json.RawMessage("1e400"), "durable.undecodableResult"},
-		// A result with no JSON form at all takes the same path, on the raw result.
-		"won't encode": {make(chan int), "chan int"},
-	}
 	id := state.InvokeID("undecodable", "loading", 0)
-	for name, tc := range results {
-		t.Run(name, func(t *testing.T) {
-			fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return tc.result, nil }
-			p := &undecodableProbe{}
-			m := undecodableMachine(fn, p, false)
-			st := durable.NewMemStore()
-			opts := undecodableOptions(fn, p)
-			h, err := durable.NewRunner(m, st, opts...).Start(ctx, "i1", svcCtx{}, state.WithInitialState("loading"))
-			if err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-			if _, _, err = h.RunService(ctx, id); !errors.Is(err, durable.ErrHandleFailed) {
-				t.Fatalf("RunService = %v, want ErrHandleFailed", err)
-			}
-			if p.doneAssigns != 1 || p.doneEventType != tc.seenType || p.errorAssigns != 0 {
-				t.Fatalf("onDone Assign ran %d times on %s, onError Assign %d times; want onDone once on %s, onError never",
-					p.doneAssigns, p.doneEventType, p.errorAssigns, tc.seenType)
-			}
-			if p.spawns != 1 || p.dispatched != 0 {
-				t.Fatalf("child spawned %d times, %d effects dispatched; want the onDone state's actor spawned once and nothing dispatched", p.spawns, p.dispatched)
-			}
-			if _, recs, lerr := st.Load(ctx, "i1"); lerr != nil || len(recs) != 0 {
-				t.Fatalf("journal holds %d Records (err %v), want none", len(recs), lerr)
-			}
-			recovered, err := durable.Recover(ctx, m, st, "i1", opts...)
-			if err != nil {
-				t.Fatalf("Recover: %v", err)
-			}
-			if got := recovered.Instance().Current(); got != "loading" || p.spawns != 1 {
-				t.Fatalf("recovered in %q, child spawned %d times; want loading, with no new spawn", got, p.spawns)
-			}
-			if _, _, err = recovered.RunService(ctx, id); !errors.Is(err, durable.ErrHandleFailed) {
-				t.Fatalf("RunService after Recover = %v, want ErrHandleFailed again", err)
-			}
-			if p.doneAssigns != 2 || p.spawns != 2 {
-				t.Fatalf("after the retry: onDone Assign ran %d times, child spawned %d; want 2 and 2", p.doneAssigns, p.spawns)
-			}
-		})
-	}
-	t.Run("unchecked assertion refuses the Fire", func(t *testing.T) {
-		fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { return json.Number("1e400"), nil }
+	start := func(t *testing.T, result any, assertString bool) (*undecodableProbe, *int, *state.Machine[string, string, svcCtx], *durable.MemStore, []durable.Option[string, string, svcCtx], *durable.Handle[string, string, svcCtx]) {
+		t.Helper()
+		calls := new(int)
+		fn := func(context.Context, state.ServiceCtx[svcCtx]) (any, error) { *calls++; return result, nil }
 		p := &undecodableProbe{}
-		m := undecodableMachine(fn, p, true)
+		m := undecodableMachine(fn, p, assertString)
 		st := durable.NewMemStore()
 		opts := undecodableOptions(fn, p)
 		h, err := durable.NewRunner(m, st, opts...).Start(ctx, "i1", svcCtx{}, state.WithInitialState("loading"))
 		if err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+		return p, calls, m, st, opts, h
+	}
+	untouched := func(t *testing.T, p *undecodableProbe) {
+		t.Helper()
+		if p.doneAssigns != 0 || p.errorAssigns != 0 || p.spawns != 0 || p.dispatched != 0 {
+			t.Fatalf("onDone Assign ran %d times, onError %d, child spawned %d, %d dispatched; want none of them",
+				p.doneAssigns, p.errorAssigns, p.spawns, p.dispatched)
+		}
+	}
+	journal := func(t *testing.T, st *durable.MemStore, want int) {
+		t.Helper()
+		if _, recs, err := st.Load(ctx, "i1"); err != nil || len(recs) != want {
+			t.Fatalf("journal holds %d Records (err %v), want %d", len(recs), err, want)
+		}
+	}
+	parked := map[string]any{
+		"json.Number":        json.Number("1e400"),
+		"custom MarshalJSON": outOfRangeResult{},
+		"json.RawMessage":    json.RawMessage("1e400"),
+	}
+	for name, result := range parked {
+		t.Run(name, func(t *testing.T) {
+			p, calls, m, st, opts, h := start(t, result, false)
+			_, _, err := h.RunService(ctx, id)
+			if !errors.Is(err, durable.ErrEventDataEncoding) || errors.Is(err, durable.ErrHandleFailed) {
+				t.Fatalf("RunService = %v, want ErrEventDataEncoding and not ErrHandleFailed", err)
+			}
+			untouched(t, p)
+			journal(t, st, 1)
+			if _, _, err = h.RunService(ctx, id); !errors.Is(err, durable.ErrEventDataEncoding) {
+				t.Fatalf("second RunService = %v, want ErrEventDataEncoding", err)
+			}
+			journal(t, st, 1)
+			recovered, err := durable.Recover(ctx, m, st, "i1", opts...)
+			if err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			if got := recovered.Instance().Current(); got != "loading" {
+				t.Fatalf("recovered in %q, want loading", got)
+			}
+			if _, _, err = recovered.RunService(ctx, id); !errors.Is(err, durable.ErrEventDataEncoding) {
+				t.Fatalf("RunService after Recover = %v, want ErrEventDataEncoding", err)
+			}
+			untouched(t, p)
+			if *calls != 1 {
+				t.Fatalf("ServiceFn ran %d times, want once: a parked result doesn't run it again", *calls)
+			}
+		})
+	}
+	t.Run("won't encode", func(t *testing.T) {
+		p, calls, m, st, opts, h := start(t, make(chan int), false)
+		if _, _, err := h.RunService(ctx, id); !errors.Is(err, durable.ErrHandleFailed) {
+			t.Fatalf("RunService = %v, want ErrHandleFailed", err)
+		}
+		untouched(t, p)
+		journal(t, st, 0)
+		recovered, err := durable.Recover(ctx, m, st, "i1", opts...)
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if _, _, err = recovered.RunService(ctx, id); !errors.Is(err, durable.ErrHandleFailed) {
+			t.Fatalf("RunService after Recover = %v, want ErrHandleFailed again", err)
+		}
+		untouched(t, p)
+		if *calls != 2 {
+			t.Fatalf("ServiceFn ran %d times, want twice: nothing was recorded, so it runs again after Recover", *calls)
+		}
+	})
+	t.Run("unchecked assertion never sees the result", func(t *testing.T) {
+		p, _, _, st, _, h := start(t, json.Number("1e400"), true)
 		var panicked any
-		var res state.FireResult[string]
+		var err error
 		func() {
 			defer func() { panicked = recover() }()
-			res, _, err = h.RunService(ctx, id)
+			_, _, err = h.RunService(ctx, id)
 		}()
-		if panicked != nil || !errors.Is(err, durable.ErrHandleFailed) {
-			t.Fatalf("RunService panicked %v, returned %v; want ErrHandleFailed and no panic", panicked, err)
+		if panicked != nil || !errors.Is(err, durable.ErrEventDataEncoding) {
+			t.Fatalf("RunService panicked %v, returned %v; want ErrEventDataEncoding and no panic", panicked, err)
 		}
-		if res.Err == nil || p.doneAssigns != 1 || p.spawns != 0 || p.dispatched != 0 {
-			t.Fatalf("settle's Fire error %v, onDone Assign ran %d times, child spawned %d, %d dispatched; want the Fire refused for the panic after one Assign, and no spawn or dispatch",
-				res.Err, p.doneAssigns, p.spawns, p.dispatched)
-		}
+		untouched(t, p)
 		if got := h.Instance().Current(); got != "loading" {
-			t.Fatalf("live instance in %q, want loading: the refused Fire didn't apply", got)
+			t.Fatalf("live instance in %q, want loading", got)
 		}
-		if _, recs, lerr := st.Load(ctx, "i1"); lerr != nil || len(recs) != 0 {
-			t.Fatalf("journal holds %d Records (err %v), want none", len(recs), lerr)
-		}
+		journal(t, st, 1)
 	})
 }
