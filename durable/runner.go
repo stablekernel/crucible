@@ -914,10 +914,12 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	// A spawn whose onError applied, or was refused for a reason other than a context
 	// ending, such as a failing guard, is handled: the journal holds the onError or its
 	// refusal, and a retry would run the behavior again. One a context's ending refused
-	// isn't: the step that drove it recorded nothing. Nor is one the parent had no
-	// transition for: an invoked actor with no onError declared routes the zero event,
-	// which the parent refuses that way, and nothing caught the failure. Telling the two
-	// apart by a no-transition refusal is a stopgap; see #250.
+	// isn't: the step that drove it recorded nothing. Nor is one whose declared onError
+	// the parent has no transition for: the parent refuses the event that way, and
+	// nothing caught the failure. A spawn that declared no onError at all escalates
+	// rather than firing, so it needs no refusal to tell it apart; telling a declared
+	// onError the parent can't route from a handled one by the refusal alone is a
+	// stopgap; see #250.
 	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !errors.Is(pf.Result.Err, state.ErrNoTransition) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}

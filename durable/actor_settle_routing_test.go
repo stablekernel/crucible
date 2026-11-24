@@ -297,3 +297,181 @@ func TestFire_TwoSettlesInOneStepEachDoneDataItsOwn(t *testing.T) {
 		t.Fatalf("the children's behaviors ran %d times, want the live run's 2", got)
 	}
 }
+
+// onDonelessMachine invokes kid with only an onError, so a success routes nothing:
+// the invocation declared no onDone to carry the output. "poke" stays in supervising,
+// so a test can prove the Handle is healthy after the unrouted settle.
+func onDonelessMachine() *state.Machine[string, string, outcomeCtx] {
+	return state.ForgeFor[outcomeCtx]("nodone").
+		State("idle").
+		State("supervising").InvokeActor("kid", state.WithInvokeOnError("childFail")).
+		State("failed").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("supervising").
+		Transition("supervising").On("childFail").GoTo("failed").
+		Transition("supervising").On("poke").GoTo("supervising").
+		Quench()
+}
+
+// onDonelessKid is the stable id of onDonelessMachine's kid invocation.
+var onDonelessKid = state.ActorID("nodone", "supervising", 0)
+
+// TestDeliverToActor_AnInvokedActorWithoutOnDoneIsUnrouted pins the invoked half of
+// the unrouted-settle contract: an InvokeActor that declared no onDone settles its
+// child's success as the no-op a dynamic spawn's always was — no decoder is consulted
+// for the zero event an unset outcome used to leave, so a strict one can't fail the
+// Handle — the delivery and every step after it succeed, and Recover and the
+// redelivery do too. On the branch before the invocation's own flags decided routing,
+// the delivery failed the Handle with ErrHandleFailed wrapping ErrEventDataEncoding,
+// live and again after every Recover.
+func TestDeliverToActor_AnInvokedActorWithoutOnDoneIsUnrouted(t *testing.T) {
+	ctx := context.Background()
+	var runs int64
+	m := onDonelessMachine()
+	opts := []durable.Option[string, string, outcomeCtx]{
+		durable.WithActorPalette[string, string, outcomeCtx](map[string]state.ActorBehavior{
+			"kid": outputChild(&runs, order{ID: 7}),
+		}),
+		// A decoder that knows only childFail's payload, refusing every other event's,
+		// as a strict per-event decoder does.
+		durable.WithEventDataDecoder[string, string, outcomeCtx](func(e string, data []byte) (any, error) {
+			if e == "childFail" {
+				return durable.DecodeAs[any](data)
+			}
+			return nil, fmt.Errorf("no payload expected for event %q", e)
+		}),
+	}
+	store, id := durable.NewMemStore(), durable.InstanceID("nodone-1")
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, outcomeCtx{}, state.WithInitialState("idle"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, ferr := h.Fire(ctx, "start"); ferr != nil {
+		t.Fatalf("Fire(start): %v", ferr)
+	}
+	if delivered, derr := h.DeliverToActorByID(ctx, onDonelessKid, "finish"); derr != nil || !delivered {
+		t.Fatalf("DeliverToActorByID = %v, %v; want the unrouted settle to drive a healthy step, as on main", delivered, derr)
+	}
+	if _, ferr := h.Fire(ctx, "poke"); ferr != nil {
+		t.Fatalf("Fire after the unrouted settle: %v, want the Handle healthy", ferr)
+	}
+	if notes := h.Instance().Entity().Notes; len(notes) != 0 {
+		t.Fatalf("the unrouted settle ran Assigns: %q", notes)
+	}
+
+	// Recover succeeds, and a redelivery on the recovered Handle is the no-op it is
+	// on main — the actor settled, so none is in flight — not an error: the Handle is
+	// healthy, whatever the strict decoder would say for the zero event an unset
+	// outcome used to leave.
+	rh, rerr := durable.Recover(ctx, m, store, id, opts...)
+	if rerr != nil {
+		t.Fatalf("Recover: %v", rerr)
+	}
+	if _, derr := rh.DeliverToActorByID(ctx, onDonelessKid, "finish"); derr != nil {
+		t.Fatalf("the redelivered unrouted settle = %v; want no error, as on main: the actor settled, so the delivery is a no-op", derr)
+	}
+	if _, ferr := rh.Fire(ctx, "poke"); ferr != nil {
+		t.Fatalf("Fire after the redelivered unrouted settle: %v", ferr)
+	}
+	if got := atomic.LoadInt64(&runs); got != 1 {
+		t.Fatalf("kid instantiated %d times, want the live run's once: no replay re-runs it", got)
+	}
+}
+
+// refusedSettleMachine invokes kid with an onDone the parent declares no transition
+// for, so the settle's onDone Fire is refused live and journaled as refused, carrying
+// the kid's done-data.
+func refusedSettleMachine() *state.Machine[string, string, outcomeCtx] {
+	return state.ForgeFor[outcomeCtx]("refused").
+		State("supervising").InvokeActor("kid", state.WithInvokeOnDone("childDone")).
+		Initial("supervising").
+		Transition("supervising").On("poke").GoTo("supervising").
+		Quench()
+}
+
+// refusedKid is the stable id of refusedSettleMachine's kid invocation.
+var refusedKid = state.ActorID("refused", "supervising", 0)
+
+// stripActorTypes copies id's journal into a fresh MemStore with the recorded Type
+// dropped from every actor entry, as a Record from before settles recorded the type
+// looks: a main-era journal holds the done-data with no type.
+func stripActorTypes(t *testing.T, src *durable.MemStore, id durable.InstanceID) *durable.MemStore {
+	t.Helper()
+	ctx := context.Background()
+	snap, recs, err := src.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dst := durable.NewMemStore()
+	if err = dst.Checkpoint(ctx, id, snap, -1); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	stripped := 0
+	for _, rec := range recs {
+		for i, e := range rec.Entries {
+			if e.Kind != state.JournalActorMessage {
+				continue
+			}
+			var p map[string]any
+			if err = json.Unmarshal(e.Payload, &p); err != nil {
+				t.Fatalf("decoding an actor entry: %v", err)
+			}
+			if _, had := p["type"]; had {
+				delete(p, "type")
+				stripped++
+			}
+			if rec.Entries[i].Payload, err = json.Marshal(p); err != nil {
+				t.Fatalf("encoding an actor entry: %v", err)
+			}
+		}
+		if _, err = dst.Append(ctx, id, rec); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if stripped == 0 {
+		t.Fatalf("no actor entry recorded a type to strip")
+	}
+	return dst
+}
+
+// TestRecover_ARefusedSettlesRecordedDataIsNeverDecoded pins the replay half of the
+// routing fix: a journal a version before this one wrote can hold a settle whose
+// parent Fire was refused — the zero-event settle of an onDone-less InvokeActor, on
+// main — with its done-data recorded and no type, and Recover and StateAt must
+// succeed on it under a strict decoder that refuses that event's payloads. The data
+// of a fire whose replay will be refused is never read: replay re-fires the event
+// plainly and meets the same refusal. Decoding the data, as the branch before the
+// fix did, failed Recover and StateAt on histories that recovered fine on main.
+func TestRecover_ARefusedSettlesRecordedDataIsNeverDecoded(t *testing.T) {
+	ctx := context.Background()
+	var runs int64
+	m := refusedSettleMachine()
+	palette := durable.WithActorPalette[string, string, outcomeCtx](map[string]state.ActorBehavior{
+		"kid": outputChild(&runs, order{ID: 7}),
+	})
+	live := durable.NewMemStore()
+	id := durable.InstanceID("refused-1")
+	h, err := durable.NewRunner(m, live, palette).Start(ctx, id, outcomeCtx{}, state.WithInitialState("supervising"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, derr := h.DeliverToActorByID(ctx, refusedKid, "finish"); derr != nil {
+		t.Fatalf("DeliverToActorByID: %v; the refused settle records, it doesn't fail the step", derr)
+	}
+	// The journal holds the refused settle with its data and type; strip the type, as
+	// a main-era Record looks.
+	strict := durable.WithEventDataDecoder[string, string, outcomeCtx](func(e string, data []byte) (any, error) {
+		return nil, fmt.Errorf("no payload expected for event %q", e)
+	})
+	aged := stripActorTypes(t, live, id)
+	if _, rerr := durable.Recover(ctx, m, aged, id, palette, strict); rerr != nil {
+		t.Fatalf("Recover of the refused settle's data = %v; want nil: a fire replay refuses is never decoded, as on main", rerr)
+	}
+	steps, serr := durable.Steps(ctx, aged, id)
+	if serr != nil || len(steps) == 0 {
+		t.Fatalf("Steps = %v, %v, want the recorded steps", steps, serr)
+	}
+	if _, aerr := durable.StateAt(ctx, m, aged, id, steps[len(steps)-1], palette, strict); aerr != nil {
+		t.Fatalf("StateAt of the refused settle's data = %v; want nil, as on main", aerr)
+	}
+}

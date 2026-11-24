@@ -318,13 +318,19 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 		return nil, fmt.Errorf("durable: decoding recorded actor %q event: %w", entry.actorID, err)
 	}
 	var res state.FireResult[S]
-	if mp.HasData {
+	if mp.HasData && !mp.Refused {
 		data, derr := replayActorData(mp, event, decode, aliases)
 		if derr != nil {
 			return nil, fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.actorID, derr)
 		}
 		res = inst.Fire(ctx, event, state.WithEventData(data))
 	} else {
+		// A Fire the live run refused never applied, so its recorded outcome never
+		// reached an Assign: replay re-fires the event plainly and meets the same
+		// refusal, never decoding data nothing read. A journal an older version wrote
+		// can hold a refused settle's done-data with no recorded Type — the zero-event
+		// settle of an onDone-less invoke — which a strict decoder would refuse
+		// though the live run recovered fine on it.
 		res = inst.Fire(ctx, event)
 	}
 	// The kernel reports every refusal with an error, so the error alone says whether

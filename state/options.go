@@ -91,7 +91,10 @@ func WithSystemID(id string) InvokeOption {
 // service completes successfully (or, for InvokeActor, when the child machine
 // reaches its final state), routing the result through an ordinary transition
 // from the owning state. Omitting it leaves the invocation's OnDone at the zero
-// event. It mirrors WithSpawnOnDone for the declarative Invoke / InvokeActor
+// event, which for a child-machine actor routes nothing — the invocation records
+// that no onDone was declared, so the child's success settles as a fire-and-forget
+// no-op rather than firing an event the parent must refuse. It mirrors
+// WithSpawnOnDone for the declarative Invoke / InvokeActor
 // surface, so completion routing arrives as an additive option rather than a
 // positional parameter; the same shape lets fire-and-forget or onCancel routing
 // arrive later as further options without a signature change.
@@ -105,7 +108,10 @@ func WithInvokeOnDone[E comparable](onDone E) InvokeOption {
 // WithInvokeOnError sets the event the host re-fires through Fire when an invoked
 // service fails (or, for InvokeActor, when the child machine fails), routing the
 // error through an ordinary transition from the owning state. Omitting it leaves
-// the invocation's OnError at the zero event. It mirrors WithSpawnOnError.
+// the invocation's OnError at the zero event, which for a child-machine actor
+// routes nothing: the invocation records that no onError was declared, so the
+// child's failure escalates to the parent rather than firing an event the parent
+// must refuse. It mirrors WithSpawnOnError.
 func WithInvokeOnError[E comparable](onError E) InvokeOption {
 	return func(c *invokeConfig) {
 		c.onError = onError
@@ -138,14 +144,17 @@ func WithSpawnSystemID(id string) SpawnOption {
 // WithSpawnOnDone sets the event the host re-fires through the parent's Fire when
 // a dynamically spawned actor reaches its final state, routing the child's output
 // through an ordinary transition from the spawning state. Omit it for a
-// fire-and-forget spawn whose completion the parent does not observe.
+// fire-and-forget spawn whose completion the parent does not observe: the spawn
+// records that no onDone was declared, so the child's success settles without
+// firing an event the parent must refuse.
 func WithSpawnOnDone[E comparable](onDone E) SpawnOption {
 	return func(c *spawnConfig) { c.onDone = onDone }
 }
 
 // WithSpawnOnError sets the event the host re-fires through the parent's Fire when
 // a dynamically spawned actor fails, routing the error through an ordinary
-// transition from the spawning state.
+// transition from the spawning state. Omit it and the child's failure escalates to
+// the parent, as an invocation that declared no onError does.
 func WithSpawnOnError[E comparable](onError E) SpawnOption {
 	return func(c *spawnConfig) { c.onError = onError }
 }

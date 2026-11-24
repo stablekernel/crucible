@@ -236,8 +236,11 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   decode is, because the service already ran but the actor can run again. The
   transform runs only when the settle routes a completion — the actor's spawn wired
   the onDone an output settles through or the onError a failure does; a settle that
-  routes nothing consults no decoder, journals nothing, and can't fail the step,
-  exactly as on main. `Start` and
+  routes nothing consults no decoder, journals nothing, and can't fail the step. On
+  main such a settle fired the zero event its unset outcome leaves, which the parent
+  refused; an invoked actor that declared no onDone now routes nothing at all (see
+  `state`'s declared-outcome routing), so nothing is journaled for its settles where
+  main journaled a refused fire. `Start` and
   `Recover` fail the same way when a settle their spawns drive aborts; no Handle
   exists yet, so their error wraps `ErrEventDataEncoding` directly. A done-data
   payload with no JSON form fails the Handle the same way, before any `Assign` runs.
@@ -284,6 +287,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **The recorded data of an actor fire that was refused is never decoded.** A journal
+  an older version wrote can hold a settle whose parent Fire was refused — the
+  zero-event settle of an `InvokeActor` that declared no onDone — with its done-data
+  recorded and no recorded type. Replay sent that data through the event-data decoder
+  for the refused event before re-firing it, so a strict decoder failed `Recover` and
+  `StateAt` on histories that recovered fine on main. The data of a fire whose replay
+  will be refused is never read: replay now re-fires the recorded event plainly and
+  meets the same refusal.
 - **A timer transition starts and stops services and actors.** `Tick` handed a fired
   timer transition's effects only to the scheduler, so a timer that left a state left
   its service in flight and its actor running, and one that entered a state started no
@@ -480,11 +491,13 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   already records it, and replay meets it again — so the actor counts as ended and
   `Recover` leaves it alone. A spawn whose onError a context's ending refused still
   retries, since the step that drove it records nothing, as does one with no onError
-  declared, as before. An invoked actor with no onError fires the zero event, which the
-  parent refuses as having no transition, and `durable` reads that refusal
-  (`state.ErrNoTransition`) as "none declared". So a declared onError the parent has no
-  transition for retries too, and a wildcard or a transition that takes the zero event
-  counts as caught; #250 tracks a better way to tell them apart. A host refusal worded
+  declared, as before: an invoked actor with no onError escalates rather than firing
+  (see the Changed entry on declared-outcome routing), so it needs no refusal to tell
+  it apart. A declared onError the parent has no
+  transition for still fires and is refused with `state.ErrNoTransition`, which
+  `durable` reads as "nothing caught the failure"; a wildcard or a transition that
+  takes the declared event counts as caught; #250 tracks a better way to tell a
+  declared-but-unroutable onError from a handled one. A host refusal worded
   like the kernel's counts as handled.
 - **A message an actor sends its parent as it spawns applies once.** A `Fire`,
   `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor

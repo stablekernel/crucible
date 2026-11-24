@@ -75,6 +75,18 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// every other IR node carries. The kernel never inspects it; it round-trips
 	// verbatim.
 	Meta map[string]any `json:"meta,omitempty"`
+	// HasOnDone reports whether OnDone was declared for this invocation
+	// (WithInvokeOnDone), so a child-machine actor's host routes its success only
+	// when the invoke declared an event to carry it. An unset outcome leaves OnDone
+	// at the zero event, which must not route: the flag, not the event's value,
+	// says whether one was declared. It round-trips through JSON.
+	HasOnDone bool `json:"hasOnDone,omitempty"`
+	// HasOnError reports whether OnError was declared for this invocation
+	// (WithInvokeOnError), the failure-side twin of HasOnDone: a child-machine
+	// actor's host routes its failure only when the invoke declared an onError, and
+	// escalates it otherwise, rather than firing the zero event an unset outcome
+	// leaves. It round-trips through JSON.
+	HasOnError bool `json:"hasOnError,omitempty"`
 
 	// extra preserves unknown JSON keys a newer producer emitted so they survive a
 	// load -> save cycle (forward-compat). Never inspected by the kernel.
@@ -85,6 +97,7 @@ type Invocation[S comparable, E comparable, C any] struct {
 // captured into extra and preserved verbatim on round-trip.
 var invocationKnownKeys = map[string]struct{}{
 	"id": {}, "src": {}, "input": {}, "onDone": {}, "onError": {},
+	"hasOnDone": {}, "hasOnError": {},
 	"kind": {}, "systemId": {}, "meta": {},
 }
 

@@ -76,10 +76,22 @@ type SpawnActor struct {
 	// child's output) when the child actor reaches its final state, type-erased for
 	// the abstract effect surface; an ActorSystem keeps it typed.
 	OnDone any `json:"onDone,omitempty"`
+	// HasDone reports whether this spawn declared an onDone — the invocation's
+	// WithInvokeOnDone, or the dynamic spawn's WithSpawnOnDone — so the host routes
+	// the child's success only when one was declared. An unset outcome leaves OnDone
+	// at the zero event, which must not route: the flag, not the event's value, says
+	// whether an outcome was declared, so a success with no onDone settles as the
+	// fire-and-forget no-op a spawn that declared neither is.
+	HasDone bool `json:"hasDone,omitempty"`
 	// OnError is the event the host re-fires through the PARENT's Fire (carrying the
 	// error) when the child actor fails, type-erased for the abstract effect
 	// surface.
 	OnError any `json:"onError,omitempty"`
+	// HasError is the failure-side twin of HasDone: it reports whether this spawn
+	// declared an onError, so the host routes the child's failure only when one was,
+	// and escalates it to the parent otherwise, rather than firing the zero event an
+	// unset outcome leaves.
+	HasError bool `json:"hasError,omitempty"`
 	// State names the owning state whose entry spawned this actor, for diagnostics
 	// and host bookkeeping. Empty for a dynamic spawn emitted from a transition.
 	State string `json:"state,omitempty"`
@@ -174,12 +186,17 @@ func evalActorBuiltinAction(a Ref) (Effect, error) {
 		id, _ := a.Params[spawnIDParam].(string)
 		input, _ := a.Params[spawnInputParam].(map[string]any)
 		systemID, _ := a.Params[spawnSystemIDParam].(string)
+		// A spawn param the declaration left unset is absent from the params, so its
+		// presence is the has-done / has-error flag; a declared outcome of the zero
+		// event still sets it.
 		return SpawnActor{
 			ID:       id,
 			Src:      Ref{Name: src},
 			Input:    input,
 			OnDone:   a.Params[spawnOnDoneParam],
+			HasDone:  a.Params[spawnOnDoneParam] != nil,
 			OnError:  a.Params[spawnOnErrorParam],
+			HasError: a.Params[spawnOnErrorParam] != nil,
 			SystemID: systemID,
 		}, nil
 	case stopActorBuiltinName:
@@ -241,7 +258,9 @@ func (i *Instance[S, E, C]) actorEffectsOnEntry(entries []S, tr *Trace) []Effect
 				Src:      inv.Src,
 				Input:    inv.Input,
 				OnDone:   inv.OnDone,
+				HasDone:  inv.HasOnDone,
 				OnError:  inv.OnError,
+				HasError: inv.HasOnError,
 				State:    fmtState(s),
 				SystemID: inv.SystemID,
 			})

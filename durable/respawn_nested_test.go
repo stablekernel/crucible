@@ -46,9 +46,9 @@ func TestRecover_ANestedChildsStartFireAppliesOnce(t *testing.T) {
 		Transition("hosting").On("poke").GoTo("hosting").Assign("notePoke").
 		Quench()
 	starts := map[string][]state.Effect{
-		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}, OnError: "nestedFailed"}},
+		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}, OnError: "nestedFailed", HasError: true}},
 		"settles": {
-			state.SpawnActor{ID: "child", Src: state.Ref{Name: "finisher"}, OnDone: "nestedDone"},
+			state.SpawnActor{ID: "child", Src: state.Ref{Name: "finisher"}, OnDone: "nestedDone", HasDone: true},
 			state.SendTo{TargetID: "child", Event: "finish"},
 		},
 	}

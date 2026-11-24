@@ -13,6 +13,14 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Added
 
+- **`SpawnActor.HasDone` / `HasError`, and `Invocation.HasOnDone` / `HasOnError`,**
+  say whether a spawn's outcome events were declared (`WithInvokeOnDone` /
+  `WithInvokeOnError`, `WithSpawnOnDone` / `WithSpawnOnError`), so a host routes an
+  invoked actor's completion only through outcomes its invoke declared, rather than
+  reading the zero event an unset outcome leaves as a routed one (see the Changed
+  entry on declared-outcome routing). The invocation fields are additive `omitempty`
+  wire fields, appended to the frozen shape; a serialized machine from before them
+  decodes them as unset. It's additive, within v1.1.0.
 - **`ErrNoTransition`** matches, with `errors.Is`, the `*InvalidTransitionError` a `Fire`
   returns when the active configuration declares no transition for the event, and no
   host-built error with the same `Reason`. It's additive, within v1.1.0.
@@ -55,7 +63,7 @@ counts as an additive (minor) versus breaking (major) change. Use the
   It runs before any event fires and before the actor is marked done, and only when
   the settle routes a completion — the actor succeeded and its invocation wired an
   `onDone`, or failed and wired an `onError`. A settle that routes nothing runs no
-  transform and can abort nothing, firing nothing, exactly as on main: a host
+  transform and can abort nothing, firing nothing: a host
   journaling outcomes records no entry for it, and `LastOutput` and `LastError`
   report the raw outcome. A non-nil `abort`
   stops the settle: no event fires, the actor stays running, the settle reports the
@@ -88,6 +96,23 @@ counts as an additive (minor) versus breaking (major) change. Use the
 ### Changed
 
 - Requires Go 1.27.4.
+- **An invoked actor routes only the outcomes its invocation declared.** An
+  `InvokeActor` with no `WithInvokeOnDone` fired the zero event on the child's
+  success — which the parent refused as having no transition, but not before a host's
+  settle transform and event-data decoder were consulted for the zero event — and one
+  with no `WithInvokeOnError` fired it on failure the same way. A completion whose
+  outcome event wasn't declared now routes nothing: a success settles as the
+  fire-and-forget no-op a dynamic spawn's always was, and a failure escalates to the
+  parent as a dynamic spawn's does, so a parent that declares a transition on the zero
+  event never sees one from an unset outcome. `SpawnActor` carries `HasDone` /
+  `HasError`, set from the invoke or spawn options, and the invocation IR records
+  `HasOnDone` / `HasOnError` (additive, `omitempty` wire fields), so a host routes on
+  what was declared rather than on the zero event an unset outcome leaves — which a
+  spawn that declared the zero event itself still routes, as it always did. A
+  serialized machine from before the flags exists decodes them as unset, so a
+  reloaded definition's invoked actors route only outcomes it declares going forward;
+  `Spawn`-action effects always carried the distinction, since an omitted option
+  leaves the param absent.
 - **A guard registered with `BindGuard` gets the Fire's context** in `EvalGuard`, where it
   used to get a background one. An error it returns after that context ended no longer
   counts as a false verdict: the Fire fails with the context's error at once. Before,

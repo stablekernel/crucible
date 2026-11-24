@@ -168,6 +168,8 @@ func TestWireShape_Frozen(t *testing.T) {
 				{"Kind", "kind,omitempty"},
 				{"SystemID", "systemId,omitempty"},
 				{"Meta", "meta,omitempty"},
+				{"HasOnDone", "hasOnDone,omitempty"},
+				{"HasOnError", "hasOnError,omitempty"},
 			},
 		},
 		{

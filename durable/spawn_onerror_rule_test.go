@@ -102,7 +102,12 @@ func TestSpawnRule_GuardRefusedOnErrorIsDone(t *testing.T) {
 }
 
 func TestSpawnRule_DeclaredOnErrorWithNoTransitionIsDone(t *testing.T) {
-	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by a no-transition refusal; #250")
+	// A declared onError the parent has no transition for fires and is refused
+	// with ErrNoTransition, which the unstarted/ended rule deliberately reads as
+	// "nothing caught the failure" and retries: telling it from a handled refusal
+	// by the refusal alone is the #250 stopgap. The invocation now carries its own
+	// has-onError flag, so #250 can drop the stopgap and make this test pass.
+	t.Skip("a declared onError the parent has no transition for is still retried by the ErrNoTransition stopgap; #250")
 	if got := spawnRuleCalls(t, spawnRuleMachine(false, nil, state.WithInvokeOnError("spawnFailed"))); got != 1 {
 		t.Fatalf("behavior ran %d times, want Recover to leave it alone", got)
 	}

@@ -282,8 +282,9 @@ func (s *ActorSystem[S, E, C]) RegisterContext(src string, behavior ContextActor
 // each StopActor (auto-stop-on-exit, recursively stopping the actor's children).
 // It is how a host wires Fire's output back into the system; call it with the
 // effects of every Fire (and once with the parent's StartEffects for the initial
-// state). A SpawnActor whose OnDone/OnError is not the parent's event type still
-// spawns the actor (a fire-and-forget child) but routes no completion event.
+// state). A SpawnActor that declared no OnDone / OnError, or whose declared event is
+// not the parent's event type, still spawns the actor (a fire-and-forget child) but
+// routes no completion event.
 //
 // A SpawnActor whose Src does not resolve against the palette is settled
 // immediately as an error: its OnError (when usable) is fired through the parent so
@@ -451,13 +452,22 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 		ref:   ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name},
 		state: e.State,
 	}
-	if d, ok := e.OnDone.(E); ok {
-		ra.onDone = d
-		ra.hasDone = true
+	// The spawn's own flags say whether an outcome event was declared, so an unset
+	// one — the zero event an invoke's or spawn's omitted option leaves, which is
+	// still the parent's event type — routes nothing: a success with no onDone
+	// settles as a fire-and-forget no-op, a failure with no onError escalates, as a
+	// spawn that declared neither always has.
+	if e.HasDone {
+		if d, ok := e.OnDone.(E); ok {
+			ra.onDone = d
+			ra.hasDone = true
+		}
 	}
-	if er, ok := e.OnError.(E); ok {
-		ra.onError = er
-		ra.hasError = true
+	if e.HasError {
+		if er, ok := e.OnError.(E); ok {
+			ra.onError = er
+			ra.hasError = true
+		}
 	}
 
 	s.mu.Lock()
@@ -476,15 +486,23 @@ func (s *ActorSystem[S, E, C]) spawn(ctx context.Context, e SpawnActor) {
 }
 
 // routeError fires the parent's onError for a spawn that could not start (an
-// unbound Src or a behavior that returned an error). When the parent declared a
-// usable onError the failure routes there (unchanged); when it did not, the spawn
-// failure escalates to the parent as a typed ActorEscalation rather than being
-// silently swallowed (the G3 default), so a spawn that cannot start is never lost.
+// unbound Src or a behavior that returned an error). When the spawn declared a
+// usable onError the failure routes there (unchanged); when it declared none, or
+// one that isn't the parent's event type, the spawn failure escalates to the parent
+// as a typed ActorEscalation rather than being silently swallowed (the G3 default),
+// so a spawn that cannot start is never lost.
 func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err error) {
 	drop, lift := hearing(ctx, e.ID)
 	// A failure the start AbsorbRespawn is repeating was routed or escalated when it
 	// first happened.
 	if drop {
+		return
+	}
+	// A spawn that declared no onError escalates the failure, as one whose declared
+	// onError isn't the parent's event type does: the unset outcome leaves the zero
+	// event, which must not route.
+	if !e.HasError {
+		s.escalate(ctx, &runningActor[E]{ref: ActorRef{ID: e.ID, SystemID: e.SystemID, Src: e.Src.Name}}, "", err)
 		return
 	}
 	ev, ok := e.OnError.(E)

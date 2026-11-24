@@ -995,11 +995,13 @@ func (b *Builder[S, E, C]) Invoke(src string, opts ...InvokeOption) *Builder[S, 
 		o(&cfg)
 	}
 	b.curState.state.Invoke = append(b.curState.state.Invoke, Invocation[S, E, C]{
-		ID:      cfg.id,
-		Src:     Ref{Name: src, Params: cfg.params},
-		Input:   cfg.input,
-		OnDone:  invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
-		OnError: invokeOutcome[E](cfg.onError, cfg.hasOnError),
+		ID:         cfg.id,
+		Src:        Ref{Name: src, Params: cfg.params},
+		Input:      cfg.input,
+		OnDone:     invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
+		HasOnDone:  cfg.hasOnDone,
+		OnError:    invokeOutcome[E](cfg.onError, cfg.hasOnError),
+		HasOnError: cfg.hasOnError,
 	})
 	return b
 }
@@ -1039,13 +1041,15 @@ func (b *Builder[S, E, C]) InvokeActor(src string, opts ...InvokeOption) *Builde
 		o(&cfg)
 	}
 	b.curState.state.Invoke = append(b.curState.state.Invoke, Invocation[S, E, C]{
-		ID:       cfg.id,
-		Src:      Ref{Name: src, Params: cfg.params},
-		Input:    cfg.input,
-		OnDone:   invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
-		OnError:  invokeOutcome[E](cfg.onError, cfg.hasOnError),
-		Kind:     ActorKindMachine,
-		SystemID: cfg.systemID,
+		ID:         cfg.id,
+		Src:        Ref{Name: src, Params: cfg.params},
+		Input:      cfg.input,
+		OnDone:     invokeOutcome[E](cfg.onDone, cfg.hasOnDone),
+		HasOnDone:  cfg.hasOnDone,
+		OnError:    invokeOutcome[E](cfg.onError, cfg.hasOnError),
+		HasOnError: cfg.hasOnError,
+		Kind:       ActorKindMachine,
+		SystemID:   cfg.systemID,
 	})
 	return b
 }

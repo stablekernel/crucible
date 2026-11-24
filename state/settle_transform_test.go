@@ -451,3 +451,153 @@ func TestWithSettleTransform_AnUnroutedSettleRunsNoTransform(t *testing.T) {
 		})
 	}
 }
+
+// halfRoutedMachine invokes its child with only one outcome event declared: doneOnly
+// wires an onDone and no onError, so a failure routes nothing; otherwise it wires an
+// onError and no onDone, so a success routes nothing. The outcome the invocation left
+// undeclared has no event to settle through, exactly as a dynamic spawn that declares
+// neither does: an invoked actor's unset outcome used to leave the zero event, which
+// the parent refused after the transform (and, for a host, its decoder) was consulted
+// for it, so the invocation's own flags — not the zero event — decide routing.
+func halfRoutedMachine(doneOnly bool) *state.Machine[string, string, *trec] {
+	b := state.ForgeFor[*trec]("halfrouted").
+		State("idle").
+		State("supervising")
+	if doneOnly {
+		b = b.InvokeActor("child", state.WithInvokeOnDone("childDone"))
+	} else {
+		b = b.InvokeActor("child", state.WithInvokeOnError("childErr"))
+	}
+	return b.
+		State("complete").
+		State("failed").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("supervising").
+		Transition("supervising").On("childDone").GoTo("complete").
+		Transition("supervising").On("childErr").GoTo("failed").
+		Quench()
+}
+
+// halfRoutedHarness casts halfRoutedMachine, wires the given transform and the child
+// behavior that completes with "payload", and enters supervising, returning the
+// parent, the system and the spawned child's id.
+func halfRoutedHarness(t *testing.T, doneOnly bool, transform func(string, any, error) (any, error, error)) (
+	*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec], string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	m := halfRoutedMachine(doneOnly)
+	parent := m.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sys := state.NewActorSystem(parent).Register("child", settleChildBehavior())
+	if transform != nil {
+		sys.WithSettleTransform(transform)
+	}
+	res := parent.Fire(ctx, "start")
+	sys.Absorb(ctx, res.Effects)
+	if parent.Current() != "supervising" {
+		t.Fatalf("parent state = %q, want supervising", parent.Current())
+	}
+	return parent, sys, state.ActorID(m.Name(), "supervising", 0)
+}
+
+// TestWithSettleTransform_AnInvokedActorWithoutTheOutcomeDeclaredRunsNoTransform
+// proves an invoked actor routes only the outcomes its invocation declared, so the
+// transform runs for neither: a success with no onDone settles as the fire-and-forget
+// no-op a dynamic spawn's always was, and a failure with no onError escalates to the
+// parent as a dynamic spawn's does — where each used to fire the zero event its unset
+// outcome leaves, consulting the transform for an event the parent then refused.
+func TestWithSettleTransform_AnInvokedActorWithoutTheOutcomeDeclaredRunsNoTransform(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		doneOnly bool // wire the onDone only (a failure routes nothing) or the onError only (a success does)
+		fail     bool // settle the child as a failure through SettleError rather than a delivery
+	}{
+		{"a success with no onDone", false, false},
+		{"a failure with no onError", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			parent, sys, id := halfRoutedHarness(t, tc.doneOnly, func(event string, output any, err error) (any, error, error) {
+				calls++
+				if event == "" {
+					return nil, nil, errors.New("refuses the zero event")
+				}
+				return output, err, nil
+			})
+			if tc.fail {
+				if res, ok := sys.SettleError(ctx, id, errors.New("boom")); ok || res.Err != nil {
+					t.Fatalf("SettleError = %+v, %v; want false with no Err: nothing routed and nothing aborted", res, ok)
+				}
+			} else if !sys.DeliverByID(ctx, id, "finish") {
+				t.Fatal("DeliverByID returned false; the actor was running")
+			}
+			if calls != 0 {
+				t.Fatalf("the transform ran %d times for the undeclared outcome, want none: no event carries it", calls)
+			}
+			if parent.Current() != "supervising" {
+				t.Fatalf("parent state = %q, want supervising: nothing fired", parent.Current())
+			}
+			if n := len(parent.Entity().notes); n != 0 {
+				t.Fatalf("the settle ran %d Assigns, want none", n)
+			}
+			// The actor settled, as a routed settle's does, with no event to fire.
+			if sys.IsRunning(id) || sys.Running() != 0 {
+				t.Fatalf("the actor didn't settle: IsRunning(%v), Running %d", sys.IsRunning(id), sys.Running())
+			}
+			if tc.fail {
+				// The raw failure escalated, as a dynamic spawn's unrouted failure does,
+				// and LastError keeps it.
+				if esc := sys.LastEscalation(); esc == nil || esc.ActorID != id {
+					t.Fatalf("LastEscalation = %v, want the undeclared failure escalated, as a dynamic spawn's is", esc)
+				}
+				if err := sys.LastError(); err == nil || err.Error() != "boom" {
+					t.Fatalf("LastError = %v, want the raw failure", err)
+				}
+			} else if out, got := sys.LastOutput(); !got || out != "payload" {
+				t.Fatalf("LastOutput = %v, %v; want the raw output \"payload\"", out, got)
+			}
+		})
+	}
+}
+
+// failingChildBehavior returns an ActorBehavior whose spawn fails, so the system
+// routes the failure through the invocation's onError, or escalates it when none was
+// declared.
+func failingChildBehavior() state.ActorBehavior {
+	return func(map[string]any) (state.ActorInstance, error) {
+		return nil, errors.New("can't start")
+	}
+}
+
+// TestASpawnWithoutOnErrorEscalatesNotFiresTheZeroEvent proves a spawn whose
+// invocation declared no onError escalates its failure to the parent as a dynamic
+// spawn's does, firing no zero event: a parent that declares a transition on the zero
+// event never runs it, and nothing was caught for the failure. On main the unset
+// onError left the zero event, which fired and such a parent caught.
+func TestASpawnWithoutOnErrorEscalatesNotFiresTheZeroEvent(t *testing.T) {
+	ctx := context.Background()
+	// The parent declares a transition on the zero event, which a fired zero-event
+	// onError would take.
+	m := state.ForgeFor[*trec]("zeroescape").
+		State("idle").
+		State("supervising").InvokeActor("child").
+		State("caught").
+		Initial("idle").
+		Transition("idle").On("start").GoTo("supervising").
+		Transition("supervising").On("").GoTo("caught").
+		Quench()
+	parent := m.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sys := state.NewActorSystem(parent).Register("child", failingChildBehavior())
+	res := parent.Fire(ctx, "start")
+	sys.Absorb(ctx, res.Effects)
+	if parent.Current() != "supervising" {
+		t.Fatalf("parent state = %q, want supervising: the spawn failed, no onError was declared, and no zero event fired", parent.Current())
+	}
+	if n := len(parent.Entity().notes); n != 0 {
+		t.Fatalf("the failed spawn ran %d Assigns, want none: no zero event fired", n)
+	}
+	if esc := sys.LastEscalation(); esc == nil || esc.ActorID != state.ActorID(m.Name(), "supervising", 0) {
+		t.Fatalf("LastEscalation = %v, want the failed spawn escalated: no onError was declared", esc)
+	}
+}

@@ -14,7 +14,6 @@ import (
 // a transition the parent declares on that event never runs, live or after Recover,
 // and Recover retries the spawn: nothing declared for the failure caught it.
 func TestRecover_RetriesANoOnErrorSpawnEvenWhenTheZeroEventHasATransition(t *testing.T) {
-	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by a no-transition refusal; #250")
 	ctx := context.Background()
 	m := state.ForgeFor[stepCtx]("zeroOnError").
 		Reducer("note", func(in state.AssignCtx[stepCtx]) stepCtx {
@@ -24,15 +23,12 @@ func TestRecover_RetriesANoOnErrorSpawnEvenWhenTheZeroEventHasATransition(t *tes
 		}).
 		Actor("child").
 		State("idle").
-		SuperState("spawning").InvokeActor("child").
-		SubState("waiting").
-		SubState("caught").
-		Initial("waiting").
-		EndSuperState().
+		State("spawning").InvokeActor("child").
+		State("caught").
 		Initial("idle").
-		Transition("idle").On("start").GoTo("waiting").
-		// The zero event moves between children, so spawning, and its actor, stay.
-		Transition("waiting").On("").GoTo("caught").Assign("note").
+		Transition("idle").On("start").GoTo("spawning").
+		// The zero event would leave spawning, ending the actor's activation.
+		Transition("spawning").On("").GoTo("caught").Assign("note").
 		Transition("caught").On("poke").GoTo("caught").
 		Quench()
 	store, id := durable.NewMemStore(), durable.InstanceID("zero-onerror")
@@ -64,7 +60,6 @@ func TestRecover_RetriesANoOnErrorSpawnEvenWhenTheZeroEventHasATransition(t *tes
 // declared is retried at Recover when the parent's state swallows its zero event with a
 // catch-all or a forbid: nothing declared for the failure caught it.
 func TestRecover_RetriesANoOnErrorSpawnAWildcardSwallowed(t *testing.T) {
-	t.Skip("an InvokeActor with no onError fires the zero event, so durable tells none declared from refused by a no-transition refusal; #250")
 	for _, how := range []string{"forbid any", "on any"} {
 		t.Run(how, func(t *testing.T) {
 			b := state.ForgeFor[stepCtx]("wildcard").
