@@ -118,7 +118,8 @@ type actorMessagePayload struct {
 // actor (settling it when it reaches its final state), records each parent
 // transition the delivery drove, persists the produced step, and dispatches the
 // domain effects those transitions emitted once it is recorded, as Fire dispatches
-// its own. The actor
+// its own. A failed dispatch fails the Handle with ErrHandleFailed; the step stays
+// recorded, and Recover sends its effects. The actor
 // behavior is resolved and run against the palette supplied with WithActorPalette;
 // the done-data, error, or parent-driving message it routes is journaled as a
 // JournalActorMessage correlated by the actor id so recovery replays it without

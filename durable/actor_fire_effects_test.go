@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -391,5 +392,75 @@ func TestActorDrivenFire_DispatchesOnAServiceSettleAnActorAbortedIn(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// TestDeliverToActor_AnEffectHandlerCallsBackIntoTheHandle pins that an effect
+// handler dispatched from a delivery can call back into the same Handle: a
+// delivery's step names the effects of the parent Fires it drove, and
+// DeliverToActor dispatches them after releasing the step lock, as Fire does, so
+// the handler's View and Fire both succeed — neither deadlocking on the step
+// lock its dispatch would hold, nor meeting ErrReentrantStep. waitFor bounds it,
+// so a regression that dispatches under the lock fails instead of hanging.
+func TestDeliverToActor_AnEffectHandlerCallsBackIntoTheHandle(t *testing.T) {
+	ctx := context.Background()
+	// working holds a finisher; delivering "finish" settles it, and the settle's
+	// childDone drives working -childDone-> done, whose notify the delivery's step
+	// dispatches. The handler then Views the settled parent and Fires "bill" on it.
+	m := state.ForgeFor[actorCtx]("deliverCallback").
+		Action("notify", notifyAction()).
+		Actor("finisher").
+		State("working").InvokeActor("finisher", state.WithInvokeOnDone("childDone")).
+		State("done").
+		State("billed").
+		Initial("working").
+		Transition("working").On("childDone").GoTo("done").Do("notify").
+		Transition("done").On("bill").GoTo("billed").
+		Quench()
+	var h *durable.Handle[string, string, actorCtx]
+	var calledBack atomic.Bool
+	var viewErr, fireErr error
+	var saw string
+	handler := func(ctx context.Context, _ string, _ state.Effect) error {
+		if calledBack.CompareAndSwap(false, true) {
+			viewErr = h.View(ctx, func(inst *state.Instance[string, string, actorCtx]) {
+				saw = inst.Current()
+			})
+			_, fireErr = h.Fire(ctx, "bill")
+		}
+		return nil
+	}
+	h, err := durable.NewRunner(m, durable.NewMemStore(),
+		durable.WithEffectHandler[string, string, actorCtx](handler),
+		durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+			"finisher": finishingChild(),
+		}),
+	).Start(ctx, "deliver-callback", actorCtx{}, state.WithInitialState("working"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		_, err = h.DeliverToActor(ctx, state.ActorRef{ID: state.ActorID("deliverCallback", "working", 0)}, "finish")
+	}()
+	waitFor(t, delivered, "DeliverToActor(finish)")
+	if err != nil {
+		t.Fatalf("DeliverToActor(finish) = %v, want nil", err)
+	}
+	if !calledBack.Load() {
+		t.Fatal("the effect handler never ran: the delivery's step named no effect")
+	}
+	if viewErr != nil {
+		t.Fatalf("the handler's View = %v, want nil", viewErr)
+	}
+	if saw != "done" {
+		t.Fatalf("the handler's View saw state %q, want done: the childDone already applied", saw)
+	}
+	if fireErr != nil {
+		t.Fatalf("the handler's Fire(bill) = %v, want nil", fireErr)
+	}
+	if got := h.Instance().Current(); got != "billed" {
+		t.Fatalf("state = %q, want billed by the handler's Fire", got)
 	}
 }
