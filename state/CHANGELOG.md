@@ -74,8 +74,19 @@ counts as an additive (minor) versus breaking (major) change. Use the
   An abort from a settle that a delivery drives isn't reported to
   `Deliver`'s caller: the actor stays running, and the abort is never recoverable
   through `Deliver` — the delivery drained the mailbox, so a later `Tick` returns
-  early without it. It's visible only to a host that drives `Tick` itself, or
-  through `SettleError`; the durable Runner's `Handle` is the intended channel.
+  early without it. It's reported to the new `WithSettleAbortObserver` on every
+  path that drives the settle; the durable Runner's `Handle` wires one.
+- **`ActorSystem.WithSettleAbortObserver`** calls a function once for every settle
+  that aborts — every path that drives one: a delivery, `Deliver` and the
+  `sendTo` / `sendParent` / `respond` / `forwardTo` sugar through it, a `Tick` the
+  host drives, and `SettleError` — with a `SettleAbort`: the actor's id, the event
+  the settle would have carried the outcome through (the invocation's `onDone` for
+  an output, its `onError` for an error), and the abort itself, as given. It's the
+  one channel an abort a delivery drives reaches: `Deliver` returns only whether it
+  found the actor running, and the mailbox it drained is left empty, so the abort is
+  in no return value a later call can recover. A settle whose actor was stopped,
+  settled, or respawned under the same id while its transform ran reports no abort,
+  as a stale settle does. It's additive, within v1.1.0.
 - **`FireEventData`** reports the payload a `WithEventData` option carries, so a host
   that records a Fire can persist it. It's additive, so the next release is v1.1.0.
 - **Callbacks get the step's context.** `GuardCtx`, `ActionCtx` and `AssignCtx` have a new
@@ -96,6 +107,26 @@ counts as an additive (minor) versus breaking (major) change. Use the
 ### Changed
 
 - Requires Go 1.27.4.
+- **One settle owns an actor at a time.** Two concurrent settles on one actor —
+  through the exported API, since a host driving the system and the parent from one
+  goroutine can't produce them — both ran their `WithSettleTransform` functions
+  against the same outcome, and the loser could report an abort for an actor the
+  winner went on to settle, or clear the winner's recorded outcome between its
+  transform and its journaling. A settle that finds the actor already settled, or
+  owned by a settle still in flight — another goroutine's, or the transform's own
+  reentrant call — now returns the zero result and false, firing nothing and running
+  no transform; a `Tick` whose step produced the actor's completion waits the owner
+  out, since the completion is the actor's own and must settle, and a delivery whose
+  actor is owned leaves its envelope queued for a later `Tick`. `SettleError` on an
+  already-settled, not-stopped actor is refused the same way — where it re-settled
+  the actor through onError on main, moving the parent again — whether or not a
+  transform is set, and a failure whose settle the transform rewrote into a success
+  nothing routes (an invocation with an `onError` but no `onDone`) escalates the
+  ORIGINAL error, as the failure does with no transform: a transform may rewrite the
+  outcome, not erase the failure. A settle a host's respawn replay drops
+  (`AbsorbRespawn`) now decides the drop before the transform runs, so an outcome
+  that differs on the respawn — one that won't encode, say — can't abort a settle
+  that is thrown away whole.
 - **An invoked actor routes only the outcomes its invocation declared.** An
   `InvokeActor` with no `WithInvokeOnDone` fired the zero event on the child's
   success — which the parent refused as having no transition, but not before a host's

@@ -755,23 +755,29 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*stat
 // completion (see WithSettleTransform), so one that routes nothing — a spawn with no
 // onDone for its outcome — consults no decoder, aborts nothing and journals nothing.
 // The wrapper hands the JSON the transform decoded to
-// the collector — the Fire it is about to drive journals it — and notes an abort, so
-// the step driving the system fails the Handle and the actor runs again on Recover:
-// an actor outcome is never parked, as a service result can be.
+// the collector — the Fire it is about to drive journals it — and the system's
+// WithSettleAbortObserver notes every abort a settle reports, after the system's
+// own staleness recheck, so the step driving the system fails the Handle and the
+// actor runs again on Recover: an actor outcome is never parked, as a service
+// result can be. A settle the system suppresses — one whose actor was stopped,
+// settled or respawned under it while its transform ran — reports no abort, so it
+// fails no Handle.
 func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.ActorSystem[S, E, C], *parentFires[S]) {
 	if len(r.cfg.actorPalette) == 0 {
 		return nil, nil
 	}
 	fires := &parentFires[S]{}
 	sys := state.NewActorSystem(inst).WithParentFireObserver(fires.note).
-		WithActorInspector(state.InspectorFunc(fires.inspect))
+		WithActorInspector(state.InspectorFunc(fires.inspect)).
+		// The observer reports an abort only once the system has rechecked the actor
+		// under its lock, so a settle the system suppressed — a stale one, or a loser
+		// to the settle still in flight — notes no abort and fails no Handle.
+		WithSettleAbortObserver(func(sa state.SettleAbort[E]) { fires.aborted(sa.Abort) })
 	settleJSON := &settledJSON{}
 	outcome := replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settleJSON, "actor done-data", "actor error")
 	sys.WithSettleTransform(func(event E, output any, err error) (any, error, error) {
 		out, outErr, abort := outcome(event, output, err)
-		if abort != nil {
-			fires.aborted(abort)
-		} else {
+		if abort == nil {
 			// An error outcome leaves nothing here, which clears whatever a settle that
 			// fired nothing — one whose actor was respawned under it while its transform
 			// ran — left. A settle that routes nothing runs no transform at all, so it
@@ -958,8 +964,10 @@ func (p *parentFires[S]) settling(r recordedResult) {
 	p.mu.Unlock()
 }
 
-// aborted notes a settle that aborted: it fired nothing and left its actor running,
-// so the step driving the system fails the Handle and records nothing, and a
+// aborted notes an abort the system's WithSettleAbortObserver reported: the settle
+// that returned it fired nothing and left its actor running, and the system has
+// already rechecked the actor under its lock, so the step driving the system fails
+// the Handle and records nothing, and a
 // recovered Handle runs the actor again. It's safe on a nil collector.
 func (p *parentFires[S]) aborted(err error) {
 	if p == nil || err == nil {

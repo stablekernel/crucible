@@ -293,6 +293,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- **A settle a respawn drops runs no transform.** The drop a host's respawn replay
+  makes (`AbsorbRespawn`) was decided after the settle transform ran, so a respawned
+  nested child whose output differed from its first spawn's — a time, a random id,
+  or any value with no JSON form — aborted the settle and failed `Recover`
+  (`Start`'s spawns the same way) for a settle that is thrown away whole: nothing
+  fires for it and nothing is journaled. The drop is now decided before the
+  transform, so a dropped settle consults no decoder and can abort nothing, and
+  `Recover` succeeds whatever the respawn's outcome encodes as.
 - **The recorded data of an actor fire that was refused is never decoded.** A journal
   an older version wrote can hold a settle whose parent Fire was refused — the
   zero-event settle of an `InvokeActor` that declared no onDone — with its done-data
