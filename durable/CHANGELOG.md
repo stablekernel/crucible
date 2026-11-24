@@ -212,12 +212,15 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   older `durable` replays a parked Record as a settled result.
 - **An actor's done-data and error reach `Assign` as the live run delivered them,**
   through the same decode a service result and a `WithEventData` payload get, so a
-  retried effect can't differ from the first attempt. The done-data is decoded through
-  the `WithEventDataDecoder` decoder for the parent's onDone event, live as the settle
-  routes it and as replay re-fires it: a decoder for that event hands `Assign` its type,
-  and without one the done-data arrives in JSON's generic form, a struct as a map and an
-  integer as a `float64` (#256). On main, `Assign` saw the actor's own Go value live and
-  JSON's generic form on replay. The journal records the JSON the live settle decoded
+  retried effect can't differ from the first attempt. This is a behavior change for
+  callers that read the outcome from `AssignCtx.Event`: without a decoder, a live
+  onDone `Assign` now sees JSON's generic form — a struct becomes a map, an integer a
+  `float64` — where main handed it the actor's own Go value, and an error is
+  message-only, so `errors.Is` and `errors.As` in an onError `Assign` stop matching
+  what the actor returned. `WithEventDataDecoder` for the parent's onDone (and
+  onError) event is the opt-out: it hands `Assign` the decoded type, live as the
+  settle routes it and as replay re-fires it (#256). On main, `Assign` saw the actor's
+  own Go value live and JSON's generic form on replay. The journal records the JSON the live settle decoded
   and the done-data's Go type, with its import path, and replay holds the decoder to the
   type as the live settle did, failing `Recover` and `StateAt` with `ErrEventDataEncoding`
   when the decoder returns another type; JSON's generic form, and nil, are always

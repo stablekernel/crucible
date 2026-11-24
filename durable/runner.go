@@ -716,8 +716,11 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 		return nil, fmt.Errorf("durable: starting %q: %w", id, refused)
 	}
 	// An actor a starting actor drove settled with an outcome that won't record: its
-	// settle aborted, firing nothing, so the instance saw nothing for it. Start fails, as
-	// for a refused Fire, so a retry runs the actor again.
+	// settle aborted, firing nothing, so the instance saw nothing for it. Start fails,
+	// as for a refused Fire — but the baseline checkpoint is already written, so a
+	// retry Start on the id returns ErrInstanceExists: the retry is a Recover from
+	// the baseline, which re-runs the spawns and aborts the same way, until the
+	// decoder is fixed.
 	if abort := actorFires.takeAborts(); abort != nil {
 		return nil, fmt.Errorf("durable: starting %q: %w", id, abort)
 	}
@@ -1185,7 +1188,10 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	}
 	// An actor the absorb drove settled with an outcome that won't record: the settle
 	// aborted, firing nothing, and nothing was applied for it. Fail the Handle and
-	// record nothing, so a recovered Handle runs the actor again.
+	// record nothing, so the host re-fires the event on a recovered Handle, which
+	// restores the state before it: an actor the event's own transition spawned isn't
+	// declared there, so it isn't respawned, while one that was already running is,
+	// and runs again.
 	if abort := h.actorFires.takeAborts(); abort != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, abort))
 	}

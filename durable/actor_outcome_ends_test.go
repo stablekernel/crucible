@@ -381,8 +381,15 @@ func TestActorOutcome_ASettleDrivenAtStart_ReplaysAsItDelivered(t *testing.T) {
 	if got := atomic.LoadInt64(&runs); got != 1 {
 		t.Fatalf("kid instantiated %d times, want 1", got)
 	}
-	if _, err = durable.StateAt(ctx, startSettleMachine(), store, id, 0, palette(&runs), endsDecoder()); err != nil {
+	// StateAt at the settle's step shows the same notes the live run recorded, as
+	// the Fire, Tick and RunService ends' do (checkEndsRecovered): the start's settle
+	// is journaled with the step after, so the view at step 0 holds it.
+	v, err := durable.StateAt(ctx, startSettleMachine(), store, id, 0, palette(&runs), endsDecoder())
+	if err != nil {
 		t.Fatalf("StateAt: %v", err)
+	}
+	if got := v.Instance().Entity().Notes; len(got) != 1 || got[0] != live[0] {
+		t.Fatalf("StateAt(0) notes = %q, want the live run's %q", got, live)
 	}
 
 	// A settle Start drove runs before any step, so a journal with no Record yet —

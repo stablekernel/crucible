@@ -252,7 +252,9 @@ func TestActor_Error_InvalidUTF8_LiveEqualsRecover(t *testing.T) {
 // TestActor_Error_APanickingErrorMethod_LiveEqualsRecover pins the issue's third
 // effect: an actor error whose Error method panics — a typed nil — settles with a
 // message saying so, normalized, and the parent's onError Assign sees the same
-// message live and after Recover, rather than the panic failing the Handle.
+// message live and after Recover, rather than the panic failing the Handle. The
+// message is pinned exactly, with the actor's own wording: "actor error panicked"
+// names the actor seam, not the service one, live and on replay alike.
 func TestActor_Error_APanickingErrorMethod_LiveEqualsRecover(t *testing.T) {
 	var runs int64
 	behavior := panickingChild(&runs)
@@ -269,6 +271,12 @@ func TestActor_Error_APanickingErrorMethod_LiveEqualsRecover(t *testing.T) {
 	}
 	if live[0] != rec[0] {
 		t.Fatalf("the parent's Assign saw different error messages live and after Recover:\n live=%s\n  rec=%s", live[0], rec[0])
+	}
+	// The exact live message: the actor seam's own wording for an Error method that
+	// panics, with the recovered value, normalized the way a Store keeps it.
+	want := fmt.Sprintf("*errors.errorString:%q", "actor error panicked: runtime error: invalid memory address or nil pointer dereference")
+	if live[0] != want || rec[0] != want {
+		t.Fatalf("the panicking error's message:\n live=%s\n  rec=%s\n  want=%s", live[0], rec[0], want)
 	}
 }
 

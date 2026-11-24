@@ -405,3 +405,76 @@ func TestWithSettleTransform_AnUnboundActorErrorStaysAnError(t *testing.T) {
 		t.Fatalf("notes = %q, want the unbound error's message recorded", got)
 	}
 }
+
+// panickingStepChild is an actor that panics while stepping the event it's
+// delivered: its Fire is guarded by the system, and the panic settles the actor
+// as a failure, whose settle the transform below aborts.
+type panickingStepChild struct{}
+
+func (*panickingStepChild) DeliverFire(_ context.Context, ev any) (bool, any) {
+	if ev == "finish" {
+		panic("ka-boom")
+	}
+	return false, nil
+}
+func (*panickingStepChild) ChildEffects() []state.Effect { return nil }
+func (*panickingStepChild) Output() any                  { return nil }
+
+// TestTick_APanickingActorsAbortedSettleReturnsTheAbort pins the panic branch of
+// Tick: a child that panics while stepping settles as a failure, and a transform
+// that aborts that settle makes Tick return the abort as its one FireResult — the
+// outcome a host driving Tick itself reads — with the actor left running and the
+// abort reported to the observer.
+func TestTick_APanickingActorsAbortedSettleReturnsTheAbort(t *testing.T) {
+	ctx := context.Background()
+	abort := errors.New("no recording")
+	reports := &abortReports{}
+	m := settleParentMachine()
+	parent := m.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sys := state.NewActorSystem(parent).Register("child", func(map[string]any) (state.ActorInstance, error) {
+		return &panickingStepChild{}, nil
+	})
+	id := state.ActorID(m.Name(), "supervising", 0)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	sys.WithSettleTransform(func(event string, output any, err error) (any, error, error) {
+		if event == "childErr" {
+			// The first settle (a SettleError below) blocks here, owning the actor,
+			// so the delivery's envelope waits in the mailbox for the host's Tick;
+			// the panicking step's settle aborts at once.
+			once.Do(func() {
+				close(started)
+				<-release
+			})
+		}
+		return nil, nil, abort
+	})
+	sys.WithSettleAbortObserver(reports.add)
+	res := parent.Fire(ctx, "start")
+	sys.Absorb(ctx, res.Effects)
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		sys.SettleError(ctx, id, errors.New("boom"))
+	}()
+	<-started
+	if !sys.DeliverByID(ctx, id, "finish") {
+		t.Fatal("DeliverByID returned false; the actor was running")
+	}
+	close(release)
+	<-settled
+	results := sys.Tick(ctx, id)
+	if len(results) != 1 || !errors.Is(results[0].Err, abort) {
+		t.Fatalf("Tick = %+v, want the one aborted settle's FireResult for the panicking step", results)
+	}
+	got := reports.take()
+	if len(got) != 2 || got[1].Event != "childErr" || got[1].Abort != abort {
+		t.Fatalf("the observer got %+v, want the SettleError's report then the panicking step's childErr one", got)
+	}
+	if parent.Current() != "supervising" || !sys.IsRunning(id) {
+		t.Fatalf("the aborted settle fired something or finished the actor: %q running=%v", parent.Current(), sys.IsRunning(id))
+	}
+	if n := len(parent.Entity().notes); n != 0 {
+		t.Fatalf("the aborted settles ran %d Assigns, want none", n)
+	}
+}
