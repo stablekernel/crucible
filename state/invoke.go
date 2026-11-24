@@ -79,13 +79,16 @@ type Invocation[S comparable, E comparable, C any] struct {
 	// (WithInvokeOnDone), so a child-machine actor's host routes its success only
 	// when the invoke declared an event to carry it. An unset outcome leaves OnDone
 	// at the zero event, which must not route: the flag, not the event's value,
-	// says whether one was declared. It round-trips through JSON.
+	// says whether one was declared. It round-trips through JSON, and a load of a
+	// document from before the flag back-fills it for an OnDone that is present
+	// and non-zero — an older producer set the event only when it declared it.
 	HasOnDone bool `json:"hasOnDone,omitempty"`
 	// HasOnError reports whether OnError was declared for this invocation
 	// (WithInvokeOnError), the failure-side twin of HasOnDone: a child-machine
 	// actor's host routes its failure only when the invoke declared an onError, and
 	// escalates it otherwise, rather than firing the zero event an unset outcome
-	// leaves. It round-trips through JSON.
+	// leaves. It round-trips through JSON, and a load of a document from before the
+	// flag back-fills it for an OnError that is present and non-zero.
 	HasOnError bool `json:"hasOnError,omitempty"`
 
 	// extra preserves unknown JSON keys a newer producer emitted so they survive a
@@ -109,13 +112,26 @@ func (inv Invocation[S, E, C]) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON decodes an Invocation and captures any unknown keys into extra so
-// they survive re-serialization.
+// they survive re-serialization. A document from before HasOnDone / HasOnError
+// existed carries no flag keys, so the decode back-fills each flag for the
+// outcome it names when the key is absent and the event is present and non-zero:
+// an older producer left the event at zero exactly when it declared no outcome,
+// so a reloaded definition keeps the outcomes it declared. A new producer's
+// document is untouched — it writes a flag whenever it is set, and an unset
+// outcome leaves the zero event, which back-fills nothing.
 func (inv *Invocation[S, E, C]) UnmarshalJSON(data []byte) error {
 	type alias Invocation[S, E, C]
 	var a alias
 	extra, err := captureExtra(data, &a, invocationKnownKeys)
 	if err != nil {
 		return err
+	}
+	var zero E
+	if !hasJSONKey(data, "hasOnDone") && a.OnDone != zero {
+		a.HasOnDone = true
+	}
+	if !hasJSONKey(data, "hasOnError") && a.OnError != zero {
+		a.HasOnError = true
 	}
 	*inv = Invocation[S, E, C](a)
 	inv.extra = extra

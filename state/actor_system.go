@@ -614,11 +614,16 @@ func (s *ActorSystem[S, E, C]) IsRunning(id string) bool {
 // completion is routed to the parent. It returns whether the actor was found
 // running. An abort a WithSettleTransform function returns for a settle the
 // delivery drives isn't reported to Deliver's caller: the abort went to the
-// delivery's Tick, whose results Deliver drops, so the actor stays running — and
-// it's never recoverable through Deliver, which drained the mailbox, so a later
-// Tick of the actor returns early, without the abort. It is reported, on this
-// path as on every path that drives a settle, to the WithSettleAbortObserver;
-// a host that records aborts wires one. A delivery whose actor a concurrent
+// delivery's Tick, whose results Deliver drops, so the actor stays running —
+// with its machine already final, since the settle the transform aborted was the
+// actor's completion. A later delivery or Tick doesn't step that final machine
+// (its event has no transition left to fire): it retries settling the final
+// outcome through the same ownership path as any settle, so the transform runs
+// again, an abort is reported again to the observer, and once the transform
+// stops aborting the good output lands through onDone — nothing is misrouted
+// through onError. The abort itself is still reported, on this path as on every
+// path that drives a settle, only to the WithSettleAbortObserver; a host that
+// records aborts wires one. A delivery whose actor a concurrent
 // settle still owns leaves its envelope queued (see Tick) and returns true: the
 // actor was running. Deliver is the delivery mechanism the sendTo /
 // sendParent / respond / forwardTo action sugar routes through; a host (or a test)
@@ -650,6 +655,20 @@ func (s *ActorSystem[S, E, C]) DeliverByID(ctx context.Context, id string, event
 	return s.Deliver(ctx, ActorRef{ID: id}, event)
 }
 
+// finalActor is the optional interface a backing ActorInstance implements to
+// report that its machine has already reached its final configuration, so a
+// delivery or Tick to an actor a settle left running — a transform aborted
+// before it could mark the actor done — retries settling the final outcome
+// rather than stepping a machine that has no step left. The standard
+// actorAdapter implements it; a host's own ActorInstance need not, in which case
+// a delivery steps the actor as before. It follows the frozen-interface growth
+// pattern: ActorInstance's method set stays locked at v1.0 and capabilities
+// arrive as separate optional interfaces the system discovers by assertion.
+type finalActor interface {
+	// InFinal reports whether the actor's machine is in its final configuration.
+	InFinal() bool
+}
+
 // Tick drains the mailbox of the actor under id, firing each queued event through
 // the actor in order. When the actor reaches its final state it is settled: the
 // parent's onDone event (carrying the child's output) is fired through the parent
@@ -659,7 +678,12 @@ func (s *ActorSystem[S, E, C]) DeliverByID(ctx context.Context, id string, event
 // function aborts the settle, one FireResult whose Err is the abort, as the
 // ServiceRunner's Tick reports its abort: no event fired, and the actor stays
 // running — and the abort is reported to the WithSettleAbortObserver, as every
-// path's is. A settle whose actor a concurrent settle still owns is waited out
+// path's is. An actor whose machine is already final — a settle a transform
+// aborted left it running — has no step left to run, so a Tick of it never steps
+// the machine, a queued envelope or none: it retries settling the final outcome
+// through the same ownership path as any settle, transform, abort report and
+// all, so the good output lands once the transform stops aborting. A settle whose
+// actor a concurrent settle still owns is waited out
 // rather than dropped: Tick holds the actor's real completion, so it settles once
 // the owner releases. An actor a settle still in flight owns is otherwise left
 // alone, its queued envelope left for a later Tick, so no step runs against an
@@ -676,14 +700,37 @@ func (s *ActorSystem[S, E, C]) Tick(ctx context.Context, id string) []FireResult
 		// An actor a settle still in flight owns is left alone: its envelope stays
 		// queued, for the settle's caller or a later Tick of the host's, rather than
 		// stepped against an outcome a concurrent settle is rewriting.
-		if !ok || ra.done || ra.settling || len(ra.mailbox) == 0 {
+		if !ok || ra.done || ra.settling {
+			s.mu.Unlock()
+			return out
+		}
+		inst := ra.inst
+		// A running actor whose machine is already final — one a settle's transform
+		// aborted left it, or a child Cast straight into its final state — has no
+		// step left to run: firing the delivered event would fail as "state is
+		// final" and settle the actor's completed outcome as a failure through
+		// onError (or an escalation). Retry settling the final outcome instead,
+		// through the same ownership path as any settle: the transform runs again,
+		// an abort is reported again to the WithSettleAbortObserver, and once the
+		// transform stops aborting the good output lands through onDone. Any queued
+		// envelope goes with it: its event has no transition left to fire. The
+		// retry runs with an empty mailbox too, so a host's bare Tick lands the
+		// outcome a delivery's abort left unsettled.
+		if fp, final := inst.(finalActor); final && fp.InFinal() {
+			ra.mailbox = nil
+			s.mu.Unlock()
+			if res, ok := s.settleCompletion(ctx, id, ra, inst.Output(), nil); ok || res.Err != nil {
+				out = append(out, res)
+			}
+			return out
+		}
+		if len(ra.mailbox) == 0 {
 			s.mu.Unlock()
 			return out
 		}
 		env := ra.mailbox[0]
 		ra.mailbox = ra.mailbox[1:]
 		ra.sender = env.sender
-		inst := ra.inst
 		s.mu.Unlock()
 
 		done, output, panicErr := deliverFireGuarded(ctx, inst, env.event)
@@ -846,7 +893,10 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 // parent's onDone fires (carrying output via LastOutput), on failure onError. A
 // WithSettleTransform function runs first for a settle that routes a completion —
 // before the actor is marked done and before the routing Fire — so one that aborts,
-// or panics, leaves the actor running; an abort is reported as the ServiceRunner's
+// or panics, leaves the actor running, with its machine already final when the
+// settle was the actor's completion: a later delivery or Tick retries that settle
+// rather than stepping the final machine (see WithSettleTransform). An abort is
+// reported as the ServiceRunner's
 // is (see WithSettleTransform), to the WithSettleAbortObserver on every path that
 // drives the settle. A settle that routes nothing runs no transform, settling
 // exactly as with none set. It returns the parent FireResult and true when
@@ -1102,13 +1152,14 @@ type SettleAbort[E comparable] struct {
 // call can recover. A settle that found its actor stopped, settled, or respawned
 // under the same id while its transform ran reports no abort, as a stale settle
 // does, and neither does a settle that lost the actor to one still in flight.
-// observe runs after the recheck, on the goroutine that drove the settle, with no
-// lock of the system's held, so it may read the system but must not drive it;
-// the settle has already returned its abort to its caller by then only on the
-// SettleError path, so observe may run while the driving Tick or delivery is
-// still on the stack. Calls from settles driven on different goroutines can
-// overlap, so observe must be safe for concurrent use. Setting it returns the
-// system for chaining.
+// observe runs inside settle's abort branch, before the abort reaches any
+// caller, on every path — the settle returns the abort to its caller only after
+// observe has run — and while the settle still owns the actor: the ownership it
+// takes at entry is released only when the settle returns. observe runs on the
+// goroutine that drove the settle, with no lock of the system's held, so it may
+// read the system but must not drive it. Calls from settles driven on different
+// goroutines can overlap, so observe must be safe for concurrent use. Setting it
+// returns the system for chaining.
 func (s *ActorSystem[S, E, C]) WithSettleAbortObserver(observe func(SettleAbort[E])) *ActorSystem[S, E, C] {
 	s.mu.Lock()
 	s.settleAbortObserver = observe
@@ -1155,14 +1206,24 @@ func (s *ActorSystem[S, E, C]) noteSettleAbort(sa SettleAbort[E]) {
 // FireResult as one element of its slice — and, on every path that drove the
 // settle, to the WithSettleAbortObserver: a delivery's abort reaches no return
 // value, since Deliver returns only whether it found the actor running and the
-// mailbox it drained is left empty, so a later Tick of the actor returns early
-// without it; the observer is the one channel that abort reaches, and a host that
-// records aborts wires one. An actor stopped,
+// mailbox it drained is left empty; the observer is the one channel that abort
+// reaches, and a host that records aborts wires one. An actor stopped,
 // settled, or respawned under the same id while the transform ran reports no abort,
 // as a stale settle does, and neither does a settle that lost the actor to another
 // still in flight: one settle owns an actor at a time, so a losing concurrent
 // settle runs no transform, fires nothing, reports nothing, and can't rewrite the
 // winner's outcome. LastOutput and LastError still report the previous settle.
+//
+// An abort leaves the actor running with its machine already final: the settle it
+// aborted was the actor's completion, so there is no step left to run. A delivery
+// or Tick to that actor doesn't step the final machine — firing its event would
+// fail "state is final" and misroute the completed outcome through onError — it
+// retries settling the final outcome through the same ownership path as any
+// settle: the transform runs again, an abort is reported again, and once the
+// transform stops aborting a later delivery or Tick lands the good output through
+// onDone. The durable runner is unaffected by the retry: it drives the same
+// settle a delivery always did, so its journal records the same entries, and its
+// replay never delivers to an actor.
 //
 // f runs before the actor is marked done, outside the system's lock, so it may run
 // for a settle that then finds the actor stopped, settled, or respawned under the

@@ -154,6 +154,19 @@ func captureExtra(data []byte, knownTarget any, knownKeys map[string]struct{}) (
 	return extra, nil
 }
 
+// hasJSONKey reports whether data is a JSON object carrying key, without
+// decoding it into any typed shape. A back-fill that must tell a producer that
+// wrote a field from one that predates it reads this, not the decoded value:
+// an absent key is the only signal an older producer left.
+func hasJSONKey(data []byte, key string) bool {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return false
+	}
+	_, ok := all[key]
+	return ok
+}
+
 // cloneRawExtra deep-copies a preserved-unknown map so a deep-copied IR node never
 // aliases the source's raw extras. The json.RawMessage byte slices are copied so a
 // later in-place mutation of one cannot leak into the other.

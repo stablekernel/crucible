@@ -1,6 +1,9 @@
 package state
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // This file defines the actor-model contract: the declarative shape an actor
 // invocation takes on a state, the effects the kernel emits so a host runtime
@@ -81,7 +84,9 @@ type SpawnActor struct {
 	// the child's success only when one was declared. An unset outcome leaves OnDone
 	// at the zero event, which must not route: the flag, not the event's value, says
 	// whether an outcome was declared, so a success with no onDone settles as the
-	// fire-and-forget no-op a spawn that declared neither is.
+	// fire-and-forget no-op a spawn that declared neither is. A payload from before
+	// the flag back-fills it on decode for an OnDone that is present and non-zero,
+	// as Invocation.UnmarshalJSON does for the IR.
 	HasDone bool `json:"hasDone,omitempty"`
 	// OnError is the event the host re-fires through the PARENT's Fire (carrying the
 	// error) when the child actor fails, type-erased for the abstract effect
@@ -90,7 +95,8 @@ type SpawnActor struct {
 	// HasError is the failure-side twin of HasDone: it reports whether this spawn
 	// declared an onError, so the host routes the child's failure only when one was,
 	// and escalates it to the parent otherwise, rather than firing the zero event an
-	// unset outcome leaves.
+	// unset outcome leaves. A payload from before the flag back-fills it on decode
+	// for an OnError that is present and non-zero.
 	HasError bool `json:"hasError,omitempty"`
 	// State names the owning state whose entry spawned this actor, for diagnostics
 	// and host bookkeeping. Empty for a dynamic spawn emitted from a transition.
@@ -99,6 +105,58 @@ type SpawnActor struct {
 	// under in the ActorSystem (its systemId), so a sibling can address it
 	// by a well-known name rather than by ref. Empty when unset.
 	SystemID string `json:"systemId,omitempty"`
+}
+
+// UnmarshalJSON decodes a SpawnActor, back-filling HasDone / HasError for a
+// payload an older producer wrote — one from before the flags existed, which
+// carried the declared outcome events but no flags — when the flag's key is
+// absent and the event is present and non-zero: an older producer set the event
+// only when it declared it, so a decoded envelope keeps the outcomes its spawn
+// declared. An unset outcome stays unset — a static invoke's unset outcome boxes
+// the parent's zero event and a dynamic spawn's omitted option leaves no key,
+// and neither back-fills — so a new producer's payload round-trips unchanged.
+// The zero-event test is on the decoded value's own type, which is exact for the
+// scalar event types (string, number, bool) a wire form distinguishes; a
+// composite event's zero form is not recognizable after the type-erased
+// round-trip, so a host on such events reloads declared outcomes from the typed
+// IR (Invocation.UnmarshalJSON) rather than an aged effect payload.
+func (e *SpawnActor) UnmarshalJSON(data []byte) error {
+	type alias SpawnActor
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	if !hasJSONKey(data, "hasDone") && !decodedZeroEvent(a.OnDone) {
+		a.HasDone = true
+	}
+	if !hasJSONKey(data, "hasError") && !decodedZeroEvent(a.OnError) {
+		a.HasError = true
+	}
+	*e = SpawnActor(a)
+	return nil
+}
+
+// decodedZeroEvent reports whether v, a JSON-decoded event value held in the
+// type-erased outcome field of an effect, is the zero of its own type — the wire
+// form an unset scalar outcome takes when a producer boxed its machine's zero
+// event. It is the any-typed counterpart of the typed zero test
+// Invocation.UnmarshalJSON makes: nil (no key, a dynamic spawn's omitted option)
+// and each scalar's zero back-fill nothing; everything else does.
+func decodedZeroEvent(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return x == ""
+	case bool:
+		return !x
+	case float64:
+		return x == 0
+	case json.Number:
+		return x.String() == "0"
+	default:
+		return false
+	}
 }
 
 // StopActor is the effect the kernel emits when an instance exits a state that
@@ -384,6 +442,13 @@ func (a *actorAdapter[S, E, C]) DeliverFire(ctx context.Context, event any) (boo
 // failure that routes onError or escalates, rather than swallowing it. It is not
 // part of the public ActorInstance contract.
 func (a *actorAdapter[S, E, C]) FireErr() error { return a.fireErr }
+
+// InFinal reports whether the wrapped child instance's active configuration is
+// final. The ActorSystem reads it (via the optional finalActor interface) to
+// retry settling an actor a settle left running with its machine already final,
+// rather than stepping a machine that has no step left. It is not part of the
+// public ActorInstance contract.
+func (a *actorAdapter[S, E, C]) InFinal() bool { return a.inst.InFinal() }
 
 // ChildEffects returns and drains the buffered child actor effects — the
 // SpawnActor / StopActor lifecycle effects and the SendTo / SendParent /

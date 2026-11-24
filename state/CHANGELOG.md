@@ -72,10 +72,12 @@ counts as an additive (minor) versus breaking (major) change. Use the
   transform ran reports no abort, as a stale settle does. This is new API, additive
   within v1.1.0.
   An abort from a settle that a delivery drives isn't reported to
-  `Deliver`'s caller: the actor stays running, and the abort is never recoverable
-  through `Deliver` — the delivery drained the mailbox, so a later `Tick` returns
-  early without it. It's reported to the new `WithSettleAbortObserver` on every
-  path that drives the settle; the durable Runner's `Handle` wires one.
+  `Deliver`'s caller: the actor stays running, and the abort reaches no return
+  value. It's reported to the new `WithSettleAbortObserver` on every path that
+  drives the settle; the durable Runner's `Handle` wires one. The actor a delivery
+  or `Tick` later finds still running with its machine already final — the settle
+  the transform aborted was its completion — isn't stepped: the delivery retries
+  the settle (see the Fixed entry on the settle retry).
 - **`ActorSystem.WithSettleAbortObserver`** calls a function once for every settle
   that aborts — every path that drives one: a delivery, `Deliver` and the
   `sendTo` / `sendParent` / `respond` / `forwardTo` sugar through it, a `Tick` the
@@ -140,10 +142,14 @@ counts as an additive (minor) versus breaking (major) change. Use the
   `HasOnDone` / `HasOnError` (additive, `omitempty` wire fields), so a host routes on
   what was declared rather than on the zero event an unset outcome leaves — which a
   spawn that declared the zero event itself still routes, as it always did. A
-  serialized machine from before the flags exists decodes them as unset, so a
-  reloaded definition's invoked actors route only outcomes it declares going forward;
-  `Spawn`-action effects always carried the distinction, since an omitted option
-  leaves the param absent.
+  serialized machine from before the flags exists decodes them as unset, but a
+  load back-fills each flag for an outcome event that is present and non-zero — an
+  older producer set the event only when it declared it — so a reloaded definition
+  keeps the outcomes it declared (an unset outcome still decodes as unset: the zero
+  event back-fills nothing), and a `SpawnActor` effect payload from an older
+  producer back-fills its `HasDone` / `HasError` the same way. `Spawn`-action
+  effects always carried the distinction, since an omitted option leaves the param
+  absent.
 - **A guard registered with `BindGuard` gets the Fire's context** in `EvalGuard`, where it
   used to get a background one. An error it returns after that context ended no longer
   counts as a false verdict: the Fire fails with the context's error at once. Before,
@@ -160,6 +166,20 @@ counts as an additive (minor) versus breaking (major) change. Use the
   whole system, so a message another goroutine's delivery sent the parent while it ran
   was dropped. The quiet now rides the call chain that spawns each actor, and ends when
   `AbsorbRespawn` returns.
+- **A delivery to an actor whose machine is already final retries the settle.** A
+  delivery or `Tick` to a running actor whose machine had already reached its final
+  state — an actor a settle's transform aborted left it that way — stepped the machine
+  anyway, firing the delivered event into the final state, which failed as "state is
+  final" and settled the actor as a FAILURE through onError (or escalated it): the
+  actor's completed outcome was misrouted as a crash. It now retries settling the
+  final outcome instead, through the same ownership path as any settle: the transform
+  runs again, an abort is reported again to the `WithSettleAbortObserver`, and once
+  the transform stops aborting a later delivery or `Tick` lands the good output
+  through onDone. Nothing is misrouted through onError. The retry runs with an empty
+  mailbox too, so a bare `Tick` of the actor settles an outcome a delivery's abort
+  left unsettled. The durable runner is unaffected: the retry drives the same settle
+  a delivery always did, so its journal records the same entries, and its replay
+  never delivers to an actor.
 - **A `ServiceRunner` settle can't settle a later activation of its service.** A
   `SettleDone` or `SettleError` whose result transform was running, or a `Tick` whose
   `ServiceFn` was running, while the service was stopped and armed again under the same

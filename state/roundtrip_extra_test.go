@@ -41,11 +41,16 @@ func TestRegion_UnknownFields_ByteIdenticalRoundTrip(t *testing.T) {
 
 // TestInvocation_UnknownFields_ByteIdenticalRoundTrip asserts that an Invocation
 // preserves unknown/future JSON keys and its Meta map verbatim across a load ->
-// save cycle, honoring the lossless round-trip its doc claims.
+// save cycle, honoring the lossless round-trip its doc claims. A document from a
+// producer with the declared-outcome flags is byte-identical still; one from
+// before the flags — the outcomes declared, the keys absent — gains the
+// back-filled flags on the save (that is the back-fill doing its work), with the
+// unknown fields preserved verbatim through it.
 func TestInvocation_UnknownFields_ByteIdenticalRoundTrip(t *testing.T) {
 	t.Parallel()
-	// Keys in sorted order: futureField, id, input, meta, onDone, onError, src.
-	in := []byte(`{"futureField":{"k":42},"id":"inv1",` +
+	// Keys in sorted order: futureField, hasOnDone, hasOnError, id, input, meta,
+	// onDone, onError, src.
+	in := []byte(`{"futureField":{"k":42},"hasOnDone":true,"hasOnError":true,"id":"inv1",` +
 		`"input":{"x":1},"meta":{"doc":"note"},"onDone":7,"onError":8,` +
 		`"src":{"name":"svc"}}`)
 
@@ -59,6 +64,9 @@ func TestInvocation_UnknownFields_ByteIdenticalRoundTrip(t *testing.T) {
 	if got, ok := inv.Meta["doc"]; !ok || got != "note" {
 		t.Fatalf("Meta round-trip lost value: got %v ok=%v", got, ok)
 	}
+	if !inv.HasOnDone || !inv.HasOnError {
+		t.Fatalf("declared-outcome flags lost: hasOnDone=%v hasOnError=%v", inv.HasOnDone, inv.HasOnError)
+	}
 
 	out, err := json.Marshal(inv)
 	if err != nil {
@@ -66,6 +74,27 @@ func TestInvocation_UnknownFields_ByteIdenticalRoundTrip(t *testing.T) {
 	}
 	if string(out) != string(in) {
 		t.Fatalf("Invocation round-trip not byte-identical:\n in=%s\nout=%s", in, out)
+	}
+
+	// The same document from a producer before the flags: no flag keys, the
+	// outcomes declared. The load back-fills the flags — the save says so — and
+	// the unknown field survives the upgrade verbatim.
+	aged := []byte(`{"futureField":{"k":42},"id":"inv1",` +
+		`"input":{"x":1},"meta":{"doc":"note"},"onDone":7,"onError":8,` +
+		`"src":{"name":"svc"}}`)
+	var old state.Invocation[int, int, *struct{}]
+	if uerr := json.Unmarshal(aged, &old); uerr != nil {
+		t.Fatalf("unmarshal aged Invocation: %v", uerr)
+	}
+	if !old.HasOnDone || !old.HasOnError {
+		t.Fatalf("aged Invocation flags = %v/%v, want both back-filled for the declared outcomes", old.HasOnDone, old.HasOnError)
+	}
+	upgraded, err := json.Marshal(old)
+	if err != nil {
+		t.Fatalf("marshal aged Invocation: %v", err)
+	}
+	if string(upgraded) != string(out) {
+		t.Fatalf("aged Invocation upgraded to %s\nwant the flagged document %s", upgraded, out)
 	}
 }
 

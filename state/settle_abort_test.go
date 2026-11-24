@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stablekernel/crucible/state"
@@ -476,5 +477,152 @@ func TestTick_APanickingActorsAbortedSettleReturnsTheAbort(t *testing.T) {
 	}
 	if n := len(parent.Entity().notes); n != 0 {
 		t.Fatalf("the aborted settles ran %d Assigns, want none", n)
+	}
+}
+
+// retryHarness builds the settle harness whose transform aborts successes — and
+// only successes — until allow is set, recording every abort it reports, so a
+// test can drive an aborted settle and then let the retry through.
+func retryHarness(t *testing.T, abort error, allow *atomic.Bool, reports *abortReports) (
+	*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec], string,
+) {
+	t.Helper()
+	parent, sys, id := settleHarness(t, func(event string, output any, err error) (any, error, error) {
+		if err != nil {
+			// Failures pass through untouched: only successes abort.
+			return nil, err, nil
+		}
+		if !allow.Load() {
+			return nil, nil, abort
+		}
+		return output, nil, nil
+	})
+	sys.WithSettleAbortObserver(reports.add)
+	return parent, sys, id
+}
+
+// TestDeliver_AnAlreadyFinalActorRetriesTheSettle proves what a delivery to a
+// running actor whose machine is already final — an actor a settle's transform
+// aborted left it that way — does: it doesn't step the machine (the delivered
+// event has no transition left to fire; stepping it would fail "state is final"
+// and misroute the actor's completed outcome through onError). It retries
+// settling the final outcome, through the same ownership path as any settle: the
+// transform runs again, an abort is reported again to the WithSettleAbortObserver
+// with the completion's event, and once the transform stops aborting a later
+// delivery lands the good output through onDone.
+func TestDeliver_AnAlreadyFinalActorRetriesTheSettle(t *testing.T) {
+	ctx := context.Background()
+	abort := errors.New("no recording")
+	var allow atomic.Bool
+	reports := &abortReports{}
+	parent, sys, id := retryHarness(t, abort, &allow, reports)
+
+	// The first delivery completes the child; its settle aborts, leaving the
+	// actor running with a final machine and an empty mailbox.
+	if !sys.DeliverByID(ctx, id, "finish") {
+		t.Fatal("DeliverByID returned false; the actor was running")
+	}
+	if parent.Current() != "supervising" {
+		t.Fatalf("the aborted settle fired something: parent = %q", parent.Current())
+	}
+	if got := reports.take(); len(got) != 1 || got[0].ActorID != id || got[0].Event != "childDone" || got[0].Abort != abort {
+		t.Fatalf("the observer got %+v, want the one abort on childDone", got)
+	}
+	if !sys.IsRunning(id) {
+		t.Fatal("the aborted settle finished the actor")
+	}
+
+	// The later delivery retries the settle, which aborts again and is reported
+	// again. Nothing is misrouted: no onError fires (the parent stays put, not
+	// "failed"), and the report carries the completion's childDone, not a
+	// childErr for a "state is final" failure.
+	if !sys.DeliverByID(ctx, id, "finish") {
+		t.Fatal("DeliverByID returned false; the actor was still running")
+	}
+	if parent.Current() != "supervising" {
+		t.Fatalf("the retried settle misrouted the completion through onError: parent = %q", parent.Current())
+	}
+	if got := reports.take(); len(got) != 1 || got[0].Event != "childDone" || got[0].Abort != abort {
+		t.Fatalf("the observer got %+v, want the second abort reported again on childDone, not a childErr misroute", got)
+	}
+	if n := len(parent.Entity().notes); n != 0 {
+		t.Fatalf("the retried settles ran %d Assigns, want none", n)
+	}
+	if !sys.IsRunning(id) {
+		t.Fatal("the second aborted settle finished the actor")
+	}
+
+	// Once the transform stops aborting, a later delivery lands the good output
+	// through onDone.
+	allow.Store(true)
+	if !sys.DeliverByID(ctx, id, "finish") {
+		t.Fatal("DeliverByID returned false; the actor was still running")
+	}
+	if parent.Current() != "complete" {
+		t.Fatalf("parent = %q, want complete: the retried settle must land the good output through onDone", parent.Current())
+	}
+	if got := strings.Join(parent.Entity().notes, ","); got != "result:payload" {
+		t.Fatalf("notes = %q, want the child's payload through onDone", got)
+	}
+	if sys.IsRunning(id) || sys.Running() != 0 {
+		t.Fatalf("the retried settle left the actor running: IsRunning=%v Running=%d", sys.IsRunning(id), sys.Running())
+	}
+	if got := reports.take(); len(got) != 0 {
+		t.Fatalf("the observer got %+v, want nothing once the transform stopped aborting", got)
+	}
+}
+
+// TestTick_AnAlreadyFinalActorRetriesTheSettle is the Tick half of the retry: a
+// host Tick of an actor a settle's transform aborted left running — with an empty
+// mailbox, since the delivery drained it — retries settling the final outcome
+// rather than returning a no-op, so once the transform stops aborting the good
+// output lands through onDone with no delivery at all.
+func TestTick_AnAlreadyFinalActorRetriesTheSettle(t *testing.T) {
+	ctx := context.Background()
+	abort := errors.New("no recording")
+	var allow atomic.Bool
+	reports := &abortReports{}
+	parent, sys, id := retryHarness(t, abort, &allow, reports)
+
+	// The delivery completes the child and its settle aborts; the mailbox is
+	// drained, so a later Tick has no envelope to step.
+	if !sys.DeliverByID(ctx, id, "finish") {
+		t.Fatal("DeliverByID returned false; the actor was running")
+	}
+	if got := reports.take(); len(got) != 1 || got[0].Abort != abort {
+		t.Fatalf("the observer got %+v, want the one abort", got)
+	}
+
+	// A Tick while the transform still aborts retries the settle and reports the
+	// abort again, as its own FireResult.
+	results := sys.Tick(ctx, id)
+	if len(results) != 1 || !errors.Is(results[0].Err, abort) {
+		t.Fatalf("Tick = %+v, want the retried settle's abort as its one FireResult", results)
+	}
+	if parent.Current() != "supervising" {
+		t.Fatalf("the retried settle fired something: parent = %q", parent.Current())
+	}
+	if got := reports.take(); len(got) != 1 || got[0].Event != "childDone" || got[0].Abort != abort {
+		t.Fatalf("the observer got %+v, want the Tick's retry abort on childDone", got)
+	}
+	if !sys.IsRunning(id) {
+		t.Fatal("the aborted retry finished the actor")
+	}
+
+	// Once the transform stops aborting, the host's own Tick lands the good
+	// output through onDone.
+	allow.Store(true)
+	results = sys.Tick(ctx, id)
+	if len(results) != 1 || results[0].NewState != "complete" || results[0].Err != nil {
+		t.Fatalf("Tick = %+v, want the settled completion routed through onDone", results)
+	}
+	if parent.Current() != "complete" {
+		t.Fatalf("parent = %q, want complete", parent.Current())
+	}
+	if got := strings.Join(parent.Entity().notes, ","); got != "result:payload" {
+		t.Fatalf("notes = %q, want the child's payload through onDone", got)
+	}
+	if sys.IsRunning(id) {
+		t.Fatal("the retried settle left the actor running")
 	}
 }
