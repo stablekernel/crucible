@@ -165,8 +165,12 @@ owner holds the instance, so stop. `Recover` retries an unapplied effect, and re
 ## A note on serialized payloads
 
 Events, service done-data, actor done-data, and actor messages are recorded as their
-JSON form. A parent reducer that type-asserts a non-JSON Go type from `AssignCtx.Event`
-observes the JSON-decoded shape of actor done-data on a replayed `onDone`. A service's
+JSON form. An actor's done-data gets the same decode a service's result does, live
+as on replay: when `WithEventDataDecoder` covers the parent's `onDone` event it
+arrives as the decoder's type, and without one it arrives in JSON's generic form —
+a struct as a map and an integer as a `float64`, which loses precision above 2^53
+— so a reducer that type-asserts a non-JSON Go type from `AssignCtx.Event` sees the
+same generic form both ways. A service's
 result is decoded from its JSON form live as well as on replay, so a reducer gets the same
 value both ways. When `WithEventDataDecoder` covers the invocation's `onDone` event, the
 result arrives as the decoder's type, for example `durable.DecodeAs[User]`. Otherwise it

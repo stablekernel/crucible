@@ -54,11 +54,12 @@ import (
 // supplied with WithActorPalette) and each parent transition the delivery drives —
 // the actor's onDone / onError, or a message it sends — is journaled as a
 // JournalActorMessage; on recovery the recorded transition is replayed by re-firing
-// the parent directly with the recorded done-data, so the actor behavior is never
-// re-instantiated. A Fire's or RunService's Record also journals the settles and
-// failed spawns' onErrors its absorb drove, replayed after its own work, and the step
-// after Start or Recover journals the ones their spawns drove, replayed first. A
-// purely event-driven machine records no Entries.
+// the parent directly with the recorded done-data, decoded for its onDone event as
+// the live settle decoded it, so the actor behavior is never re-instantiated and the
+// parent's Assign sees the same value. A Fire's or RunService's Record also journals
+// the settles and failed spawns' onErrors its absorb drove, replayed after its own
+// work, and the step after Start or Recover journals the ones their spawns drove,
+// replayed first. A purely event-driven machine records no Entries.
 type Runner[S comparable, E comparable, C any] struct {
 	machine *state.Machine[S, E, C]
 	store   Store
@@ -158,9 +159,9 @@ type Handle[S comparable, E comparable, C any] struct {
 	// respawnFailed holds the declared actors that aren't running because a respawn of
 	// them failed: the journal holds their start, so they stay out of the unstarted set.
 	respawnFailed map[string]bool
-	sets          actorSetsCache[S]     // the last actorSets result, reused while nothing it reads changed
-	pending       []state.ParentFire[S] // parent Fires Start's or Recover's spawns drove, journaled with the next step
-	actorFires    *parentFires[S]       // the parent Fires the actor system drove, taken per step
+	sets          actorSetsCache[S] // the last actorSets result, reused while nothing it reads changed
+	pending       []notedFire[S]    // parent Fires Start's or Recover's spawns drove, journaled with the next step
+	actorFires    *parentFires[S]   // the parent Fires the actor system drove, taken per step
 
 	out outbox // what a step leaves behind once it releases the step lock
 }
@@ -714,6 +715,15 @@ func (r *Runner[S, E, C]) Start(ctx context.Context, id InstanceID, input C, opt
 	if refused := refusedByContext(parentFireErrs(startFires)...); refused != nil {
 		return nil, fmt.Errorf("durable: starting %q: %w", id, refused)
 	}
+	// An actor a starting actor drove settled with an outcome that won't record: its
+	// settle aborted, firing nothing, so the instance saw nothing for it. Start fails,
+	// as for a refused Fire — but the baseline checkpoint is already written, so a
+	// retry Start on the id returns ErrInstanceExists: the retry is a Recover from
+	// the baseline, which re-runs the spawns and aborts the same way, until the
+	// decoder is fixed.
+	if abort := actorFires.takeAborts(); abort != nil {
+		return nil, fmt.Errorf("durable: starting %q: %w", id, abort)
+	}
 	// The actors that started are seen running, so one later stopped counts as ended.
 	h.seen = map[string]bool{}
 	if actors != nil {
@@ -733,29 +743,75 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*stat
 		return nil, nil
 	}
 	settled := &settledJSON{}
-	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settled)), settled
+	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settled, "service result", "service error")), settled
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to
 // inst, registering each behavior in the configured palette, and the collector of the
 // parent Fires it drives. Both are nil when no actor palette was wired (a machine
 // that spawns no actor needs none).
+//
+// The system settles through the same transform the ServiceRunner does (see
+// replayableOutcome), so an actor's output reaches the parent decoded for its onDone
+// event, live as a replay of the recorded JSON does, and an error arrives as an error
+// with the message a Store keeps. The transform runs only when the settle routes a
+// completion (see WithSettleTransform), so one that routes nothing — a spawn with no
+// onDone for its outcome — consults no decoder, aborts nothing and journals nothing.
+// The wrapper hands the JSON the transform decoded to
+// the collector — the Fire it is about to drive journals it — and the system's
+// WithSettleAbortObserver notes every abort a settle reports, after the system's
+// own staleness recheck, so the step driving the system fails the Handle and the
+// actor runs again on Recover: an actor outcome is never parked, as a service
+// result can be. A settle the system suppresses — one whose actor was stopped,
+// settled or respawned under it while its transform ran — reports no abort, so it
+// fails no Handle.
 func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.ActorSystem[S, E, C], *parentFires[S]) {
 	if len(r.cfg.actorPalette) == 0 {
 		return nil, nil
 	}
 	fires := &parentFires[S]{}
 	sys := state.NewActorSystem(inst).WithParentFireObserver(fires.note).
-		WithActorInspector(state.InspectorFunc(fires.inspect))
+		WithActorInspector(state.InspectorFunc(fires.inspect)).
+		// The observer reports an abort only once the system has rechecked the actor
+		// under its lock, so a settle the system suppressed — a stale one, or a loser
+		// to the settle still in flight — notes no abort and fails no Handle.
+		WithSettleAbortObserver(func(sa state.SettleAbort[E]) { fires.aborted(sa.Abort) })
+	settleJSON := &settledJSON{}
+	outcome := replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settleJSON, "actor done-data", "actor error")
+	sys.WithSettleTransform(func(event E, output any, err error) (any, error, error) {
+		out, outErr, abort := outcome(event, output, err)
+		if abort == nil {
+			// An error outcome leaves nothing here, which clears whatever a settle that
+			// fired nothing — one whose actor was respawned under it while its transform
+			// ran — left. A settle that routes nothing runs no transform at all, so it
+			// leaves nothing to clear.
+			fires.settling(settleJSON.take())
+		}
+		return out, outErr, abort
+	})
 	for src, behavior := range r.cfg.actorPalette {
 		sys.Register(src, behavior)
 	}
 	return sys, fires
 }
 
+// notedFire is one parent Fire the actor system drove, with the JSON and Go type the
+// settle that drove it decoded (see replayableOutcome): set when the Fire settled its
+// actor, so the journal records the bytes the live settle decoded. A Fire that carried
+// no settle — a message an actor sent, a failed spawn's onError — holds none.
+type notedFire[S comparable] struct {
+	pf state.ParentFire[S]
+	// settled is the outcome the settle decoded, its JSON and Go type, which the
+	// journal records for the settle's onDone fire; empty for every other Fire.
+	settled recordedResult
+}
+
 // parentFires collects the parent Fires an actor system drives, so the step that drove
 // them can check and record them, and the actors it spawned, so an actor spawned and
-// stopped inside one step still counts as having run.
+// stopped inside one step still counts as having run. It also holds, per settle, the
+// JSON the settle's transform decoded — the transform sets it (see newActorSystem)
+// and note takes it, so each settled Fire journals the bytes its own settle decoded —
+// and the aborts the transforms returned, which the driving step fails the Handle on.
 type parentFires[S comparable] struct {
 	// arm, when set, arms the timers and services a parent Fire's effects declare, as a
 	// host Fire's absorb does: the actor system handles only their actors. It's set
@@ -765,7 +821,9 @@ type parentFires[S comparable] struct {
 
 	mu        sync.Mutex
 	ctx       context.Context // the context of the step driving the system, for arm
-	fires     []state.ParentFire[S]
+	fires     []notedFire[S]
+	settled   recordedResult  // the JSON and Go type the settle routing the next Fire decoded
+	aborts    []error         // the aborts the settles since the last takeAborts returned
 	spawned   map[string]bool // actors whose latest spawn this step started
 	attempted map[string]bool // actors the system was asked to spawn this step
 	failed    map[string]bool // actors whose latest spawn failed and whose declared onError applied, or was refused for a reason other than a context ending
@@ -854,14 +912,23 @@ func (p *parentFires[S]) inspect(ev state.InspectionEvent) {
 
 func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	p.mu.Lock()
-	p.fires = append(p.fires, pf)
+	// The transform of the settle routing this Fire left the JSON it decoded (see
+	// newActorSystem); take it, so the Fire journals the bytes its own settle decoded.
+	// A Fire no settle drove leaves whatever a settle that fired nothing left — one
+	// whose actor was respawned under it while its transform ran, since a settle that
+	// routes nothing runs no transform — which the next settle's transform overwrites.
+	nf := notedFire[S]{pf: pf, settled: p.settled}
+	p.settled = recordedResult{}
+	p.fires = append(p.fires, nf)
 	// A spawn whose onError applied, or was refused for a reason other than a context
 	// ending, such as a failing guard, is handled: the journal holds the onError or its
 	// refusal, and a retry would run the behavior again. One a context's ending refused
-	// isn't: the step that drove it recorded nothing. Nor is one the parent had no
-	// transition for: an invoked actor with no onError declared routes the zero event,
-	// which the parent refuses that way, and nothing caught the failure. Telling the two
-	// apart by a no-transition refusal is a stopgap; see #250.
+	// isn't: the step that drove it recorded nothing. Nor is one whose declared onError
+	// the parent has no transition for: the parent refuses the event that way, and
+	// nothing caught the failure. A spawn that declared no onError at all escalates
+	// rather than firing, so it needs no refusal to tell it apart; telling a declared
+	// onError the parent can't route from a handled one by the refusal alone is a
+	// stopgap; see #250.
 	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !errors.Is(pf.Result.Err, state.ErrNoTransition) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
@@ -869,7 +936,7 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 		p.failed[pf.ActorID] = true
 	}
 	// A parent Fire that leaves a state stops its actors (see left).
-	for _, eff := range pf.Result.Effects {
+	for _, eff := range nf.pf.Result.Effects {
 		if e, ok := eff.(state.StopActor); ok {
 			if p.exited == nil {
 				p.exited = map[string]bool{}
@@ -883,10 +950,51 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		p.arm(ctx, pf.Result.Effects)
+		p.arm(ctx, nf.pf.Result.Effects)
 	}
 	// The system absorbs a parent Fire's effects next, which spawns what they declare.
-	p.attempt(pf.Result.Effects)
+	p.attempt(nf.pf.Result.Effects)
+}
+
+// settling records the JSON and Go type a settle decoded, which the Fire it is about
+// to drive notes with itself. It's safe on a nil collector.
+func (p *parentFires[S]) settling(r recordedResult) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.settled = r
+	p.mu.Unlock()
+}
+
+// aborted notes an abort the system's WithSettleAbortObserver reported: the settle
+// that returned it fired nothing and left its actor running, and the system has
+// already rechecked the actor under its lock, so the step driving the system fails
+// the Handle and records nothing, and a
+// recovered Handle runs the actor again. It's safe on a nil collector.
+func (p *parentFires[S]) aborted(err error) {
+	if p == nil || err == nil {
+		return
+	}
+	p.mu.Lock()
+	p.aborts = append(p.aborts, err)
+	p.mu.Unlock()
+}
+
+// takeAborts returns the aborts the settles since the last call returned, joined, and
+// forgets them; nil when none aborted. It's safe on a nil collector, which holds none.
+func (p *parentFires[S]) takeAborts() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var err error
+	if len(p.aborts) > 0 {
+		err = errors.Join(p.aborts...)
+		p.aborts = nil
+	}
+	return err
 }
 
 // driving notes ctx as the context of the step about to drive the system, so arm gets
@@ -908,7 +1016,7 @@ func (p *parentFires[S]) driving(ctx context.Context) (restore func()) {
 
 // take returns the Fires noted since the last take, in fire order, and forgets them.
 // It's safe on a nil collector, which has none.
-func (p *parentFires[S]) take() []state.ParentFire[S] {
+func (p *parentFires[S]) take() []notedFire[S] {
 	if p == nil {
 		return nil
 	}
@@ -954,10 +1062,10 @@ func stoppedLater(sp state.SpawnActor, rest, later []state.Effect) bool {
 }
 
 // parentFireErrs returns each parent Fire's error, nil ones included.
-func parentFireErrs[S comparable](fires []state.ParentFire[S]) []error {
+func parentFireErrs[S comparable](fires []notedFire[S]) []error {
 	errs := make([]error, len(fires))
 	for i := range fires {
-		errs[i] = fires[i].Result.Err
+		errs[i] = fires[i].pf.Result.Err
 	}
 	return errs
 }
@@ -1077,6 +1185,15 @@ func (h *Handle[S, E, C]) fireStep(ctx context.Context, event E, opts []state.Fi
 	fires := h.actorFires.take()
 	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
 		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, refused))
+	}
+	// An actor the absorb drove settled with an outcome that won't record: the settle
+	// aborted, firing nothing, and nothing was applied for it. Fail the Handle and
+	// record nothing, so the host re-fires the event on a recovered Handle, which
+	// restores the state before it: an actor the event's own transition spawned isn't
+	// declared there, so it isn't respawned, while one that was already running is,
+	// and runs again.
+	if abort := h.actorFires.takeAborts(); abort != nil {
+		return res, nil, nil, h.fail(fmt.Errorf("durable: firing %q: %w", h.id, abort))
 	}
 	// Every parent Fire the absorb drove (a message an actor sent as it spawned, a
 	// settle, a failed spawn's onError) applied after the event, so the step journals
@@ -1290,6 +1407,13 @@ func (h *Handle[S, E, C]) tickStep(ctx context.Context) ([]state.FireResult[S], 
 	fires := h.actorFires.take()
 	if refused := refusedByContext(parentFireErrs(fires)...); refused != nil {
 		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, refused))
+	}
+	// An actor the tick's absorb drove settled with an outcome that won't record: the
+	// settle aborted, firing nothing, so nothing was applied for it. Fail the Handle and
+	// record nothing, as for a refused parent Fire, so a recovered Handle runs the actor
+	// again.
+	if abort := h.actorFires.takeAborts(); abort != nil {
+		return results, nil, nil, h.fail(fmt.Errorf("durable: ticking %q: %w", h.id, abort))
 	}
 	driven, err := recordParentFires(fires, false)
 	if err != nil {
@@ -1915,6 +2039,13 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 	if refused := refusedByContext(parentFireErrs(recoverFires)...); refused != nil {
 		return nil, fmt.Errorf("durable: recovering %q: %w", id, refused)
 	}
+	// An actor the respawns drove settled with an outcome that won't record: its settle
+	// aborted, firing nothing, so the restored instance saw nothing for it. Recover
+	// fails, as for a refused Fire: the journal is intact, and a retry runs the actor
+	// again.
+	if abort := actorFires.takeAborts(); abort != nil {
+		return nil, fmt.Errorf("durable: recovering %q: %w", id, abort)
+	}
 	// The journal's ended actors stay ended, and seen, so the next step records a set
 	// only when it changes them.
 	h.seen = map[string]bool{}
@@ -2363,7 +2494,7 @@ func replayActors[S comparable, E comparable, C any](
 	actorArms bool,
 ) error {
 	for _, entry := range entries {
-		effects, err := replayActor(ctx, inst, cfg.eventCodec, entry)
+		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, cfg.resultAliases, entry)
 		if err != nil {
 			return fmt.Errorf("at step %d: %w", rec.Step, err)
 		}

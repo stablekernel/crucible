@@ -216,6 +216,16 @@ func WithMaxEventDataBytes[S comparable, E comparable, C any](n int) Option[S, E
 // decodes the journal with the recovering Runner's decoder, so one added or changed
 // after results were recorded changes what replay produces, and one that can't decode
 // a settled result fails Recover and StateAt with ErrEventDataEncoding.
+//
+// The decoder also decodes an actor's done-data, for the parent's onDone event, live
+// as the settle decodes it and on every replay, held to the Go type the live settle
+// recorded, which WithResultTypeAlias renames as a service result's. A done-data
+// payload that won't decode, or that decodes as another type than the actor produced,
+// aborts the settle — nothing fires — and the step driving it fails the Handle,
+// ErrHandleFailed wrapping ErrEventDataEncoding, recording nothing, so the actor runs
+// again on Recover: an actor outcome is never parked, unlike a service result (see
+// RunService). An actor's error stays message-only too and doesn't reach the decoder,
+// and a settle that routes no completion consults no decoder at all.
 func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[E]) Option[S, E, C] {
 	return func(c *runnerConfig[S, E, C]) {
 		if d != nil {
@@ -224,10 +234,12 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 	}
 }
 
-// WithResultTypeAlias tells the Runner that a service result type the journal recorded
-// under the full Go type name recorded now goes by current's type, so a result settled
-// or parked under the old name still replays after the rename: Recover, StateAt and a
-// RunService that settles a recorded result accept the decoded value when its type is
+// WithResultTypeAlias tells the Runner that a service result type, or an actor
+// done-data type, the journal recorded under the full Go type name recorded now goes
+// by current's type, so a result settled or parked under the old name, and an actor's
+// done-data settled under it, still replay after the rename: Recover, StateAt and a
+// RunService that settles a recorded result, and the replay of a recorded actor's
+// done-data, accept the decoded value when its type is
 // the one current is a value of, and every other recorded name is held to strictly,
 // exactly as without the alias. recorded is the name as the journal records it, spelled
 // exactly as the result's Go type does: an import path and name, as
@@ -243,7 +255,8 @@ func WithEventDataDecoder[S comparable, E comparable, C any](d EventDataDecoder[
 // type, can't bring it back. An empty recorded, a nil current and a name aliased to
 // the type's own current name are ignored too — as the other options, bad input
 // changes nothing, and the strict check stands, so a result recorded under a name no
-// alias covers still fails Recover and StateAt with ErrEventDataEncoding. The alias
+// alias covers still fails Recover and StateAt with ErrEventDataEncoding, naming the
+// outcome — a service result or an actor's done-data — that wouldn't decode. The alias
 // applies to a recorded result's name only: a result parked by this Handle stays held
 // to its own type, exactly as live (see WithEventDataDecoder).
 func WithResultTypeAlias[S comparable, E comparable, C any](recorded string, current any) Option[S, E, C] {

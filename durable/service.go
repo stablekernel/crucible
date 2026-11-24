@@ -166,7 +166,14 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // result decodes) or while its settle's effects were absorbed (even after a clean
 // settle), or a Fire the settle drove refused because a context ended (ctx, or one
 // middleware derived from it) returns ErrHandleFailed and records nothing: a recovered
-// Handle has the service in flight again, and RunService runs it a second time. A
+// Handle has the service in flight again, and RunService runs it a second time. An
+// actor the settle's absorb drove settling with an outcome that won't record fails the
+// Handle the same way, but the service's own settle is recorded first: the ServiceFn
+// ran and its result decoded, so the journal holds it before the actor's settle is
+// attempted, and the parking design's "never runs again" promise holds — a recovered
+// Handle re-settles the service from the journal and never runs its ServiceFn again,
+// however many Recover-and-retry rounds follow; only the actor re-runs, from its
+// initial state, on each Recover's respawn and each redelivery. A
 // result that won't encode runs no Assign, as one that won't decode doesn't. A KindedEffect the settle emits
 // whose payload won't marshal doesn't fail it: it is recorded by id and kind, as
 // recordEffects says, and dispatches as any effect does.
@@ -282,6 +289,19 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	if err := stepCanceled(ctx, append([]error{res.Err}, parentFireErrs(fires)...)...); err != nil {
 		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
+	// An actor the settle's absorb drove settled with an outcome that won't record: its
+	// settle aborted, firing nothing, so nothing was applied for it. The service's own
+	// settle — which ran, and whose result decoded — is journaled first, so the parking
+	// design's "never runs again" promise holds for it: the ServiceFn ran once and its
+	// result is in the journal before the actor's settle is attempted. The Handle then
+	// fails on the actor's abort, and a recovered Handle never runs the service again —
+	// replay re-settles it from the journal — so only the actor re-runs, from its
+	// initial state. The parent Fires the settle's absorb drove before the abort
+	// (the poke that finished the actor) applied live, so the same Record journals
+	// them too, and replay re-fires them after the settle, where they ran. An actor
+	// outcome is never parked, as a service result that won't decode is: the actor can
+	// run again.
+	abort := h.actorFires.takeAborts()
 
 	entry, err := recordServiceOutcome(id, settled, h.svc.LastError())
 	if err != nil {
@@ -304,7 +324,17 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	rec := &Record{Step: h.nextStep, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
 	des, err := h.recordStep(ctx, rec, res.Effects)
 	if err != nil {
+		if abort != nil {
+			// The Handle already failed on the append; join the actor's abort so the
+			// caller sees both.
+			err = errors.Join(err, fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, abort))
+		}
 		return res, true, nil, nil, err
+	}
+	if abort != nil {
+		// The Record is durable, so finishStep dispatches its effects and offers its
+		// checkpoint before the caller sees the failure, as any recorded step does.
+		return res, true, rec, des, h.fail(fmt.Errorf("durable: settling service %q for %q: the settle is recorded; an actor it drove aborted, so the Handle failed and only that actor runs again on Recover: %w", id, h.id, abort))
 	}
 	return res, true, rec, des, nil
 }
@@ -356,39 +386,43 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 	delete(h.parked, id)
 }
 
-// replayableOutcome returns the transform a ServiceRunner applies to every outcome as
-// it settles, so the live settle and a replay can't differ. A result is encoded to
-// JSON and decoded through decode for the invocation's onDone event, as a
-// WithEventData payload is: the live run passes the ServiceFn's value, a replay the
-// recorded JSON as a recordedResult, and both get decode's value. With the default
-// decoder that is JSON's generic form. Live, a decoder that returns a concrete type
-// other than the result's is refused, though JSON's generic form, including a
-// json.Number, is always accepted, so the default keeps working. A settle that
-// succeeds leaves in settled the JSON it decoded and the result's Go type, which
-// serviceStep journals, so replay decodes the bytes live decoded and holds the decoder
-// to the type live did; an error outcome leaves nothing there.
+// replayableOutcome returns the transform a ServiceRunner or an ActorSystem applies
+// to every outcome as it settles, so the live settle and a replay can't differ. A
+// result is encoded to JSON and decoded through decode for the invocation's onDone
+// event, as a WithEventData payload is: the live run passes the ServiceFn's or the
+// behavior's value, a replay the recorded JSON as a recordedResult, and both get
+// decode's value. With the default decoder that is JSON's generic form. Live, a
+// decoder that returns a concrete type other than the result's is refused, though
+// JSON's generic form, including a json.Number, is always accepted, so the default
+// keeps working. A settle that succeeds leaves in settled the JSON it decoded and
+// the result's Go type, which the driving step journals, so replay decodes the bytes
+// live decoded and holds the decoder to the type live did; an error outcome leaves
+// nothing there. what names the outcome in the errors an abort carries ("service
+// result", "actor done-data"), and errWhat an error outcome in the message a
+// panicking Error method settles with ("service error", "actor error").
 //
 // A result that won't decode, or is refused, aborts the settle with an
 // *undecodableResult before it fires anything, so no onDone or onError Assign runs;
-// serviceStep sees it in the settle's FireResult.Err and parks the result, and
-// replayService fails the replay. A parked result settles as a recordedResult that
-// carries its Go type, and the decoder must return that type, or JSON's generic form,
-// as live. A result with no JSON form aborts the settle too, with no JSON to park, and
-// serviceStep fails the Handle.
+// serviceStep sees it in the settle's FireResult.Err and parks the result, an actor
+// step sees it in the settle it aborted (WithSettleTransform) and fails the Handle,
+// and a replay fails on it. A parked result settles as a recordedResult that
+// carries its Go type, and the decoder must return that type, or JSON's generic
+// form, as live. A result with no JSON form aborts the settle too, with no JSON to
+// park, and serviceStep fails the Handle.
 //
 // An error becomes an error with its message as a Store keeps it (see
 // normalizedErrorMessage), live and on replay. An Error method that panics settles
 // with a message saying so, normalized the same way.
 //
 // aliases carries the Runner's WithResultTypeAlias renames, which the recorded check
-// honors: a result recorded under a name an alias maps to the type the decoded value
+// honors: an outcome recorded under a name an alias maps to the type the decoded value
 // has settles through the alias. Every other name is checked strictly, as without any
 // alias.
-func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, settled *settledJSON) func(E, any, error) (any, error, error) {
+func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, settled *settledJSON, what, errWhat string) func(E, any, error) (any, error, error) {
 	return func(event E, result any, err error) (any, error, error) {
 		settled.set(recordedResult{})
 		if err != nil {
-			msg, perr := normalizedErrorMessage(err, "service error")
+			msg, perr := normalizedErrorMessage(err, errWhat)
 			if perr != nil {
 				msg = validUTF8(perr.Error())
 			}
@@ -399,7 +433,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 		if !replay {
 			var jerr error
 			if b, jerr = marshalPayload(result); jerr != nil {
-				return nil, nil, &undecodableResult{err: fmt.Errorf("service result won't encode: %w", jerr)}
+				return nil, nil, &undecodableResult{err: fmt.Errorf("%s won't encode: %w", what, jerr)}
 			}
 		}
 		var value any
@@ -411,11 +445,11 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 			value, derr = decodePayload(eventPayload{data: b}, event, decode)
 		}
 		if derr != nil {
-			derr = fmt.Errorf("%w: service result won't decode for event %v: %w", ErrEventDataEncoding, event, derr)
+			derr = fmt.Errorf("%w: %s won't decode for event %v: %w", ErrEventDataEncoding, what, event, derr)
 		} else if !replay {
-			derr = decodedAsPassed(value, result, "service result", true)
+			derr = decodedAsPassed(value, result, what, true)
 		} else {
-			derr = decodedAsRecorded(value, recorded, aliases)
+			derr = decodedAsRecorded(value, recorded, aliases, what)
 		}
 		if derr != nil {
 			rtype := recorded.rtype
@@ -640,7 +674,8 @@ func qualifiedName(pkg, name string) string {
 
 // decodedAsRecorded is decodedAsPassed for a recorded result, which records its type's
 // name rather than a value: it reports, as an ErrEventDataEncoding error, a value the
-// decoder returned as another type than the recorded one. As live, nil and JSON's
+// decoder returned as another type than the recorded one; what names the outcome, a
+// service's result or an actor's done-data. As live, nil and JSON's
 // generic form are always accepted. A name aliases maps, from WithResultTypeAlias, to
 // the type the decoded value has is accepted too: the type was renamed or moved after
 // the result was recorded, and the alias says what the recorded name now means; every
@@ -650,8 +685,10 @@ func qualifiedName(pkg, name string) string {
 // alias too, which a parked result ignores — or as one read from the journal or a
 // checkpoint is held to its name, which a type of the same name and package, such as
 // another function-local type, also has. An empty name, a result recorded with no
-// type, accepts anything.
-func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string) error {
+// type, accepts anything. Only a parked service result carries its own type, so the
+// parked check below names a service result whatever what is; an actor outcome is
+// never parked.
+func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string, what string) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
@@ -662,11 +699,11 @@ func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]st
 		if aliased {
 			// The name is covered by an alias, so name the type it now means, which is
 			// the one to decode as, not the recorded name the type no longer has.
-			return fmt.Errorf("%w: a %s service result, aliased to %s by WithResultTypeAlias, decodes as %s; decode it as %s with WithEventDataDecoder",
-				ErrEventDataEncoding, typ, alias, got, alias)
+			return fmt.Errorf("%w: a %s %s, aliased to %s by WithResultTypeAlias, decodes as %s; decode it as %s with WithEventDataDecoder",
+				ErrEventDataEncoding, typ, what, alias, got, alias)
 		}
-		return fmt.Errorf("%w: a %s service result decodes as %s; decode it as %s with WithEventDataDecoder",
-			ErrEventDataEncoding, typ, got, typ)
+		return fmt.Errorf("%w: a %s %s decodes as %s; decode it as %s with WithEventDataDecoder",
+			ErrEventDataEncoding, typ, what, got, typ)
 	}
 	// The name agrees — the recorded one or the alias's — so only a result this Handle
 	// parked, which carries its type itself, can be another type: through the alias,

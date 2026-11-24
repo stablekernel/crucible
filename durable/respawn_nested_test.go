@@ -46,9 +46,9 @@ func TestRecover_ANestedChildsStartFireAppliesOnce(t *testing.T) {
 		Transition("hosting").On("poke").GoTo("hosting").Assign("notePoke").
 		Quench()
 	starts := map[string][]state.Effect{
-		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}, OnError: "nestedFailed"}},
+		"fails": {state.SpawnActor{ID: "child", Src: state.Ref{Name: "broken"}, OnError: "nestedFailed", HasError: true}},
 		"settles": {
-			state.SpawnActor{ID: "child", Src: state.Ref{Name: "finisher"}, OnDone: "nestedDone"},
+			state.SpawnActor{ID: "child", Src: state.Ref{Name: "finisher"}, OnDone: "nestedDone", HasDone: true},
 			state.SendTo{TargetID: "child", Event: "finish"},
 		},
 	}
@@ -162,5 +162,89 @@ func TestRecover_DropsAPongLiveNeverSent(t *testing.T) {
 	}
 	if notes := recovered.Instance().Entity().Notes; len(notes) != 0 {
 		t.Fatalf("recovered notes = %v, want none: live never heard a pong", notes)
+	}
+}
+
+// varyingChild builds an actor behavior whose completion output differs between
+// its first instantiation and every later one: first the encodable output, then
+// one with no JSON form. A respawn of it under the same quiet start its first
+// spawn rode must not fail Recover when the later output can't record: the
+// settle a host's respawn drops runs no transform, so the output is never
+// encoded.
+func varyingChild(first, later any) state.ActorBehavior {
+	runs := 0
+	return func(map[string]any) (state.ActorInstance, error) {
+		runs++
+		output := first
+		if runs > 1 {
+			output = later
+		}
+		child := state.ForgeFor[actorCtx]("varying").
+			State("working").
+			State("done").Final().
+			Initial("working").
+			Transition("working").On("finish").GoTo("done").
+			Quench()
+		inst := child.Cast(actorCtx{}, state.WithInitialState[string]("working"))
+		return state.NewActor(inst, func(*state.Instance[string, string, actorCtx]) any { return output }), nil
+	}
+}
+
+// TestRecover_ASettleTheRespawnDropsRunsNoTransform pins the drop check's place:
+// the settle a host's respawn replay drops is decided before the transform runs,
+// so an outcome that differs on the respawn — here one with no JSON form, which
+// the transform would refuse to record — can't abort a settle that is thrown
+// away. Before the fix the transform ran first and its abort failed Recover, for
+// a settle that never fired and never journaled anything.
+func TestRecover_ASettleTheRespawnDropsRunsNoTransform(t *testing.T) {
+	ctx := context.Background()
+	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {
+		return func(in state.AssignCtx[actorCtx]) actorCtx {
+			c := in.Entity
+			c.Notes = append(c.Notes, s)
+			return c
+		}
+	}
+	m := state.ForgeFor[actorCtx]("dropped").
+		Reducer("noteNested", note("nested")).
+		Reducer("notePoke", note("poke")).
+		Actor("host").
+		State("hosting").InvokeActor("host").
+		Initial("hosting").
+		Transition("hosting").On("nestedDone").GoTo("hosting").Assign("noteNested").
+		Transition("hosting").On("poke").GoTo("hosting").Assign("notePoke").
+		Quench()
+	opts := []greetOption{durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{
+		"host": func(map[string]any) (state.ActorInstance, error) {
+			return &starting{start: []state.Effect{
+				state.SpawnActor{ID: "child", Src: state.Ref{Name: "varying"}, OnDone: "nestedDone", HasDone: true},
+				state.SendTo{TargetID: "child", Event: "finish"},
+			}}, nil
+		},
+		"varying": varyingChild(1, make(chan int)),
+	})}
+	store, id := durable.NewMemStore(), durable.InstanceID("dropped")
+	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, actorCtx{}, state.WithInitialState("hosting"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err = h.Fire(ctx, "poke"); err != nil {
+		t.Fatalf("Fire(poke): %v", err)
+	}
+	want := fmt.Sprint([]string{"nested", "poke"})
+	if got := fmt.Sprint(h.Instance().Entity().Notes); got != want {
+		t.Fatalf("live notes = %s, want %s", got, want)
+	}
+	// The host respawns on Recover, and its nested child settles again with an
+	// output that won't encode — but that settle is part of the start the journal
+	// already holds, so it is dropped whole: no transform, no abort, no failure.
+	for round := 1; round <= 2; round++ {
+		recovered, err := durable.Recover(ctx, m, store, id, opts...)
+		if err != nil {
+			t.Fatalf("Recover %d: %v", round, err)
+		}
+		if got := fmt.Sprint(recovered.Instance().Entity().Notes); got != want {
+			t.Fatalf("Recover %d notes = %s, want %s", round, got, want)
+		}
 	}
 }

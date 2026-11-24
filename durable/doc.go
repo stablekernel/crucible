@@ -35,11 +35,10 @@
 // # Caveats
 //
 // Payloads are serialized at the journal boundary. Event, service done-data, actor
-// done-data, and actor messages are recorded as their JSON form; a parent reducer that
-// type-asserts a non-JSON Go type from AssignCtx.Event observes the JSON-decoded shape
-// on a replayed onDone. A WithEventData payload is decoded from its JSON form live as
-// well as on replay, so a reducer gets the same value both ways; WithEventDataDecoder
-// decodes it as the type the caller passed.
+// done-data, and actor messages are recorded as their JSON form. A WithEventData
+// payload is decoded from its JSON form live as well as on replay, so a reducer gets
+// the same value both ways; WithEventDataDecoder decodes it as the type the caller
+// passed.
 //
 // A service result is decoded the same way, live and on replay. When
 // WithEventDataDecoder covers the invocation's onDone event, the result arrives as the
@@ -62,6 +61,24 @@
 // recorded to return another type fails Recover, unless it returns JSON's generic form
 // or the recorded type's new name is aliased (WithResultTypeAlias), and one added later
 // for the service's type changes what replay produces.
+//
+// An actor's done-data gets the same decode, live as on replay: when the decoder covers
+// the parent's onDone event it arrives as the decoder's type, and without one in JSON's
+// generic form, held to the recorded Go type, which an alias from WithResultTypeAlias
+// can rename as a service result's. An actor's error is message-only too, and one whose
+// Error method panics settles with a message saying so. An actor outcome is never
+// parked: done-data that won't decode, or decodes as a type other than the actor
+// produced, fails the Handle — the delivery, or the Fire, Tick or RunService whose
+// absorb drove the settle. The Fire, Tick and
+// delivery ends record nothing, so the host re-drives the step on a recovered
+// Handle: for a Fire, re-firing the event restores the state before it, so an
+// actor the event's own transition spawned isn't respawned, while one that was
+// already running is, and runs again. The RunService end records the service's own
+// settle, which ran and decoded before the actor's aborted, so the ServiceFn never
+// runs again either. A settle Start's spawns drive fails Start the same way, after
+// the baseline checkpoint is written: a retry Start on the id returns
+// ErrInstanceExists, and the retry is a Recover from the baseline, which re-runs
+// the spawns.
 //
 // The kernel stays pure and dependency-free. The durable module is host-side:
 // database drivers, cloud SDKs, and I/O libraries live in the caller or in out-
@@ -133,10 +150,11 @@
 // Child-machine actors (WithActorPalette): an actor's behavior runs on the live path;
 // each parent transition the delivery drives is journaled as a JournalActorMessage. On
 // recovery the recorded transition is re-fired directly through the parent with the
-// recorded done-data, so a settled actor never re-runs. Each step records the declared
-// actors that ran and ended, settled or stopped, and Recover doesn't spawn those. An
-// InvokeActor actor still running at recovery restarts from its initial state, because
-// its own state isn't journaled, and a Spawn actor doesn't return.
+// recorded done-data, decoded for its onDone event as the live settle decoded it, so a
+// settled actor never re-runs and its Assign sees the same value. Each step records the
+// declared actors that ran and ended, settled or stopped, and Recover doesn't spawn
+// those. An InvokeActor actor still running at recovery restarts from its initial
+// state, because its own state isn't journaled, and a Spawn actor doesn't return.
 //
 // # Idempotent effect dispatch
 //
