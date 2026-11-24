@@ -31,8 +31,11 @@ backends implement the `Store` interface out of tree.
 - **Deterministic replay**: a recovered instance is byte-identical to one that
   never crashed, because recovery replays the recorded driving events and
   nondeterministic results rather than re-executing their sources.
-- **Exactly-once effects**: a domain effect from a step (not an initial entry, which is at-least-once, or a parent transition an actor drives, which is not dispatched) is applied exactly once over the
-  instance's lifetime (the live run plus any number of recoveries), even though
+- **Exactly-once effects**: a domain effect from a step, including a parent
+  transition an actor drives (not an initial entry, which is at-least-once, or a
+  parent transition driven by an actor that `Start` or `Recover` spawned, which is
+  not dispatched yet: #269), is applied exactly once over the instance's lifetime
+  (the live run plus any number of recoveries), even though
   the replay loop is at-least-once. The exception is a crash or failed mark after the
   handler returned, or a handoff between owners, where it can apply twice, so keep
   handlers idempotent on `EffectInstance` plus the `EffectID`. Each effect carries a
