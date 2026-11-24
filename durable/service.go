@@ -166,7 +166,14 @@ func (h *Handle[S, E, C]) drainServices() []state.JournalEntry {
 // result decodes) or while its settle's effects were absorbed (even after a clean
 // settle), or a Fire the settle drove refused because a context ended (ctx, or one
 // middleware derived from it) returns ErrHandleFailed and records nothing: a recovered
-// Handle has the service in flight again, and RunService runs it a second time. A
+// Handle has the service in flight again, and RunService runs it a second time. An
+// actor the settle's absorb drove settling with an outcome that won't record fails the
+// Handle the same way, but the service's own settle is recorded first: the ServiceFn
+// ran and its result decoded, so the journal holds it before the actor's settle is
+// attempted, and the parking design's "never runs again" promise holds — a recovered
+// Handle re-settles the service from the journal and never runs its ServiceFn again,
+// however many Recover-and-retry rounds follow; only the actor re-runs, from its
+// initial state, on each Recover's respawn and each redelivery. A
 // result that won't encode runs no Assign, as one that won't decode doesn't. A KindedEffect the settle emits
 // whose payload won't marshal doesn't fail it: it is recorded by id and kind, as
 // recordEffects says, and dispatches as any effect does.
@@ -283,13 +290,18 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, err))
 	}
 	// An actor the settle's absorb drove settled with an outcome that won't record: its
-	// settle aborted, firing nothing, so nothing was applied for it. Fail the Handle and
-	// record nothing, as for a context that ended, so a recovered Handle runs the actor
-	// again. Unlike the service's own result, an actor outcome is never parked: the
-	// service already ran, but the actor can run again.
-	if abort := h.actorFires.takeAborts(); abort != nil {
-		return res, true, nil, nil, h.fail(fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, abort))
-	}
+	// settle aborted, firing nothing, so nothing was applied for it. The service's own
+	// settle — which ran, and whose result decoded — is journaled first, so the parking
+	// design's "never runs again" promise holds for it: the ServiceFn ran once and its
+	// result is in the journal before the actor's settle is attempted. The Handle then
+	// fails on the actor's abort, and a recovered Handle never runs the service again —
+	// replay re-settles it from the journal — so only the actor re-runs, from its
+	// initial state. The parent Fires the settle's absorb drove before the abort
+	// (the poke that finished the actor) applied live, so the same Record journals
+	// them too, and replay re-fires them after the settle, where they ran. An actor
+	// outcome is never parked, as a service result that won't decode is: the actor can
+	// run again.
+	abort := h.actorFires.takeAborts()
 
 	entry, err := recordServiceOutcome(id, settled, h.svc.LastError())
 	if err != nil {
@@ -312,7 +324,17 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	rec := &Record{Step: h.nextStep, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
 	des, err := h.recordStep(ctx, rec, res.Effects)
 	if err != nil {
+		if abort != nil {
+			// The Handle already failed on the append; join the actor's abort so the
+			// caller sees both.
+			err = errors.Join(err, fmt.Errorf("durable: settling service %q for %q: %w", id, h.id, abort))
+		}
 		return res, true, nil, nil, err
+	}
+	if abort != nil {
+		// The Record is durable, so finishStep dispatches its effects and offers its
+		// checkpoint before the caller sees the failure, as any recorded step does.
+		return res, true, rec, des, h.fail(fmt.Errorf("durable: settling service %q for %q: the settle is recorded; an actor it drove aborted, so the Handle failed and only that actor runs again on Recover: %w", id, h.id, abort))
 	}
 	return res, true, rec, des, nil
 }

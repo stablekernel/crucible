@@ -202,9 +202,12 @@ func TestActorOutcome_ARunServiceSpawnedSettle_ReplaysAsItDelivered(t *testing.T
 // TestActorOutcome_AnUndecodableSettle_FailsEachDrivingStep pins the no-parking rule
 // on the Fire, Tick and RunService ends: when the settle their absorb drives can't
 // decode its done-data, the settle aborts, the driving step fails the Handle with
-// ErrHandleFailed wrapping ErrEventDataEncoding, and nothing is recorded, so a
-// Recover runs the actor again. The DeliverToActor end's is
-// TestActor_DoneDataThatWontDecode_IsNeverParked.
+// ErrHandleFailed wrapping ErrEventDataEncoding, and the actor runs again on
+// Recover. The Fire and Tick ends record nothing, so a Recover runs the actor from
+// its initial state; the RunService end records the service's own settle — which ran
+// and decoded — before it fails, so the ServiceFn never runs again either (see
+// TestRunService_AnActorAbortInTheStep_StillRecordsTheServiceResult). The
+// DeliverToActor end's is TestActor_DoneDataThatWontDecode_IsNeverParked.
 func TestActorOutcome_AnUndecodableSettle_FailsEachDrivingStep(t *testing.T) {
 	drive := []struct {
 		name  string
@@ -249,11 +252,50 @@ func TestActorOutcome_AnUndecodableSettle_FailsEachDrivingStep(t *testing.T) {
 			if notes := h.Instance().Entity().Notes; len(notes) != 0 {
 				t.Fatalf("the aborted settle ran Assigns: %q", notes)
 			}
+			// The actor runs again on Recover, from its initial state.
+			fn := func(context.Context, state.ServiceCtx[outcomeCtx]) (any, error) { return "ok", nil }
+			if d.name == "RunService" {
+				// The service's own settle ran and decoded before the actor's settle
+				// aborted, so the failed step recorded it: the journal holds the fetch
+				// settle, a Recover never runs the ServiceFn again (see
+				// TestRunService_AnActorAbortInTheStep_StillRecordsTheServiceResult), and
+				// the parent reached the settle's state.
+				if _, recs, lerr := store.Load(ctx, id); lerr != nil {
+					t.Fatalf("Load: %v", lerr)
+				} else {
+					svc := 0
+					for _, rec := range recs {
+						for _, e := range rec.Entries {
+							if e.Kind == state.JournalServiceResult {
+								svc++
+							}
+						}
+					}
+					if svc != 1 {
+						t.Fatalf("the journal holds %d service entries, want the settle the failed step recorded", svc)
+					}
+				}
+				rh, rerr := durable.Recover(ctx, endsMachine(fn), store, id, endsOpts(runs)...)
+				if rerr != nil {
+					t.Fatalf("Recover: %v", rerr)
+				}
+				// The recovered Handle respawns the poker X declares, which finishes kid
+				// again; the recovered decoder is the good one, so that settle applies —
+				// the recorded run never settled kid — and the parent reaches Kdone.
+				if got := rh.Instance().Current(); got != "Kdone" {
+					t.Fatalf("after Recover the parent is in %q, want Kdone: the recorded settle replayed and the respawned poker settled kid under the good decoder", got)
+				}
+				if _, ran, serr := rh.RunService(ctx, endsEcho); ran || serr != nil {
+					t.Fatalf("RunService after Recover = %v, %v; want nothing in flight: the settle is journaled, so the ServiceFn never runs again", ran, serr)
+				}
+				if got := atomic.LoadInt64(runs); got != 2 {
+					t.Fatalf("kid instantiated %d times, want 2: the Recover respawn ran it again", got)
+				}
+				return
+			}
 			if _, recs, err := store.Load(ctx, id); err != nil || len(recs) != 0 {
 				t.Fatalf("the journal holds %d Records (err %v), want none: nothing was recorded", len(recs), err)
 			}
-			// The actor runs again on Recover, from its initial state.
-			fn := func(context.Context, state.ServiceCtx[outcomeCtx]) (any, error) { return "ok", nil }
 			rh, err := durable.Recover(ctx, endsMachine(fn), store, id, endsOpts(runs)...)
 			if err != nil {
 				t.Fatalf("Recover: %v", err)

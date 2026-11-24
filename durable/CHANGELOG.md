@@ -229,11 +229,17 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - **There is no parking for an actor outcome.** A done-data payload that won't decode,
   or decodes as another type than the actor produced, aborts the settle through the new
   `ActorSystem.WithSettleTransform` before it fires anything, so no `Assign` runs, and
-  `DeliverToActor` — and the `Fire`, `Tick` or `RunService` whose absorb drove the
-  settle — fail the Handle with `ErrHandleFailed` wrapping `ErrEventDataEncoding` and
-  record nothing, so a recovered Handle runs the actor from its initial state and the
-  delivery again. An actor outcome is never parked, as a service result that won't
-  decode is, because the service already ran but the actor can run again. The
+  `DeliverToActor` — and the `Fire` or `Tick` whose absorb drove the settle — fail the
+  Handle with `ErrHandleFailed` wrapping `ErrEventDataEncoding` and record nothing, so
+  a recovered Handle runs the actor from its initial state and the delivery again. A
+  `RunService` whose settle's absorb drove such a settle fails the Handle the same
+  way but records the service's own settle first — the ServiceFn ran and its result
+  decoded, so the journal holds it before the actor's settle is attempted — keeping
+  the parking design's "never runs again" promise: a recovered Handle re-settles the
+  service from the journal and never runs its ServiceFn again across any number of
+  Recover-and-retry rounds; only the actor re-runs. An actor outcome is never parked,
+  as a service result that won't decode is, because the service already ran but the
+  actor can run again. The
   transform runs only when the settle routes a completion — the actor's spawn wired
   the onDone an output settles through or the onError a failure does; a settle that
   routes nothing consults no decoder, journals nothing, and can't fail the step. On
