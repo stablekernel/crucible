@@ -17,10 +17,12 @@
 // recovery replays the exact recorded driving events and nondeterministic results
 // through the same pure transition function.
 //
-// Exactly-once effects: a domain effect emitted by a step (Runner.Start's initial entry
-// is at-least-once, and a parent transition an actor drives isn't dispatched) is applied
-// exactly once over the instance's lifetime — the live run plus any number of
-// recoveries — even though the runtime's replay loop is at-least-once. The exception is
+// Exactly-once effects: a domain effect emitted by a step, including a parent
+// transition an actor drives (Runner.Start's initial entry is at-least-once, and a
+// parent transition driven by an actor that Start or Recover spawned isn't dispatched
+// yet; see #269), is applied exactly once over the instance's lifetime — the live run
+// plus any number of recoveries — even though the runtime's replay loop is
+// at-least-once. The exception is
 // a crash or failed mark after the handler returned, or a handoff between owners, where
 // an effect can apply twice, so keep handlers idempotent on EffectInstance plus the EffectID. Each
 // effect is stamped with a deterministic EffectID (step, ordinal, kind) and

@@ -291,55 +291,77 @@ func TestSettle_ATransformSettlingItsOwnActorIsRefused(t *testing.T) {
 }
 
 // TestWithSettleTransform_ARewrittenFailureNothingRoutesEscalates proves a
-// transform can't make a child's failure vanish: a failure whose settle the
-// transform rewrote into a success nothing routes — the invocation wired an
-// onError but no onDone — escalates the ORIGINAL error to the parent, as the
-// failure does with no transform at all, rather than settling a success nothing
-// consumes and nothing observes. LastOutput still reports the rewritten outcome.
+// transform can't make a child's failure vanish, whichever wiring the child
+// arrived through: a failure whose settle the transform rewrote into a success
+// nothing routes — the invocation wired an onError but no onDone — escalates the
+// ORIGINAL error to the parent, as the failure does with no transform at all,
+// rather than settling a success nothing consumes and nothing observes. The
+// table runs both wirings: an actor a transition spawns (Spawn) and one a state
+// invokes (InvokeActor, wired with only WithInvokeOnError). LastOutput still
+// reports the rewritten outcome.
 func TestWithSettleTransform_ARewrittenFailureNothingRoutesEscalates(t *testing.T) {
 	ctx := context.Background()
-	m := state.ForgeFor[*trec]("vanish").
-		State("idle").
-		State("supervising").
-		Initial("idle").
-		Transition("idle").On("start").GoTo("supervising").Spawn("child", "vanish-kid", state.WithSpawnOnError("childErr")).
-		Quench()
-	parent := m.Cast(&trec{}, state.WithInitialState[string]("idle"))
-	sys := state.NewActorSystem(parent).Register("child", settleChildBehavior())
-	sys.WithSettleTransform(func(event string, output any, err error) (any, error, error) {
-		if err != nil {
-			// Recover it into a success nothing routes.
-			return "recovered", nil, nil
-		}
-		return output, err, nil
-	})
-	res := parent.Fire(ctx, "start")
-	sys.Absorb(ctx, res.Effects)
-	if parent.Current() != "supervising" {
-		t.Fatalf("parent state = %q, want supervising", parent.Current())
-	}
+	for _, tc := range []struct {
+		name string
+		wire func() *state.Machine[string, string, *trec]
+	}{
+		{"a transition Spawn", func() *state.Machine[string, string, *trec] {
+			return state.ForgeFor[*trec]("vanish").
+				State("idle").
+				State("supervising").
+				Initial("idle").
+				Transition("idle").On("start").GoTo("supervising").
+				Spawn("child", "vanish-kid", state.WithSpawnOnError("childErr")).
+				Quench()
+		}},
+		{"a state InvokeActor", func() *state.Machine[string, string, *trec] {
+			return state.ForgeFor[*trec]("vanish").
+				State("idle").
+				State("supervising").InvokeActor("child", state.WithInvokeOnError("childErr"), state.WithInvokeID("vanish-kid")).
+				Initial("idle").
+				Transition("idle").On("start").GoTo("supervising").
+				Quench()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := tc.wire().Cast(&trec{}, state.WithInitialState[string]("idle"))
+			sys := state.NewActorSystem(parent).Register("child", settleChildBehavior())
+			sys.WithSettleTransform(func(event string, output any, err error) (any, error, error) {
+				if err != nil {
+					// Recover it into a success nothing routes.
+					return "recovered", nil, nil
+				}
+				return output, err, nil
+			})
+			res := parent.Fire(ctx, "start")
+			sys.Absorb(ctx, res.Effects)
+			if parent.Current() != "supervising" {
+				t.Fatalf("parent state = %q, want supervising", parent.Current())
+			}
 
-	routed, ok := sys.SettleError(ctx, "vanish-kid", errors.New("boom"))
-	if ok || routed.Err != nil {
-		t.Fatalf("SettleError = %+v, %v; want nothing routed: the rewritten outcome has no onDone", routed, ok)
-	}
-	if parent.Current() != "supervising" {
-		t.Fatalf("parent state = %q, want supervising: nothing fired", parent.Current())
-	}
-	if n := len(parent.Entity().notes); n != 0 {
-		t.Fatalf("the settle ran %d Assigns, want none", n)
-	}
-	// The ORIGINAL failure escalated — a transform may rewrite the outcome, not
-	// erase the failure — and the rewritten outcome is what LastOutput reports.
-	esc := sys.LastEscalation()
-	if esc == nil || esc.ActorID != "vanish-kid" || esc.Err == nil || esc.Err.Error() != "boom" {
-		t.Fatalf("LastEscalation = %+v, want the ORIGINAL boom escalated for the vanished failure", esc)
-	}
-	if out, got := sys.LastOutput(); !got || out != "recovered" {
-		t.Fatalf("LastOutput = %v, %v; want the rewritten outcome \"recovered\"", out, got)
-	}
-	if sys.IsRunning("vanish-kid") {
-		t.Fatal("the actor didn't settle")
+			routed, ok := sys.SettleError(ctx, "vanish-kid", errors.New("boom"))
+			if ok || routed.Err != nil {
+				t.Fatalf("SettleError = %+v, %v; want nothing routed: the rewritten outcome has no onDone", routed, ok)
+			}
+			if parent.Current() != "supervising" {
+				t.Fatalf("parent state = %q, want supervising: nothing fired", parent.Current())
+			}
+			if n := len(parent.Entity().notes); n != 0 {
+				t.Fatalf("the settle ran %d Assigns, want none", n)
+			}
+			// The ORIGINAL failure escalated — a transform may rewrite the outcome, not
+			// erase the failure — and the rewritten outcome is what LastOutput reports.
+			esc := sys.LastEscalation()
+			if esc == nil || esc.ActorID != "vanish-kid" || esc.Err == nil || esc.Err.Error() != "boom" {
+				t.Fatalf("LastEscalation = %+v, want the ORIGINAL boom escalated for the vanished failure", esc)
+			}
+			if out, got := sys.LastOutput(); !got || out != "recovered" {
+				t.Fatalf("LastOutput = %v, %v; want the rewritten outcome \"recovered\"", out, got)
+			}
+			if sys.IsRunning("vanish-kid") {
+				t.Fatal("the actor didn't settle")
+			}
+		})
 	}
 }
 

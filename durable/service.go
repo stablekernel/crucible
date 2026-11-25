@@ -322,7 +322,9 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	// Arming a timer the settle's state declares reads the clock, so the step carries
 	// its reads.
 	rec := &Record{Step: h.nextStep, Entries: append(append(h.drainClock(), h.drainServices()...), driven...)}
-	des, err := h.recordStep(ctx, rec, res.Effects)
+	// The driven Fires' effects follow the settle's own, in fire order, so their stamped
+	// ids and their dispatch order match replay's (see drivenFireEffects).
+	des, err := h.recordStep(ctx, rec, drivenFireEffects(res.Effects, fires))
 	if err != nil {
 		if abort != nil {
 			// The Handle already failed on the append; join the actor's abort so the

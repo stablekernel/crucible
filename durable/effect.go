@@ -41,6 +41,13 @@ import (
 // same order. That stable identity is what makes the dedup set meaningful across
 // the crash boundary.
 //
+// A step an actor system drove — a Fire, a Tick, an actor delivery, or a service
+// settle — dispatches the domain effects of the parent Fires the actor drove as its
+// own: the step's own effects come first, then each actor-driven parent Fire's, in
+// fire order (see drivenFireEffects). Replay re-fires the recorded Fires after the
+// step's own work, in the same order, so the ordinal component places a driven
+// Fire's effect identically on the live run and on every recovery.
+//
 // # Write-ahead, exactly-once
 //
 // The ordering is the contract:
@@ -169,7 +176,9 @@ func isDriverEffect(e state.Effect) bool {
 
 // dispatchableEffects filters a step's emitted effects to the domain effects the
 // handler applies and stamps each with its deterministic EffectID, preserving
-// emission order. The ordinal counts only dispatchable effects, so a domain
+// emission order. A step that an actor system drove names the driven Fires' effects
+// after its own, in fire order (see drivenFireEffects), so their ordinals follow the
+// step's own. The ordinal counts only dispatchable effects, so a domain
 // effect's id is independent of how many interleaved driver effects the step also
 // emitted — keeping it stable if the driver-effect set ever changes around it.
 func dispatchableEffects(step int, effects []state.Effect) []dispatchableEffect {
