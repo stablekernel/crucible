@@ -170,7 +170,7 @@ func TestUndecodableResult_WrapsErrEventDataEncodingOnlyForADecodeFailure(t *tes
 		{"won't encode", make(chan int), false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, abort := replayableOutcome[string](refuse, nil, &settledJSON{}, "service result", "service error")("done", tc.result, nil)
+			_, _, abort := replayableOutcome[string](refuse, nil, cacheRunner().names, &settledJSON{}, "service result", "service error")("done", tc.result, nil)
 			var derr *undecodableResult
 			if !errors.As(abort, &derr) {
 				t.Fatalf("abort = %v, want an *undecodableResult", abort)

@@ -64,17 +64,25 @@ type Runner[S comparable, E comparable, C any] struct {
 	machine *state.Machine[S, E, C]
 	store   Store
 	cfg     runnerConfig[S, E, C]
+	// names is this Runner's cache of each result type's full spelling (see
+	// typeNames): every settle, park and replay type check a Handle of this Runner
+	// asks — Start and Recover included — spells through it, and two Runners share
+	// no entry. It is unexported state, built by NewRunner.
+	names *typeNames
 }
 
 // NewRunner binds a machine and a Store into a durable Runner. Behavior is tuned
 // with functional options — the checkpoint policy (WithCheckpointEvery) and the
 // event codec (WithEventCodec) — each additive and defaulting to a working
-// baseline (no periodic checkpoint, JSON event encoding).
+// baseline (no periodic checkpoint, JSON event encoding). Each Runner owns its own
+// cache of result types' full spellings (see typeNames), so no two Runners share
+// state.
 func NewRunner[S comparable, E comparable, C any](m *state.Machine[S, E, C], st Store, opts ...Option[S, E, C]) *Runner[S, E, C] {
 	return &Runner[S, E, C]{
 		machine: m,
 		store:   st,
 		cfg:     resolveRunner(opts...),
+		names:   newTypeNames(),
 	}
 }
 
@@ -758,7 +766,7 @@ func (r *Runner[S, E, C]) newServiceRunner(inst *state.Instance[S, E, C]) (*stat
 		return nil, nil
 	}
 	settled := &settledJSON{}
-	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settled, "service result", "service error")), settled
+	return state.NewServiceRunner(inst, r.cfg.serviceReg).WithResultTransform(replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, r.names, settled, "service result", "service error")), settled
 }
 
 // newActorSystem builds the kernel host driver for child-machine actors bound to
@@ -792,7 +800,7 @@ func (r *Runner[S, E, C]) newActorSystem(inst *state.Instance[S, E, C]) (*state.
 		// to the settle still in flight — notes no abort and fails no Handle.
 		WithSettleAbortObserver(func(sa state.SettleAbort[E]) { fires.aborted(sa.Abort) })
 	settleJSON := &settledJSON{}
-	outcome := replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, settleJSON, "actor done-data", "actor error")
+	outcome := replayableOutcome(r.cfg.eventDataDecoder, r.cfg.resultAliases, r.names, settleJSON, "actor done-data", "actor error")
 	sys.WithSettleTransform(func(event E, output any, err error) (any, error, error) {
 		out, outErr, abort := outcome(event, output, err)
 		if abort == nil {
@@ -2020,7 +2028,7 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
 		reads += clockReadCount(rec)
-		stepEffects, err := replayRecord(ctx, inst, &r.cfg, sched, svc, rec, mirror, armsActorFires(rec))
+		stepEffects, err := replayRecord(ctx, inst, &r.cfg, r.names, sched, svc, rec, mirror, armsActorFires(rec))
 		if err != nil {
 			return nil, fmt.Errorf("durable: recovering %q: %w", id, err)
 		}
@@ -2495,6 +2503,7 @@ func replayRecord[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
+	names *typeNames,
 	sched *state.Scheduler[S, E, C],
 	svc *state.ServiceRunner[S, E, C],
 	rec *Record,
@@ -2509,7 +2518,7 @@ func replayRecord[S comparable, E comparable, C any](
 	// Parent Fires a Start's or Recover's spawns drove ran before the step's own work.
 	// Their effects aren't returned: no live path dispatches them (see the
 	// Start-spawned note above).
-	if _, err := replayActors(ctx, inst, cfg, sched, svc, rec, before, mirror, actorArms); err != nil {
+	if _, err := replayActors(ctx, inst, cfg, names, sched, svc, rec, before, mirror, actorArms); err != nil {
 		return stepEffects, err
 	}
 	switch {
@@ -2586,7 +2595,7 @@ func replayRecord[S comparable, E comparable, C any](
 	// drove after it, such as a spawned actor's onError. Their effects follow the
 	// step's own, in fire order, as the live step named them, so Recover re-dispatches
 	// a driven Fire's domain effects under the ids live stamped.
-	driven, derr := replayActors(ctx, inst, cfg, sched, svc, rec, rest, mirror, actorArms)
+	driven, derr := replayActors(ctx, inst, cfg, names, sched, svc, rec, rest, mirror, actorArms)
 	if derr != nil {
 		return stepEffects, derr
 	}
@@ -2599,11 +2608,14 @@ func replayRecord[S comparable, E comparable, C any](
 // When actorArms, the version that wrote rec armed the timers and services an
 // actor-driven Fire declares, so each one arms them, as the live run did. An older
 // version armed none, and took no
-// clock read for them, so they're left alone, as that run left them.
+// clock read for them, so they're left alone, as that run left them. names is the
+// Runner's cache the re-fired transitions' recorded type checks spell through; the
+// Runner-less StateAt passes nil and spells uncached (see typeNames).
 func replayActors[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
+	names *typeNames,
 	sched *state.Scheduler[S, E, C],
 	svc *state.ServiceRunner[S, E, C],
 	rec *Record,
@@ -2613,7 +2625,7 @@ func replayActors[S comparable, E comparable, C any](
 ) ([]state.Effect, error) {
 	var driven []state.Effect
 	for _, entry := range entries {
-		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, cfg.resultAliases, entry)
+		effects, err := replayActor(ctx, inst, cfg.eventCodec, cfg.eventDataDecoder, cfg.resultAliases, names, entry)
 		if err != nil {
 			return nil, fmt.Errorf("at step %d: %w", rec.Step, err)
 		}

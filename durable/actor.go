@@ -353,8 +353,10 @@ func splitActorEntries(rec *Record) (before, rest []decodedActorEntry, err error
 // the recorded entry cannot be decoded or the re-fired transition fails (a corrupt or
 // mis-ordered journal), or the recorded done-data won't decode for its event, as the
 // live settle refused it. aliases carries the Runner's WithResultTypeAlias renames,
-// which the recorded check honors, as a recorded service result's replay does.
-func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], decode EventDataDecoder[E], aliases map[string]string, entry decodedActorEntry) ([]state.Effect, error) {
+// which the recorded check honors, as a recorded service result's replay does. names
+// is the Runner's cache the recorded type check spells through; the Runner-less
+// StateAt passes nil and spells uncached (see typeNames).
+func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *state.Instance[S, E, C], codec EventCodec[E], decode EventDataDecoder[E], aliases map[string]string, names *typeNames, entry decodedActorEntry) ([]state.Effect, error) {
 	mp := entry.mp
 	// A Fire refused before the kernel saw it (middleware that denied it) has no event
 	// to re-fire; replay is refused the same way.
@@ -367,7 +369,7 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 	}
 	var res state.FireResult[S]
 	if mp.HasData && !mp.Refused {
-		data, derr := replayActorData(mp, event, decode, aliases)
+		data, derr := replayActorData(mp, event, decode, aliases, names)
 		if derr != nil {
 			return nil, fmt.Errorf("durable: decoding recorded actor %q done-data: %w", entry.actorID, derr)
 		}
@@ -403,8 +405,9 @@ func replayActor[S comparable, E comparable, C any](ctx context.Context, inst *s
 // service result is; one that won't decode fails the replay, as the live settle
 // refused it. A payload that fails to decode is surfaced as an error rather than
 // silently dropped, so a corrupt journal fails replay loudly instead of re-firing the
-// parent with nil data it never saw on the live path.
-func replayActorData[E comparable](mp actorMessagePayload, event E, decode EventDataDecoder[E], aliases map[string]string) (any, error) {
+// parent with nil data it never saw on the live path. names is the Runner's cache
+// the recorded type check spells through; nil spells uncached (see typeNames).
+func replayActorData[E comparable](mp actorMessagePayload, event E, decode EventDataDecoder[E], aliases map[string]string, names *typeNames) (any, error) {
 	if mp.Error != nil {
 		return errors.New(*mp.Error), nil
 	}
@@ -413,7 +416,7 @@ func replayActorData[E comparable](mp actorMessagePayload, event E, decode Event
 	}
 	// The transform decodes the recorded JSON for the onDone event, as it did live,
 	// and holds the decoder to the recorded type. An abort is the decode's refusal.
-	out, _, abort := replayableOutcome(decode, aliases, nil, "actor done-data", "actor error")(event, recordedResult{raw: mp.Data, typ: mp.Type}, nil)
+	out, _, abort := replayableOutcome(decode, aliases, names, nil, "actor done-data", "actor error")(event, recordedResult{raw: mp.Data, typ: mp.Type}, nil)
 	if abort != nil {
 		return nil, abort
 	}

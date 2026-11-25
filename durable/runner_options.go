@@ -263,7 +263,10 @@ func WithResultTypeAlias[S comparable, E comparable, C any](recorded string, cur
 	return func(c *runnerConfig[S, E, C]) {
 		var currentName string
 		if current != nil {
-			currentName = typeName(current)
+			// The option runs before any Runner exists to own a cache, so the type is
+			// spelled uncached (see typeNames): the spelling is pure in the type alone,
+			// so it is the one the Runner's cache will return once built.
+			currentName = (*typeNames)(nil).typeName(current)
 		}
 		if recorded == "" || current == nil || recorded == currentName {
 			return
