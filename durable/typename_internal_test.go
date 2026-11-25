@@ -1,8 +1,10 @@
 package durable
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 
 	alpha "github.com/stablekernel/crucible/durable/internal/typefixture/alpha/model"
@@ -108,6 +110,8 @@ func TestFullTypeName_CacheIsBounded(t *testing.T) {
 	typeNameCache.Range(func(k, _ any) bool { typeNameCache.Delete(k); return true })
 	typeNameCacheLen.Store(0)
 
+	// The miss that races the cap: more distinct minted structs per goroutine than the
+	// cap admits, so fills run while the cap is being crossed and past it.
 	fields := []reflect.StructField{{Name: "A", Type: reflect.TypeOf(0)}}
 	for i := 0; i < 3*cap; i++ {
 		fields = append(fields, reflect.StructField{
@@ -127,10 +131,84 @@ func TestFullTypeName_CacheIsBounded(t *testing.T) {
 	}
 }
 
-// BenchmarkFullTypeName_DeepUnnamedType measures spelling a deeply unnamed type: a
-// struct literal of a map of slices of funcs and chans built over two packages'
-// named types, the shape a settle's result type is spelled from for every result of
-// that type.
+// TestFullTypeName_ConcurrentSpellingsShareTheCache answers the interleavings the
+// shared cache exists for: settles on different Handles spell the same result types
+// at once - simultaneous first misses on one type, and hits under load - and a fill
+// races the cap. Whatever the interleaving, every spelling must be its type's own,
+// the counter must count each stored entry exactly once, and the fill can pass the
+// cap only by as many spellings as raced it: a goroutine's store follows its own
+// check of the counter, so at most one store per goroutine can be in flight past a
+// check that saw the cap not yet crossed.
+func TestFullTypeName_ConcurrentSpellingsShareTheCache(t *testing.T) {
+	const goroutines = 8
+	const cap = 4
+	oldLimit := typeNameCacheLimit
+	typeNameCacheLimit = cap
+	defer func() { typeNameCacheLimit = oldLimit }()
+	typeNameCache.Range(func(k, _ any) bool { typeNameCache.Delete(k); return true })
+	typeNameCacheLen.Store(0)
+
+	// The handful of result types every Handle settles: all goroutines spell these,
+	// so their first misses overlap and their later spellings are hits under load.
+	shared := []reflect.Type{
+		reflect.TypeOf(alpha.Result{}),
+		reflect.TypeOf(beta.Result{}),
+		reflect.TypeOf(map[string][]*alpha.Result{}),
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan string, goroutines)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			// More distinct minted structs than the cap admits, each spelled from the
+			// shared types, so this goroutine's fills race the others' and the cap.
+			fields := []reflect.StructField{{Name: "A", Type: shared[0]}}
+			for i := 0; i < 3*cap; i++ {
+				fields = append(fields, reflect.StructField{
+					Name: "G" + strconv.Itoa(g) + "F" + strconv.Itoa(i),
+					Type: shared[i%len(shared)],
+				})
+				minted := reflect.StructOf(fields)
+				if got, want := fullTypeName(minted), spellTypeName(minted); got != want {
+					errs <- fmt.Sprintf("goroutine %d: fullTypeName(%s) = %q, want the uncached %q", g, minted, got, want)
+					return
+				}
+			}
+			for _, s := range shared {
+				if got, want := fullTypeName(s), spellTypeName(s); got != want {
+					errs <- fmt.Sprintf("goroutine %d: fullTypeName(%s) = %q, want the uncached %q", g, s, got, want)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// The counter counts each stored entry once, however the LoadOrStores interleaved.
+	entries := 0
+	typeNameCache.Range(func(_, _ any) bool { entries++; return true })
+	if got := typeNameCacheLen.Load(); got != int64(entries) {
+		t.Fatalf("typeNameCacheLen counts %d, want the %d entries the cache holds", got, entries)
+	}
+	// The fill can pass the cap only by the spellings that raced it: at most one
+	// in-flight store per goroutine past a check that saw the cap not yet crossed.
+	if entries > cap-1+goroutines {
+		t.Fatalf("typeNameCache holds %d entries, want at most the cap of %d plus the %d spellings that can race it", entries, cap, goroutines)
+	}
+}
+
+// BenchmarkFullTypeName_DeepUnnamedType measures a deeply unnamed type's spelling
+// on the cache's hit path: a struct literal of a map of slices of funcs and chans
+// built over two packages' named types, the shape a settle's result type is spelled
+// from for every result of that type. The first iteration spells it and stores it;
+// every one after - the steady state for a settling run - is a hit, so what this
+// reports is the hit, not the first spelling.
 func BenchmarkFullTypeName_DeepUnnamedType(b *testing.B) {
 	t := reflect.TypeOf(struct {
 		Roster map[string][]func(alpha.Result) (*beta.Result, error)
