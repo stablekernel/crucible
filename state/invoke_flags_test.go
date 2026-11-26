@@ -250,6 +250,77 @@ func TestSpawnActor_OldEffectJSONKeepsADeclaredOnDone(t *testing.T) {
 	}
 }
 
+// TestInvoke_ZeroValuedOnErrorRoundTripsAsDeclared pins #251 at the IR level: an
+// onError deliberately declared as the zero event — the first constant of an iota
+// enum is the everyday case — serializes with its hasOnError flag set and reloads
+// as declared, distinct from an invocation that declared none, whose flag stays
+// unset however the zero event reads on the wire. The distinction holds on the
+// wire and in behavior: the reloaded declared-zero onError routes the failure
+// through the transition keyed on the zero event, while a reload that declared
+// none escalates instead.
+func TestInvoke_ZeroValuedOnErrorRoundTripsAsDeclared(t *testing.T) {
+	ctx := context.Background()
+	m := oldInvokeParent("zeroerr", state.WithInvokeOnError(""))
+	raw1, err := m.ToJSON(state.WithoutSrcPos())
+	if err != nil {
+		t.Fatalf("ToJSON err = %v", err)
+	}
+	if !strings.Contains(string(raw1), `"hasOnError":true`) {
+		t.Fatalf("the serialized machine lost the declared zero-valued onError: %s", raw1)
+	}
+	ir, err := state.LoadFromJSON[string, string, *trec](raw1)
+	if err != nil {
+		t.Fatalf("LoadFromJSON err = %v", err)
+	}
+	m2 := ir.Provide(oldInvokeReg()).Quench()
+	raw2, err := m2.ToJSON(state.WithoutSrcPos())
+	if err != nil {
+		t.Fatalf("ToJSON (round 2) err = %v", err)
+	}
+	if string(raw1) != string(raw2) {
+		t.Fatalf("round-trip diverged:\n%s\n--- vs ---\n%s", raw1, raw2)
+	}
+
+	// The reloaded declaration still routes: a child that cannot start fails through
+	// the declared zero event, which the parent's transition on "" catches.
+	parent := m2.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sys := state.NewActorSystem(parent).Register("child", failingChildBehavior())
+	res := parent.Fire(ctx, "start")
+	sys.Absorb(ctx, res.Effects)
+	if parent.Current() != "oops" {
+		t.Fatalf("parent = %q, want oops: the reloaded zero-valued onError stopped routing", parent.Current())
+	}
+	if esc := sys.LastEscalation(); esc != nil {
+		t.Fatalf("a declared zero-valued onError escalated: %+v", esc)
+	}
+
+	// The control: an invocation that declared no onError escalates the same
+	// failure instead, so the two remain distinct after a round trip.
+	m3 := oldInvokeParent("zeroerr-none")
+	rawNone, err := m3.ToJSON(state.WithoutSrcPos())
+	if err != nil {
+		t.Fatalf("ToJSON (none) err = %v", err)
+	}
+	if strings.Contains(string(rawNone), "hasOnError") {
+		t.Fatalf("a machine declaring no onError serialized the flag: %s", rawNone)
+	}
+	irNone, err := state.LoadFromJSON[string, string, *trec](rawNone)
+	if err != nil {
+		t.Fatalf("LoadFromJSON (none) err = %v", err)
+	}
+	m4 := irNone.Provide(oldInvokeReg()).Quench()
+	parentNone := m4.Cast(&trec{}, state.WithInitialState[string]("idle"))
+	sysNone := state.NewActorSystem(parentNone).Register("child", failingChildBehavior())
+	resNone := parentNone.Fire(ctx, "start")
+	sysNone.Absorb(ctx, resNone.Effects)
+	if parentNone.Current() != "supervising" {
+		t.Fatalf("parent = %q, want supervising: an undeclared onError must route nothing", parentNone.Current())
+	}
+	if esc := sysNone.LastEscalation(); esc == nil {
+		t.Fatal("an undeclared onError failed without escalating")
+	}
+}
+
 // TestSpawnActor_OldEffectJSONWithNoOutcomeStaysUnset pins the other side of the
 // effect back-fill: an older producer writing an unset outcome left either the
 // zero event (a static invoke boxes its machine's zero event into the type-erased
@@ -295,6 +366,9 @@ func TestSpawnActor_EffectRoundTripStaysByteIdentical(t *testing.T) {
 		// A declared outcome of the zero event itself: the flag, not the event's
 		// value, says it was declared, and the flag is on the wire.
 		{ID: "a2", Src: state.Ref{Name: "child"}, OnDone: "", HasDone: true, State: "supervising"},
+		// The failure-side twin: a declared zero-valued onError, distinct on the wire
+		// from an unset one (a3).
+		{ID: "a5", Src: state.Ref{Name: "child"}, OnError: "", HasError: true, State: "supervising"},
 		// An unset outcome: the zero event a static invoke boxes, no flag.
 		{ID: "a3", Src: state.Ref{Name: "child"}, OnDone: "", OnError: "", State: "supervising"},
 		// A dynamic spawn that declared neither: no events at all.
