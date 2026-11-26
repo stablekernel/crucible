@@ -85,6 +85,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **A `forwardTo` on a service settle's transition forwards the settle's event.**
+  This is a behavior change. A parent transition that ran `forwardTo(child)` forwarded
+  the event that drove it for a host `Fire` and a timer a `Tick` fires, but a service
+  settle's own Fire went through the settle's absorb with no event, so the forward
+  was skipped and the child got nothing. The settle's transform now records the event
+  it routes its outcome through, and the settle's absorb hands it to the actor system,
+  so the child gets it verbatim, live and across a `Recover` (the delivery itself is
+  never replayed; the journal holds what it drove) (#260).
 - **`Start` and `Recover` start a compound state's services and actors.** This is a
   behavior change. They started only the active leaves' invokes, while a `Fire` that
   entered a compound state started its declares, so an instance that started in, or

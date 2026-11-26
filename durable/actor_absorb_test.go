@@ -209,3 +209,95 @@ func TestStep_AnActorWhoseStateAnEarlierActorLeft_DoesNotSpawn(t *testing.T) {
 		}
 	}
 }
+
+// TestStep_AForwardToOnAParentFireAnActorOrASettleDrives pins that a forwardTo on a
+// parent transition an actor drives — a message the actor sent the parent, from
+// DeliverToActor or its start — or a service settle's onDone drives, forwards the
+// event that drove the transition, not nil (#260): the actor-driven Fire runs inside
+// the actor system, whose absorb carried no event, and a settle's effects went
+// through absorbSettle with none.
+func TestStep_AForwardToOnAParentFireAnActorOrASettleDrives(t *testing.T) {
+	for _, step := range []string{"DeliverToActor", "RunService"} {
+		t.Run(step, func(t *testing.T) {
+			ctx := context.Background()
+			machine := "driven" + step
+			childID := state.ActorID(machine, "outer", 0)
+			fetch := func(context.Context, state.ServiceCtx[stepCtx]) (any, error) { return "ok", nil }
+			b := state.ForgeFor[stepCtx](machine).
+				Actor("child").
+				Actor("driver").
+				Service("fetch", fetch)
+			invokes := b.SuperState("outer").InvokeActor("child")
+			if step == "RunService" {
+				// The service settles through onDone, whose transition forwards.
+				invokes = invokes.SubState("loading").Invoke("fetch", state.WithInvokeOnDone("loaded")).
+					Initial("loading").
+					EndSuperState().
+					Initial("outer").
+					Transition("loading").On("loaded").GoTo("loading").ForwardTo(childID)
+			} else {
+				// The driver tells the parent "poke" as it starts, whose transition forwards.
+				invokes = invokes.SubState("running").InvokeActor("driver").
+					Initial("running").
+					EndSuperState().
+					Initial("outer").
+					Transition("running").On("poke").GoTo("running").ForwardTo(childID)
+			}
+			m := invokes.Quench()
+			var children []*recordingActor
+			palette := map[string]state.ActorBehavior{
+				"child": func(map[string]any) (state.ActorInstance, error) {
+					children = append(children, &recordingActor{})
+					return children[len(children)-1], nil
+				},
+			}
+			opts := []stepOption{
+				durable.WithServiceRegistry[string, string, stepCtx](state.NewRegistry[stepCtx]().Service("fetch", fetch)),
+				durable.WithActorPalette[string, string, stepCtx](palette),
+			}
+			if step == "DeliverToActor" {
+				palette["driver"] = func(map[string]any) (state.ActorInstance, error) {
+					return &sender{ev: "poke"}, nil
+				}
+			}
+			start := "loading"
+			if step == "DeliverToActor" {
+				start = "running"
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("driven-forward")
+			h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState(start))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			// The driver's start message fired the parent's "poke" transition at
+			// Start; the child it forwarded to holds what arrived. The service settle
+			// fires "loaded", whose transition forwards it.
+			want := "poke"
+			if step == "RunService" {
+				want = "loaded"
+				if _, ran, runErr := h.RunService(ctx, state.InvokeID(machine, "loading", 0)); !ran || runErr != nil {
+					t.Fatalf("RunService = %v, %v", ran, runErr)
+				}
+			}
+			if len(children) != 1 || fmt.Sprint(children[0].got) != fmt.Sprint([]any{want}) {
+				t.Fatalf("live child got %v, want [%s]: the forwardTo forwarded nil, not the event that drove the transition", children[0].got, want)
+			}
+			// A Recover respawns the child fresh. The settle's Fire is journaled and
+			// replayed without actor deliveries, so the RunService child holds nothing
+			// replayed to it, as for a host Fire's forward. The driver's start message
+			// is another matter: no step followed it, so the journal holds nothing of
+			// it, and the Recover respawns every actor as new, whose start re-drives
+			// the parent Fire and its forward, as Start did live.
+			if _, err = durable.Recover(ctx, m, store, id, opts...); err != nil {
+				t.Fatalf("Recover: %v", err)
+			}
+			wantRecovered := []any{}
+			if step == "DeliverToActor" {
+				wantRecovered = []any{want}
+			}
+			if len(children) != 2 || fmt.Sprint(children[1].got) != fmt.Sprint(wantRecovered) {
+				t.Fatalf("recovered: %d children, the new one got %v, want %v", len(children), children[len(children)-1].got, wantRecovered)
+			}
+		})
+	}
+}

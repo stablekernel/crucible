@@ -247,7 +247,10 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 		routed = false
 	}
 	// The JSON this settle decoded is the step's alone: take it, so no later step can
-	// journal it and the Handle doesn't hold it.
+	// journal it and the Handle doesn't hold it. The event the settle routed its
+	// outcome through goes with it, for the absorb below, so take it first: take
+	// clears the holder whole.
+	settleEvent := h.svcJSON.takeEvent()
 	settled := h.svcJSON.take()
 	if derr := (*undecodableResult)(nil); errors.As(res.Err, &derr) {
 		// The result didn't decode for its onDone event, so the transform aborted the
@@ -278,7 +281,7 @@ func (h *Handle[S, E, C]) serviceStep(ctx context.Context, id string) (state.Fir
 	// already started and stopped the services those effects name as it settled, so
 	// absorb them into the other drivers only, so the next seam method finds them armed
 	// — the service seam composes with the timer and actor seams in one instance.
-	h.absorbSettle(h.stepContext(ctx), res.Effects)
+	h.absorbSettle(h.stepContext(ctx), settleEvent, res.Effects)
 
 	// A context that ended during the service or the absorb can stop the settle's Fire,
 	// or a Fire an actor spawn routes, before it applies, so the instance may not have
@@ -427,7 +430,7 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 // nothing the transform returns.
 func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, names *typeNames, settled *settledJSON, what, errWhat string) func(E, any, error) (any, error, error) {
 	return func(event E, result any, err error) (any, error, error) {
-		settled.set(recordedResult{})
+		settled.set(recordedResult{}, event)
 		if err != nil {
 			msg, perr := normalizedErrorMessage(err, errWhat)
 			if perr != nil {
@@ -465,7 +468,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 			}
 			return nil, nil, &undecodableResult{raw: b, typ: resultType(names, recorded, replay, result), rtype: rtype, err: derr}
 		}
-		settled.set(recordedResult{raw: b, typ: resultType(names, recorded, replay, result)})
+		settled.set(recordedResult{raw: b, typ: resultType(names, recorded, replay, result)}, event)
 		return value, nil, nil
 	}
 }
@@ -484,26 +487,44 @@ func typedNil(names *typeNames, b []byte, recorded recordedResult, replay bool, 
 	return result != nil
 }
 
-// settledJSON holds the JSON the last successful settle decoded and the result's Go
-// type, for serviceStep to journal. The transform sets it during the settle, which runs
-// under the Handle's step lock live and on replay's one goroutine, and serviceStep
-// takes it once the settle returns, so it holds nothing between steps. A nil
-// settledJSON keeps nothing.
-type settledJSON struct{ recordedResult }
+// settledJSON holds the JSON the last successful settle decoded, the result's Go
+// type, and the event the settle routed its outcome through, for serviceStep to
+// journal and to hand the step's absorb, so a forwardTo on the settle's transition
+// forwards that event. The transform sets it during the settle, which runs under the
+// Handle's step lock live and on replay's one goroutine, and serviceStep takes it
+// once the settle returns, so it holds nothing between steps. A nil settledJSON
+// keeps nothing.
+type settledJSON struct {
+	recordedResult
+	event any
+}
 
-func (s *settledJSON) set(r recordedResult) {
+func (s *settledJSON) set(r recordedResult, event any) {
 	if s != nil {
 		s.recordedResult = r
+		s.event = event
 	}
 }
 
-// take returns what the last settle left and clears it.
+// takeEvent returns the event the last settle routed its outcome through, and
+// clears it. It is safe on a nil settledJSON.
+func (s *settledJSON) takeEvent() any {
+	if s == nil {
+		return nil
+	}
+	e := s.event
+	s.event = nil
+	return e
+}
+
+// take returns what the last settle left and clears it, the event with it.
 func (s *settledJSON) take() recordedResult {
 	if s == nil {
 		return recordedResult{}
 	}
 	r := s.recordedResult
 	s.recordedResult = recordedResult{}
+	s.event = nil
 	return r
 }
 

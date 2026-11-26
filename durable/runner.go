@@ -414,14 +414,16 @@ func (h *Handle[S, E, C]) absorbDrivers(ctx context.Context, event any, effects 
 
 // absorbSettle is absorbDrivers for the effects of a service settle's own Fire, so a
 // state the settle enters arms whatever it declares, such as a service whose onDone
-// spawns an actor. The ServiceRunner absorbed those effects itself as it settled, so
-// absorbSettle passes armEffects a nil services seam, which would otherwise arm each
-// service it starts a second time, where replay arms it once: it forgets the settled
-// services and parked results the effects start or stop, and arms the timers, then
-// the actors, in armEffects' order.
-func (h *Handle[S, E, C]) absorbSettle(ctx context.Context, effects []state.Effect) {
+// spawns an actor. event is the event the settle routed its outcome through, so a
+// forwardTo on the transition it drove forwards that event, not nil. The
+// ServiceRunner absorbed those effects itself as it settled, so absorbSettle passes
+// armEffects a nil services seam, which would otherwise arm each service it starts a
+// second time, where replay arms it once: it forgets the settled services and parked
+// results the effects start or stop, and arms the timers, then the actors, in
+// armEffects' order.
+func (h *Handle[S, E, C]) absorbSettle(ctx context.Context, event any, effects []state.Effect) {
 	armEffects(ctx, h.forgetServices, h.absorbTimers, nil, effects)
-	h.absorbActors(ctx, nil, effects, nil)
+	h.absorbActors(ctx, event, effects, nil)
 }
 
 // absorbIntoServices is the services seam armEffects takes: it hands the effects to
