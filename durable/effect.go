@@ -245,19 +245,6 @@ func marshalEffect(ke state.KindedEffect) (env state.EffectEnvelope, err error) 
 	return state.MarshalEffect(ke)
 }
 
-// dispatchEffects applies a step's domain effects exactly once. It is called
-// AFTER the step Record (carrying the effect ids) is durably appended, realizing
-// the write-ahead ordering: for each effect whose id is not already in the
-// dispatched set it invokes the handler and, on success, marks the id dispatched.
-// A handler error stops dispatch and is returned wrapped in ErrEffectDispatch
-// with the failing effect left un-marked for a later recovery to retry. With no
-// handler wired, dispatch is a no-op (the ids are still recorded for a
-// handler-equipped recovery). A handler is only ever wired with a DispatchStore:
-// Start and Recover refuse one without (see checkDispatchStore).
-func (h *Handle[S, E, C]) dispatchEffects(ctx context.Context, des []dispatchableEffect) error {
-	return h.runner.dispatch(ctx, h.id, des)
-}
-
 // checkDispatchStore refuses an effect handler wired with a Store that isn't a
 // DispatchStore, which couldn't track which effects were applied. Start and recover,
 // which Recover and the stateless Fire share, call it before they touch the Store, so
@@ -309,22 +296,21 @@ func (r *Runner[S, E, C]) applyEffect(ctx context.Context, id InstanceID, de dis
 	return nil
 }
 
-// dispatchReplayEffects re-dispatches a replayed step's domain effects during
-// recovery: it re-stamps the re-emitted effects with the same deterministic ids
-// (step and emission order reproduce exactly) and applies only those not already
-// marked, so an effect that landed before the crash is skipped and one recorded
-// but un-dispatched is applied now. This is the recovery half of the exactly-once
-// contract.
-func (r *Runner[S, E, C]) dispatchReplayEffects(ctx context.Context, id InstanceID, step int, effects []state.Effect) error {
-	return r.dispatch(ctx, id, dispatchableEffects(step, effects))
-}
-
-// dispatch is the shared exactly-once apply loop used by the live path and by
-// recovery replay: it reads the instance's dispatched set, invokes the handler
-// for each not-yet-dispatched effect, and marks each id as it succeeds. It is a
-// no-op without a handler. An error or a panic in the Store's
-// Dispatched or MarkDispatched becomes an ErrEffectDispatch error wrapping it, as
-// applyEffect makes one in the handler, so a step and Recover fail the same way.
+// dispatch applies a step's domain effects exactly once. It is the shared
+// exactly-once apply loop used by the live path and by recovery replay: the live
+// path calls it from finishStep, AFTER the step Record (carrying the effect ids)
+// is durably appended, realizing the write-ahead ordering; recovery replay calls
+// it over the effects the re-fired step re-emitted, re-stamped with the same
+// deterministic ids at its call site. For each effect whose id is not already in
+// the dispatched set it invokes the handler and, on success, marks the id
+// dispatched. A handler error stops dispatch and is returned wrapped in
+// ErrEffectDispatch with the failing effect left un-marked for a later recovery
+// to retry. An error or a panic in the Store's Dispatched or MarkDispatched
+// becomes an ErrEffectDispatch error wrapping it, as applyEffect makes one in the
+// handler, so a step and Recover fail the same way. With no handler wired,
+// dispatch is a no-op (the ids are still recorded for a handler-equipped
+// recovery). A handler is only ever wired with a DispatchStore: Start and Recover
+// refuse one without (see checkDispatchStore).
 func (r *Runner[S, E, C]) dispatch(ctx context.Context, id InstanceID, des []dispatchableEffect) (err error) {
 	if !r.dispatching(des) {
 		return nil

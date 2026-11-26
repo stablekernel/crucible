@@ -1387,7 +1387,7 @@ func (h *Handle[S, E, C]) recordStep(ctx context.Context, rec *Record, effects [
 func (h *Handle[S, E, C]) finishStep(ctx context.Context, rec *Record, des []dispatchableEffect) error {
 	var dispatchErr error
 	if len(des) > 0 {
-		dispatchErr = h.dispatchEffects(h.dispatchContext(ctx), des)
+		dispatchErr = h.runner.dispatch(h.dispatchContext(ctx), h.id, des)
 	}
 	h.out.mu.Lock()
 	defer h.out.mu.Unlock()
@@ -2073,16 +2073,19 @@ func (r *Runner[S, E, C]) recover(ctx context.Context, id InstanceID) (*Handle[S
 		if rec.UnstartedActors != nil {
 			unstarted = rec.UnstartedActors
 		}
-		// Re-dispatch this step's domain effects, a Fire's, a settlement's or a tick's,
-		// deduped by the Store's dispatched set: an effect already marked (it landed
-		// before the crash) is skipped; one recorded-but-un-marked (the crash fell between
-		// append and dispatch) is applied now — exactly-once across the crash boundary.
-		// Replay re-derives the effects, so this doesn't depend on the Store keeping
-		// Record.Effects. A tick's or a settlement's Record from a version that didn't
-		// dispatch them, of a format before dispatchedStepsFormat, owes none: that run
-		// never applied them, so sending them now would apply effects it never did.
+		// Re-dispatch this step's domain effects, a Fire's, a settlement's or a tick's:
+		// dispatchableEffects re-stamps the re-emitted effects with the same
+		// deterministic ids (step and emission order reproduce exactly), and dispatch
+		// dedups them by the Store's dispatched set — an effect already marked (it
+		// landed before the crash) is skipped; one recorded-but-un-marked (the crash
+		// fell between append and dispatch) is applied now. This is the recovery half
+		// of the exactly-once contract. Replay re-derives the effects, so this doesn't
+		// depend on the Store keeping Record.Effects. A tick's or a settlement's Record
+		// from a version that didn't dispatch them, of a format before
+		// dispatchedStepsFormat, owes none: that run never applied them, so sending
+		// them now would apply effects it never did.
 		if sendsReplayedEffects(rec) {
-			if err := r.dispatchReplayEffects(ctx, id, rec.Step, stepEffects); err != nil {
+			if err := r.dispatch(ctx, id, dispatchableEffects(rec.Step, stepEffects)); err != nil {
 				return nil, err
 			}
 		}
