@@ -309,11 +309,12 @@ func (s *ActorSystem[S, E, C]) Absorb(ctx context.Context, effects []Effect) {
 	s.absorb(ctx, effects, nil)
 }
 
-// AbsorbFor is Absorb for the effects of a host-driven parent Fire(event): it
-// additionally lets a ForwardEvent the parent emits forward event verbatim to a
-// child. Use it (rather than Absorb) when the parent itself runs forwardTo on a
-// host-injected event; Absorb suffices for sendTo / sendParent / respond and all
-// lifecycle effects.
+// AbsorbFor is Absorb for the effects of a parent Fire(event): it additionally lets
+// a ForwardEvent the parent emits forward event verbatim to a child. Use it (rather
+// than Absorb) when the parent ran forwardTo on the event — one a host injected, or
+// one the system itself drove the parent with: a message an actor sent, a settle's
+// routing event, a failed spawn's declared onError. Absorb suffices for sendTo /
+// sendParent / respond and all lifecycle effects.
 func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects []Effect) {
 	s.absorb(ctx, effects, event)
 }
@@ -329,8 +330,9 @@ func (s *ActorSystem[S, E, C]) AbsorbFor(ctx context.Context, event any, effects
 // whose spawn fails now, and the onDone or onError of one that settles as the others
 // start. A nested actor's failure with no onError doesn't escalate again either, while
 // one in effects that fails now does. The effects such a Fire drives absorb as under
-// Absorb: an actor its state spawns, or one it sends to, reaches the parent. Its other
-// effects absorb as under Absorb. The quiet rides the call chain that spawns each actor,
+// AbsorbFor, carrying the event that drove it: an actor its state spawns, or one it
+// sends to or forwards to, reaches the parent or the target with the event intact.
+// Its other effects absorb as under Absorb. The quiet rides the call chain that spawns each actor,
 // so a delivery another goroutine makes while AbsorbRespawn runs reaches the parent as
 // usual, and it ends when AbsorbRespawn returns.
 func (s *ActorSystem[S, E, C]) AbsorbRespawn(ctx context.Context, effects []Effect) {
@@ -530,7 +532,9 @@ func (s *ActorSystem[S, E, C]) routeError(ctx context.Context, e SpawnActor, err
 	}
 	res := s.parent.Fire(ctx, ev)
 	s.noteParentFire(ParentFire[S]{Result: res, ActorID: e.ID, SpawnFailed: true})
-	s.Absorb(ctx, res.Effects)
+	// AbsorbFor carries the onError event, so a forwardTo on the transition it drove
+	// forwards that event, not nil.
+	s.AbsorbFor(ctx, ev, res.Effects)
 }
 
 // stop removes the actor under id and recursively stops its children. Stopping an
@@ -882,7 +886,9 @@ func (s *ActorSystem[S, E, C]) fireParentFrom(ctx context.Context, event any, se
 
 	res := s.parent.Fire(ctx, ev)
 	s.noteParentFire(ParentFire[S]{Result: res, ActorID: senderID})
-	s.Absorb(ctx, res.Effects)
+	// AbsorbFor carries the event the actor sent, so a forwardTo on the transition it
+	// drove forwards that event, not nil.
+	s.AbsorbFor(ctx, ev, res.Effects)
 
 	s.mu.Lock()
 	s.parentSender = prev
@@ -1023,7 +1029,9 @@ func (s *ActorSystem[S, E, C]) settle(ctx context.Context, id string, output any
 	}
 	res := s.parent.Fire(ctx, ev, WithEventData(payload))
 	s.noteParentFire(ParentFire[S]{Result: res, ActorID: id, Settle: true, Output: output, Err: err})
-	s.Absorb(ctx, res.Effects)
+	// AbsorbFor carries the settle's routing event, so a forwardTo on the transition
+	// it drove forwards that event, not nil.
+	s.AbsorbFor(ctx, ev, res.Effects)
 	return res, true
 }
 

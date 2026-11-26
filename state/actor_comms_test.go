@@ -2,6 +2,7 @@ package state_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stablekernel/crucible/state"
@@ -341,3 +342,125 @@ func containsStr(xs []string, s string) bool {
 	}
 	return false
 }
+
+// listenerMachine is a child that answers the event a forwardTo relays: on "drove"
+// it tells its parent "heard", proving the forwarded event arrived typed.
+func listenerMachine() *state.Machine[string, string, *relayEntity] {
+	return state.ForgeFor[*relayEntity]("listener").
+		State("ready").
+		Initial("ready").
+		Transition("ready").On("drove").GoTo("ready").SendParent("heard").
+		Quench()
+}
+
+// forwardParentMachine builds a parent whose "running" transition on "drove" — the
+// event its driver actor drives the parent with — forwards "drove" to the listener
+// the compound "outer" state invokes, and records the listener's "heard" reply. The
+// listener is invoked by "outer" and the driver by its child "running", so the
+// listener is running before the driver spawns and can receive what the driver's
+// parent Fire forwards.
+func forwardParentMachine(driverOpts ...state.InvokeOption) *state.Machine[string, string, *trec] {
+	return state.ForgeFor[*trec]("fwdparent").
+		Action("heard", func(c state.ActionCtx[*trec]) (state.Effect, error) {
+			c.Entity.notes = append(c.Entity.notes, "heard")
+			return nil, nil
+		}).
+		Actor("driver").
+		SuperState("outer").InvokeActor("listener", state.WithSystemID("listener")).
+		SubState("running").InvokeActor("driver", driverOpts...).
+		Initial("running").
+		EndSuperState().
+		Initial("outer").
+		Transition("running").On("drove").GoTo("running").ForwardTo("", state.WithSendToSystemID("listener")).
+		Transition("running").On("heard").GoTo("running").Do("heard").
+		Quench()
+}
+
+// forwardHarness casts a forwardParentMachine, spawns its actors, and returns the
+// parent, its system, the entity, and the driver's actor id.
+func forwardHarness(t *testing.T, driver state.ActorBehavior, driverOpts ...state.InvokeOption) (
+	*state.Instance[string, string, *trec], *state.ActorSystem[string, string, *trec], *trec, string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	m := forwardParentMachine(driverOpts...)
+	entity := &trec{}
+	parent := m.Cast(entity, state.WithInitialState[string]("outer"))
+	sys := state.NewActorSystem(parent).
+		Register("listener", func(map[string]any) (state.ActorInstance, error) {
+			return state.NewActor(listenerMachine().Cast(&relayEntity{}, state.WithInitialState[string]("ready")), nil), nil
+		}).
+		Register("driver", driver)
+	sys.Absorb(ctx, parent.StartEffects())
+	driverID := state.ActorID(m.Name(), "running", 0)
+	if parent.Current() != "running" {
+		t.Fatalf("parent state = %q, want running", parent.Current())
+	}
+	return parent, sys, entity, driverID
+}
+
+// TestComm_ForwardOnAParentFireAnActorDrives proves a forwardTo on a parent
+// transition an actor drives forwards the event that drove the transition, not nil:
+// a message the actor sent the parent, its own settle's onDone, and a failed spawn's
+// declared onError alike (#260).
+func TestComm_ForwardOnAParentFireAnActorDrives(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a message the actor sent", func(t *testing.T) {
+		// The driver tells its parent "drove" as it starts.
+		driver := func(map[string]any) (state.ActorInstance, error) {
+			return &startSender{ev: "drove"}, nil
+		}
+		_, sys, entity, _ := forwardHarness(t, driver)
+		if got := sys.Running(); got != 2 {
+			t.Fatalf("running actors = %d, want the listener and the driver", got)
+		}
+		if len(entity.notes) != 1 || entity.notes[0] != "heard" {
+			t.Fatalf("notes = %v, want [heard]: the forwardTo handed the listener nil, not the actor's message", entity.notes)
+		}
+	})
+	t.Run("the actor's settle", func(t *testing.T) {
+		// The driver reaches its final state on "finish", settling through onDone.
+		driverChild := state.ForgeFor[*relayEntity]("driverChild").
+			State("ready").
+			State("done").Final().
+			Initial("ready").
+			Transition("ready").On("finish").GoTo("done").
+			Quench()
+		driver := func(map[string]any) (state.ActorInstance, error) {
+			return state.NewActor(driverChild.Cast(&relayEntity{}, state.WithInitialState[string]("ready")), nil), nil
+		}
+		_, sys, entity, driverID := forwardHarness(t, driver, state.WithInvokeOnDone("drove"))
+		if !sys.DeliverByID(ctx, driverID, "finish") {
+			t.Fatal("DeliverByID returned false; the driver was running")
+		}
+		if len(entity.notes) != 1 || entity.notes[0] != "heard" {
+			t.Fatalf("notes = %v, want [heard]: the forwardTo handed the listener nil, not the settle's onDone", entity.notes)
+		}
+	})
+	t.Run("a failed spawn's onError", func(t *testing.T) {
+		driver := func(map[string]any) (state.ActorInstance, error) {
+			return nil, errors.New("the driver cannot start")
+		}
+		_, _, entity, _ := forwardHarness(t, driver, state.WithInvokeOnError("drove"))
+		if got := len(entity.notes); got != 1 || entity.notes[0] != "heard" {
+			t.Fatalf("notes = %v, want [heard]: the forwardTo handed the listener nil, not the declared onError", entity.notes)
+		}
+	})
+}
+
+// startSender is an actor that tells its parent ev from its initial entry, then
+// keeps running.
+type startSender struct {
+	ev   string
+	sent bool
+}
+
+func (*startSender) DeliverFire(context.Context, any) (bool, any) { return false, nil }
+func (s *startSender) ChildEffects() []state.Effect {
+	if s.sent {
+		return nil
+	}
+	s.sent = true
+	return []state.Effect{state.SendParent{Event: s.ev}}
+}
+func (*startSender) Output() any { return nil }

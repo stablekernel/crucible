@@ -108,6 +108,17 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Changed
 
+- **A `forwardTo` on a parent Fire an actor drives forwards the driving event.** This
+  is a behavior change. A parent transition that runs `forwardTo(child)` forwarded
+  the event that drove it only when the host drove the parent Fire itself; one an
+  actor drove — a message the actor sent the parent (from a delivery or its start),
+  its own settle's `onDone` / `onError`, or a failed spawn's declared `onError` —
+  ran inside the actor system, which absorbed the Fire's effects with no event, so
+  the child got nil. Those Fires now absorb through `AbsorbFor` with the event that
+  drove them, so the child gets it verbatim (#260). A service settle's transition is
+  the host's to forward: a host combining a `ServiceRunner` with an actor system
+  absorbs the settle's effects with `AbsorbFor`, giving the event its
+  `WithResultTransform` function received (the durable runner does).
 - **`StartEffects` includes a compound state's services and actors.** This is a
   behavior change. It covered the active leaves only, so a service or actor declared
   on a compound state started when a `Fire` entered that state — the kernel's entry
