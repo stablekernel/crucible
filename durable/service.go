@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/stablekernel/crucible/state"
 )
@@ -420,7 +422,10 @@ func (h *Handle[S, E, C]) markSettled(id string) {
 // honors: an outcome recorded under a name an alias maps to the type the decoded value
 // has settles through the alias. Every other name is checked strictly, as without any
 // alias.
-func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, settled *settledJSON, what, errWhat string) func(E, any, error) (any, error, error) {
+// names is the Runner's cache every spelling the transform asks goes through (see
+// typeNames): a Runner-less caller passes nil and spells uncached, which changes
+// nothing the transform returns.
+func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[string]string, names *typeNames, settled *settledJSON, what, errWhat string) func(E, any, error) (any, error, error) {
 	return func(event E, result any, err error) (any, error, error) {
 		settled.set(recordedResult{})
 		if err != nil {
@@ -440,7 +445,7 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 		}
 		var value any
 		var derr error
-		if typedNil(b, recorded, replay, result) {
+		if typedNil(names, b, recorded, replay, result) {
 			// A typed nil keeps its type through the decoder, live and on replay alike.
 			value, derr = decodeData(event, b, decode)
 		} else {
@@ -451,16 +456,16 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 		} else if !replay {
 			derr = decodedAsPassed(value, result, what, true)
 		} else {
-			derr = decodedAsRecorded(value, recorded, aliases, what)
+			derr = decodedAsRecorded(names, value, recorded, aliases, what)
 		}
 		if derr != nil {
 			rtype := recorded.rtype
 			if !replay {
 				rtype = reflect.TypeOf(result)
 			}
-			return nil, nil, &undecodableResult{raw: b, typ: resultType(recorded, replay, result), rtype: rtype, err: derr}
+			return nil, nil, &undecodableResult{raw: b, typ: resultType(names, recorded, replay, result), rtype: rtype, err: derr}
 		}
-		settled.set(recordedResult{raw: b, typ: resultType(recorded, replay, result)})
+		settled.set(recordedResult{raw: b, typ: resultType(names, recorded, replay, result)})
 		return value, nil, nil
 	}
 }
@@ -468,12 +473,13 @@ func replayableOutcome[E comparable](decode EventDataDecoder[E], aliases map[str
 // typedNil reports whether b, a service result's JSON, is the null of a typed nil,
 // such as a nil pointer or map: the ServiceFn's own value live, or the Go type the
 // journal recorded on replay. An untyped nil, or a result recorded with no type, isn't.
-func typedNil(b []byte, recorded recordedResult, replay bool, result any) bool {
+// names is the Runner's cache the recorded type's name was spelled through.
+func typedNil(names *typeNames, b []byte, recorded recordedResult, replay bool, result any) bool {
 	if string(b) != "null" {
 		return false
 	}
 	if replay {
-		return recorded.typ != "" && recorded.typ != typeName(nil)
+		return recorded.typ != "" && recorded.typ != names.typeName(nil)
 	}
 	return result != nil
 }
@@ -502,12 +508,13 @@ func (s *settledJSON) take() recordedResult {
 }
 
 // resultType returns the Go type a park, or a successful settle, records for result:
-// the recorded one on replay, else the ServiceFn's value's.
-func resultType(recorded recordedResult, replay bool, result any) string {
+// the recorded one on replay, else the ServiceFn's value's. names is the Runner's
+// cache the name is spelled through.
+func resultType(names *typeNames, recorded recordedResult, replay bool, result any) string {
 	if replay {
 		return recorded.typ
 	}
-	return typeName(result)
+	return names.typeName(result)
 }
 
 // recordedResult is a journaled service result's JSON, which replayService settles so
@@ -527,23 +534,87 @@ type recordedResult struct {
 	rtype reflect.Type
 }
 
+// typeNames is the cache of each type's full spelling that a Runner owns: the
+// package admits no package-level mutable state (CONTRIBUTING.md), so NewRunner
+// builds one, and every spelling its settles, parks and replay type checks ask —
+// Start and Recover included, across every Handle it hands out — goes through it.
+// A nil *typeNames spells uncached: a caller with no Runner in reach — an option
+// applied before the Runner exists, or the Runner-less StateAt — passes nil rather
+// than reaching for shared state. The cache never changes a spelling, only who
+// computes it: the spelling is pure in the type alone.
+type typeNames struct {
+	// cache holds each type's full spelling keyed by the reflect.Type itself: two
+	// reflect.Types compare equal exactly when the types are identical, so a cached
+	// spelling is always the one its own type spells. It is bounded: without a cap,
+	// runtime-minted types - reflect.StructOf mints a new reflect.Type for every
+	// shape a caller asks - would grow it without end, so past the cap a type is
+	// spelled and returned unstored, and the hit path is what the cache exists for.
+	cache sync.Map // map[reflect.Type]string
+
+	// limit is the cap fullTypeName enforces: typeNameCacheCap, which a test hook
+	// lowers on a cache that has spelled nothing yet. It is never written once the
+	// cache serves one, so the plain read races nothing.
+	limit int64
+
+	// n counts the cache's entries, so a load can check the cap without ranging the
+	// map. It is incremented only when a LoadOrStore stores, so the same type never
+	// counts twice.
+	n atomic.Int64
+}
+
+// newTypeNames returns a Runner's type-name cache, at the production cap.
+func newTypeNames() *typeNames { return &typeNames{limit: typeNameCacheCap} }
+
+// limitForTest lowers the cache's cap, for the tests that exercise the bound. It
+// writes only a cache that has spelled nothing yet, so the field needs no
+// synchronization of its own; production caches never lower it.
+func (n *typeNames) limitForTest(limit int64) { n.limit = limit }
+
 // typeName returns the full name of v's type, the form a parked result records: a
 // named type's import path and name, so two packages' model.Result differ, and an
-// unnamed type spelled from those (see fullTypeName).
-func typeName(v any) string {
+// unnamed type spelled from those (see fullTypeName). The Runner that owns this
+// cache gets its spellings cached; a nil one spells uncached.
+func (n *typeNames) typeName(v any) string {
 	t := reflect.TypeOf(v)
 	if t == nil {
 		return "<nil>"
 	}
-	return fullTypeName(t)
+	return n.fullTypeName(t)
 }
 
 // fullTypeName spells t as reflect does, but with each named type's import path in
 // place of its package name, so two packages' model.Result differ wherever they
 // appear: in a pointer, slice, array, map or chan, a func's parameters and results, an
 // interface's methods, and a struct literal's fields, whose tags and unexported names'
-// packages are part of the type too.
-func fullTypeName(t reflect.Type) string {
+// packages are part of the type too. Each type's spelling is cached under its
+// reflect.Type on the Runner that owns this cache, since the same result types are
+// spelled again and again: a settle, a park and a replay type check each ask, and an
+// unnamed type's spelling walks its whole shape. A nil cache spells uncached, which
+// changes only who computes the spelling, never what it is.
+func (n *typeNames) fullTypeName(t reflect.Type) string {
+	if n == nil {
+		return n.spellTypeName(t)
+	}
+	if cached, ok := n.cache.Load(t); ok {
+		return cached.(string)
+	}
+	name := n.spellTypeName(t)
+	if n.n.Load() < n.limit {
+		if _, loaded := n.cache.LoadOrStore(t, name); !loaded {
+			n.n.Add(1)
+		}
+	}
+	return name
+}
+
+// typeNameCacheCap is the most entries a typeNames cache holds. It is far more than
+// the handful of result types that settle again and again, and far less than the
+// types a StructOf-driven run can mint. The bound is approximate: a check-then-
+// store race lets a few racing spellings past it, never the steady growth it stops.
+const typeNameCacheCap = 4096
+
+// spellTypeName computes t's full name, the spelling fullTypeName caches.
+func (n *typeNames) spellTypeName(t reflect.Type) string {
 	if name := t.Name(); name != "" {
 		if pkg := t.PkgPath(); pkg != "" {
 			return pkg + "." + name
@@ -552,29 +623,29 @@ func fullTypeName(t reflect.Type) string {
 	}
 	switch t.Kind() {
 	case reflect.Pointer:
-		return "*" + fullTypeName(t.Elem())
+		return "*" + n.fullTypeName(t.Elem())
 	case reflect.Slice:
-		return "[]" + fullTypeName(t.Elem())
+		return "[]" + n.fullTypeName(t.Elem())
 	case reflect.Array:
-		return fmt.Sprintf("[%d]%s", t.Len(), fullTypeName(t.Elem()))
+		return fmt.Sprintf("[%d]%s", t.Len(), n.fullTypeName(t.Elem()))
 	case reflect.Map:
-		return "map[" + fullTypeName(t.Key()) + "]" + fullTypeName(t.Elem())
+		return "map[" + n.fullTypeName(t.Key()) + "]" + n.fullTypeName(t.Elem())
 	case reflect.Chan:
-		return chanTypeName(t)
+		return n.chanTypeName(t)
 	case reflect.Func:
-		return "func" + signatureName(t)
+		return "func" + n.signatureName(t)
 	case reflect.Struct:
-		return structTypeName(t)
+		return n.structTypeName(t)
 	case reflect.Interface:
-		return interfaceTypeName(t)
+		return n.interfaceTypeName(t)
 	}
 	return t.String()
 }
 
 // chanTypeName spells a chan type t, parenthesizing a receive-only element of a
 // bidirectional chan, as reflect does.
-func chanTypeName(t reflect.Type) string {
-	elem := fullTypeName(t.Elem())
+func (n *typeNames) chanTypeName(t reflect.Type) string {
+	elem := n.fullTypeName(t.Elem())
 	switch t.ChanDir() {
 	case reflect.RecvDir:
 		return "<-chan " + elem
@@ -588,7 +659,7 @@ func chanTypeName(t reflect.Type) string {
 }
 
 // signatureName spells a func type t's parameters and results, without "func".
-func signatureName(t reflect.Type) string {
+func (n *typeNames) signatureName(t reflect.Type) string {
 	var b strings.Builder
 	b.WriteByte('(')
 	for i := range t.NumIn() {
@@ -596,23 +667,23 @@ func signatureName(t reflect.Type) string {
 			b.WriteString(", ")
 		}
 		if t.IsVariadic() && i == t.NumIn()-1 {
-			b.WriteString("..." + fullTypeName(t.In(i).Elem()))
+			b.WriteString("..." + n.fullTypeName(t.In(i).Elem()))
 			continue
 		}
-		b.WriteString(fullTypeName(t.In(i)))
+		b.WriteString(n.fullTypeName(t.In(i)))
 	}
 	b.WriteByte(')')
-	switch n := t.NumOut(); n {
+	switch out := t.NumOut(); out {
 	case 0:
 	case 1:
-		b.WriteString(" " + fullTypeName(t.Out(0)))
+		b.WriteString(" " + n.fullTypeName(t.Out(0)))
 	default:
 		b.WriteString(" (")
-		for i := range n {
+		for i := range out {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(fullTypeName(t.Out(i)))
+			b.WriteString(n.fullTypeName(t.Out(i)))
 		}
 		b.WriteByte(')')
 	}
@@ -622,7 +693,7 @@ func signatureName(t reflect.Type) string {
 // structTypeName spells a struct literal type t field by field: an unexported field's
 // name with its package's import path, an embedded field by its type alone, and each
 // tag quoted, as reflect does.
-func structTypeName(t reflect.Type) string {
+func (n *typeNames) structTypeName(t reflect.Type) string {
 	if t.NumField() == 0 {
 		return "struct {}"
 	}
@@ -637,7 +708,7 @@ func structTypeName(t reflect.Type) string {
 		if !f.Anonymous {
 			b.WriteString(qualifiedName(f.PkgPath, f.Name) + " ")
 		}
-		b.WriteString(fullTypeName(f.Type))
+		b.WriteString(n.fullTypeName(f.Type))
 		if f.Tag != "" {
 			b.WriteString(" " + strconv.Quote(string(f.Tag)))
 		}
@@ -648,7 +719,7 @@ func structTypeName(t reflect.Type) string {
 
 // interfaceTypeName spells an interface literal type t method by method, an unexported
 // method's name with its package's import path.
-func interfaceTypeName(t reflect.Type) string {
+func (n *typeNames) interfaceTypeName(t reflect.Type) string {
 	if t.NumMethod() == 0 {
 		return "interface {}"
 	}
@@ -659,7 +730,7 @@ func interfaceTypeName(t reflect.Type) string {
 			b.WriteByte(';')
 		}
 		m := t.Method(i)
-		b.WriteString(" " + qualifiedName(m.PkgPath, m.Name) + signatureName(m.Type))
+		b.WriteString(" " + qualifiedName(m.PkgPath, m.Name) + n.signatureName(m.Type))
 	}
 	b.WriteString(" }")
 	return b.String()
@@ -689,13 +760,14 @@ func qualifiedName(pkg, name string) string {
 // another function-local type, also has. An empty name, a result recorded with no
 // type, accepts anything. Only a parked service result carries its own type, so the
 // parked check below names a service result whatever what is; an actor outcome is
-// never parked.
-func decodedAsRecorded(value any, recorded recordedResult, aliases map[string]string, what string) error {
+// never parked. names is the Runner's cache the decoded value's type is spelled
+// through.
+func decodedAsRecorded(names *typeNames, value any, recorded recordedResult, aliases map[string]string, what string) error {
 	typ := recorded.typ
 	if typ == "" || value == nil || genericJSON(value) {
 		return nil
 	}
-	got := typeName(value)
+	got := names.typeName(value)
 	alias, aliased := aliases[typ]
 	if got != typ && (!aliased || got != alias) {
 		if aliased {

@@ -142,7 +142,10 @@ func StateAt[S comparable, E comparable, C any](
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 
-	if err := replayThrough(ctx, inst, &cfg, bounded, env, repClock); err != nil {
+	// StateAt builds no Runner, so its replays spell every type uncached (see
+	// typeNames): the spelling is pure in the type alone, so an uncached one is the
+	// one a Runner's cache would return.
+	if err := replayThrough(ctx, inst, &cfg, nil, bounded, env, repClock); err != nil {
 		return nil, fmt.Errorf("durable: reconstructing %q at step %d: %w", id, step, err)
 	}
 	return &TimeTravelView[S, E, C]{inst: inst, step: step}, nil
@@ -231,6 +234,7 @@ func replayThrough[S comparable, E comparable, C any](
 	ctx context.Context,
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
+	names *typeNames,
 	bounded []Record,
 	env checkpointEnvelope,
 	repClock *replayClock,
@@ -251,7 +255,7 @@ func replayThrough[S comparable, E comparable, C any](
 		repClock.release()
 	}
 
-	svc := newReplayServiceRunner(inst, cfg)
+	svc := newReplayServiceRunner(inst, cfg, names)
 	if svc != nil {
 		svc.Absorb(ctx, inst.StartEffects())
 	}
@@ -269,7 +273,7 @@ func replayThrough[S comparable, E comparable, C any](
 			return err
 		}
 		reads += clockReadCount(&bounded[i])
-		if _, err := replayRecord(ctx, inst, cfg, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
+		if _, err := replayRecord(ctx, inst, cfg, names, sched, svc, &bounded[i], nil, armsActorFires(&bounded[i])); err != nil {
 			return err
 		}
 		// Leave none of the Record's readings for the next one, as Recover does.
@@ -298,12 +302,15 @@ func boundRecords(records []Record, target int) []Record {
 // newReplayServiceRunner builds the kernel service host driver for the read-only
 // replay, or nil when no registry was wired. It is the reader's analog of the
 // Runner's newServiceRunner, kept separate so the reader pulls in no live-path state.
+// names is the Runner's cache the recorded type checks spell through, nil from the
+// Runner-less StateAt (see typeNames).
 func newReplayServiceRunner[S comparable, E comparable, C any](
 	inst *state.Instance[S, E, C],
 	cfg *runnerConfig[S, E, C],
+	names *typeNames,
 ) *state.ServiceRunner[S, E, C] {
 	if cfg.serviceReg == nil {
 		return nil
 	}
-	return state.NewServiceRunner(inst, cfg.serviceReg).WithResultTransform(replayableOutcome(cfg.eventDataDecoder, cfg.resultAliases, nil, "service result", "service error"))
+	return state.NewServiceRunner(inst, cfg.serviceReg).WithResultTransform(replayableOutcome(cfg.eventDataDecoder, cfg.resultAliases, names, nil, "service result", "service error"))
 }

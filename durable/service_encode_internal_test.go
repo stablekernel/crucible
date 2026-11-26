@@ -43,7 +43,7 @@ func TestServiceResult_JournalBytesAreWhatLiveDecoded(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			settled := &settledJSON{}
-			value, outErr, abort := replayableOutcome(tc.decode, nil, settled, "service result", "service error")("done", tc.result, nil)
+			value, outErr, abort := replayableOutcome(tc.decode, nil, cacheRunner().names, settled, "service result", "service error")("done", tc.result, nil)
 			if outErr != nil || abort != nil {
 				t.Fatalf("the transform returned %v, %v", outErr, abort)
 			}
@@ -66,7 +66,7 @@ func TestServiceResult_JournalBytesAreWhatLiveDecoded(t *testing.T) {
 				t.Fatalf("decoded value's encoding %s, journal %s: same = %v, want %v", reencoded, sp.Result, same, tc.reencode)
 			}
 			// Replay decodes the journal to the value live saw.
-			replayed, _, rabort := replayableOutcome(tc.decode, nil, nil, "service result", "service error")("done", recordedResult{raw: sp.Result}, nil)
+			replayed, _, rabort := replayableOutcome(tc.decode, nil, cacheRunner().names, nil, "service result", "service error")("done", recordedResult{raw: sp.Result}, nil)
 			if rabort != nil {
 				t.Fatalf("replaying %s: %v", sp.Result, rabort)
 			}
