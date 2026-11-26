@@ -254,24 +254,56 @@ func (i *Instance[S, E, C]) invokeEffectsOnExit(exits []S, tr *Trace) []Effect {
 }
 
 // StartEffects returns the StartService effects for the invoked services declared
-// on the instance's initial active configuration, so a host can arm the services
-// of the state(s) entered at Cast — the entry that Fire never observes because no
-// event drove it. Call it once, right after Cast, and route the effects through
-// the same ServiceRunner used for Fire's effects. It is a pure read of the
-// configuration and emits no IO, consistent with the kernel's effects-as-data
+// on the instance's active configuration — every state the configuration makes
+// active, a compound or parallel state alongside its active children — so a host
+// can arm the services of the state(s) entered at Cast — the entry that Fire never
+// observes because no event drove it. Call it once, right after Cast, and route the
+// effects through the same ServiceRunner used for Fire's effects. It is a pure read
+// of the configuration and emits no IO, consistent with the kernel's effects-as-data
 // contract. A flat or single-spine instance reports its single starting state's
-// services; a parallel initial configuration reports every active region's.
+// services; a parallel initial configuration reports every active region's, and a
+// compound state's alongside the child that's active, since Fire's entry path starts
+// a compound state's invokes when it enters one of its children, and Start is that
+// entry.
 //
 // StartEffects recomputes over the live configuration on every call, so it is
 // correct on both Cast (configuration is the initial leaves) and Restore
 // (configuration is the restored leaves). The durable runner relies on this:
 // after Recover sets up the restored configuration, StartEffects yields exactly
-// the invoke/actor starts of the resumed state(s).
+// the invoke/actor starts of the resumed state(s). A snapshot can't say which of
+// a compound state's invokes had already settled into one of its children, so a
+// host that re-arms from StartEffects alone after a Restore may run one again;
+// the durable runner records which settled and skips them.
 func (i *Instance[S, E, C]) StartEffects() []Effect {
 	var tr Trace
+	states := i.activeStates()
+	out := i.invokeEffectsOnEntry(states, &tr)
+	out = append(out, i.actorEffectsOnEntry(states, &tr)...)
+	return out
+}
+
+// activeStates returns every state the instance's current configuration makes
+// active — each active leaf and its compound and parallel ancestors — in entry
+// order, outermost-first, each state once. It is the set Fire's entry path enters
+// for that configuration, so the invokes it reports are the ones the live run
+// started. Unlike Configuration, it names the compound states whose children are
+// active; unlike ResumeEffects it is not a snapshot re-arm, so it carries no
+// record of what already settled.
+func (i *Instance[S, E, C]) activeStates() []S {
 	cfg := i.Configuration()
-	out := i.invokeEffectsOnEntry(cfg, &tr)
-	out = append(out, i.actorEffectsOnEntry(cfg, &tr)...)
+	var out []S
+	seen := make(map[S]bool, 2*len(cfg))
+	for _, leaf := range cfg {
+		// ancestors returns a shared innermost-first cache, so read it backwards
+		// rather than reversing a copy.
+		chain := i.machine.ancestors(leaf)
+		for k := len(chain) - 1; k >= 0; k-- {
+			if s := chain[k]; !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
 	return out
 }
 

@@ -108,6 +108,17 @@ counts as an additive (minor) versus breaking (major) change. Use the
 
 ### Changed
 
+- **`StartEffects` includes a compound state's services and actors.** This is a
+  behavior change. It covered the active leaves only, so a service or actor declared
+  on a compound state started when a `Fire` entered that state — the kernel's entry
+  path emits every entered state's invokes — but not when `Start` cast into it or a
+  host resumed in it, and a durable instance that started in, or recovered into, a
+  compound state ran without that state's services and actors. It now reports every
+  state the active configuration makes active, each leaf and its compound and
+  parallel ancestors, in entry order. `ResumeEffects` stays leaves-only: a snapshot
+  can't say which of a compound state's invokes had already settled into one of its
+  children, so a host that re-arms from `StartEffects` alone after a `Restore` may run
+  one again — the durable runner records which settled and skips them (#249).
 - Requires Go 1.27.4.
 - **One settle owns an actor at a time.** Two concurrent settles on one actor —
   through the exported API, since a host driving the system and the parent from one

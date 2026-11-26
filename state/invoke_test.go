@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stablekernel/crucible/state"
@@ -324,6 +325,94 @@ func TestInvoke_StartEffectsInitialState(t *testing.T) {
 	}
 	if inst.Current() != "ready" {
 		t.Fatalf("after onDone, want ready, got %q", inst.Current())
+	}
+}
+
+// TestInvoke_StartEffectsCompoundState asserts StartEffects arms a compound state's
+// invokes alongside its active children's, in entry order — outermost first — with
+// each state once, and that a Fire that moves between the children keeps reporting
+// the compound's, since it never left. A flat machine's StartEffects is unchanged.
+func TestInvoke_StartEffectsCompoundState(t *testing.T) {
+	fetch := func(context.Context, state.ServiceCtx[*trec]) (any, error) { return "p", nil }
+	m := state.ForgeFor[*trec]("compoundboot").
+		Service("fetch", fetch).
+		SuperState("outer").Invoke("fetch", state.WithInvokeOnDone("outerDone")).
+		SubState("loading").Invoke("fetch", state.WithInvokeOnDone("ok")).
+		SubState("ready").
+		Initial("loading").
+		EndSuperState().
+		Initial("outer").
+		Transition("loading").On("ok").GoTo("ready").
+		Transition("outer").On("outerDone").GoTo("ready").
+		Quench()
+	inst := m.Cast(&trec{}, state.WithInitialState[string]("outer"))
+
+	var ids []string
+	for _, e := range inst.StartEffects() {
+		if s, ok := e.(state.StartService); ok {
+			ids = append(ids, s.ID)
+		}
+	}
+	want := []string{
+		state.InvokeID("compoundboot", "outer", 0),
+		state.InvokeID("compoundboot", "loading", 0),
+	}
+	if fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("StartEffects ids = %v, want the compound's then the leaf's: %v", ids, want)
+	}
+
+	// Moving between the compound's children keeps the compound's declare — it was
+	// never exited, so its service is still the live run's — while the child that
+	// was left no longer declares one.
+	if res := inst.Fire(context.Background(), "ok"); res.Err != nil {
+		t.Fatalf("Fire(ok): %v", res.Err)
+	}
+	ids = ids[:0]
+	for _, e := range inst.StartEffects() {
+		if s, ok := e.(state.StartService); ok {
+			ids = append(ids, s.ID)
+		}
+	}
+	wantAfter := []string{state.InvokeID("compoundboot", "outer", 0)}
+	if fmt.Sprint(ids) != fmt.Sprint(wantAfter) {
+		t.Fatalf("after the move, StartEffects ids = %v, want only the compound's: %v", ids, wantAfter)
+	}
+}
+
+// TestInvoke_StartEffectsParallelCompound asserts the same for a parallel initial
+// configuration: the parallel state's own declares come first, then each region's
+// active leaf, each state once.
+func TestInvoke_StartEffectsParallelCompound(t *testing.T) {
+	fetch := func(context.Context, state.ServiceCtx[*trec]) (any, error) { return "p", nil }
+	m := state.ForgeFor[*trec]("parboot").
+		Service("fetch", fetch).
+		SuperState("par").Invoke("fetch", state.WithInvokeOnDone("parDone")).
+		Region("left").
+		Initial("p1").
+		SubState("p1").Invoke("fetch", state.WithInvokeOnDone("leftDone")).
+		EndRegion().
+		Region("right").
+		Initial("q1").
+		SubState("q1").Invoke("fetch", state.WithInvokeOnDone("rightDone")).
+		EndRegion().
+		EndSuperState().
+		Initial("par").
+		Quench()
+	inst := m.Cast(&trec{}, state.WithInitialState[string]("par"))
+
+	var ids []string
+	for _, e := range inst.StartEffects() {
+		if s, ok := e.(state.StartService); ok {
+			ids = append(ids, s.ID)
+		}
+	}
+	want := []string{
+		state.InvokeID("parboot", "par", 0),
+		state.InvokeID("parboot", "p1", 0),
+		state.InvokeID("parboot", "q1", 0),
+	}
+	if fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("StartEffects ids = %v, want the parallel's then each region's leaf: %v", ids, want)
 	}
 }
 
