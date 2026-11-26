@@ -47,8 +47,10 @@ func spawnRuleMachine(handles bool, mw state.Middleware[string, string, stepCtx]
 }
 
 // spawnRuleCalls runs start live with a child behavior that fails its first spawn and
-// starts after, then Recovers once, and returns how many times the behavior ran.
-func spawnRuleCalls(t *testing.T, m stepMachine) int {
+// starts after, then Recovers once, and returns how many times the behavior ran. A
+// nonzero every checkpoints after every that many steps, so the rule holds from a
+// checkpoint's recorded sets as well as the tail.
+func spawnRuleCalls(t *testing.T, m stepMachine, every ...int) int {
 	t.Helper()
 	ctx := context.Background()
 	store, id := durable.NewMemStore(), durable.InstanceID("spawn-rule")
@@ -62,6 +64,11 @@ func spawnRuleCalls(t *testing.T, m stepMachine) int {
 			return finishingChild()(in)
 		},
 	})}
+	for _, n := range every {
+		if n > 0 {
+			opts = append(opts, durable.WithCheckpointEvery[string, string, stepCtx](n))
+		}
+	}
 	h, err := durable.NewRunner(m, store, opts...).Start(ctx, id, stepCtx{}, state.WithInitialState("idle"))
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -102,14 +109,10 @@ func TestSpawnRule_GuardRefusedOnErrorIsDone(t *testing.T) {
 }
 
 func TestSpawnRule_DeclaredOnErrorWithNoTransitionIsDone(t *testing.T) {
-	// A declared onError the parent has no transition for fires and is refused
-	// with ErrNoTransition, which the unstarted/ended rule deliberately reads as
-	// "nothing caught the failure" and retries: telling it from a handled refusal
-	// by the refusal alone is the #250 stopgap. The invocation now carries its own
-	// has-onError flag, so #250 can drop the stopgap and make this test pass.
-	t.Skip("a declared onError the parent has no transition for is still retried by the ErrNoTransition stopgap; #250")
-	if got := spawnRuleCalls(t, spawnRuleMachine(false, nil, state.WithInvokeOnError("spawnFailed"))); got != 1 {
-		t.Fatalf("behavior ran %d times, want Recover to leave it alone", got)
+	for _, every := range []int{0, 1} {
+		if got := spawnRuleCalls(t, spawnRuleMachine(false, nil, state.WithInvokeOnError("spawnFailed")), every); got != 1 {
+			t.Fatalf("every %d: behavior ran %d times, want Recover to leave it alone", every, got)
+		}
 	}
 }
 

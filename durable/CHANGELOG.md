@@ -85,6 +85,19 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **A declared `onError` the parent has no transition for is done, not retried.**
+  This is a behavior change. A spawn that couldn't start whose declared `onError` the
+  parent's current state has no transition for fires and is refused with
+  `state.ErrNoTransition`; the unstarted/ended rule now reads any refusal but a
+  context ending — a failing guard or a missing transition alike — as handled, since
+  the journal holds the refusal and a retry would run the behavior again, so `Recover`
+  leaves the actor ended. On main the missing-transition refusal was read as
+  "nothing caught the failure" and the spawn was retried, because before the
+  declared-outcome flags an invocation with no `onError` fired the zero event, which
+  the parent refused the same way, and the refusal was the only thing that told the
+  two apart. A spawn with no `onError` declared now escalates instead of firing, so it
+  stays unstarted and `Recover` still retries it, and one whose `onError` a context's
+  ending refused does too (#250).
 - **An effect handler needs a `DispatchStore`.** This is a behavior change. On main, a
   Runner with `WithEffectHandler` and a Store that doesn't implement `DispatchStore`
   silently skipped every effect: `Fire`'s, and `Recover`'s re-send, never reached the
@@ -537,11 +550,10 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   declared, as before: an invoked actor with no onError escalates rather than firing
   (see the Changed entry on declared-outcome routing), so it needs no refusal to tell
   it apart. A declared onError the parent has no
-  transition for still fires and is refused with `state.ErrNoTransition`, which
-  `durable` reads as "nothing caught the failure"; a wildcard or a transition that
-  takes the declared event counts as caught; #250 tracks a better way to tell a
-  declared-but-unroutable onError from a handled one. A host refusal worded
-  like the kernel's counts as handled.
+  transition for counts as caught the same way, since the journal holds that refusal
+  too (see the Changed entry on a declared onError the parent has no transition for);
+  a wildcard or a transition that takes the declared event counts as caught. A host
+  refusal worded like the kernel's counts as handled.
 - **A message an actor sends its parent as it spawns applies once.** A `Fire`,
   `RunService`, `Start` or `Recover` didn't journal it, and `Recover` spawned the actor
   again to send it again: it landed after the steps that followed it live, or never, if

@@ -977,16 +977,15 @@ func (p *parentFires[S]) note(pf state.ParentFire[S]) {
 	nf := notedFire[S]{pf: pf, settled: p.settled}
 	p.settled = recordedResult{}
 	p.fires = append(p.fires, nf)
-	// A spawn whose onError applied, or was refused for a reason other than a context
-	// ending, such as a failing guard, is handled: the journal holds the onError or its
+	// A spawn whose onError applied, or was refused for any reason other than a
+	// context ending — a failing guard, or the parent's current state declaring no
+	// transition for the onError — is handled: the journal holds the onError or its
 	// refusal, and a retry would run the behavior again. One a context's ending refused
-	// isn't: the step that drove it recorded nothing. Nor is one whose declared onError
-	// the parent has no transition for: the parent refuses the event that way, and
-	// nothing caught the failure. A spawn that declared no onError at all escalates
-	// rather than firing, so it needs no refusal to tell it apart; telling a declared
-	// onError the parent can't route from a handled one by the refusal alone is a
-	// stopgap; see #250.
-	if pf.SpawnFailed && !isContextErr(pf.Result.Err) && !errors.Is(pf.Result.Err, state.ErrNoTransition) {
+	// isn't: the step that drove it recorded nothing. A spawn that declared no onError
+	// at all escalates rather than firing (#268's has-onError flag made that possible,
+	// and dropped the stopgap that once told the two apart by the refusal alone); no
+	// Fire reports it, so it stays unstarted and a later Recover retries it.
+	if pf.SpawnFailed && !isContextErr(pf.Result.Err) {
 		if p.failed == nil {
 			p.failed = map[string]bool{}
 		}
@@ -1711,12 +1710,12 @@ func (r *recordedSet) note(now *ActorSet) {
 // of those spawns started it (then something stopped it) or was stopped instead of
 // started, as when the same step that spawns it stops it while its state stays active,
 // or, when this step didn't try to spawn it, when it was running or ended at the
-// previous step. A spawn whose onError applied, or whose onError was refused for a
-// reason other than a context ending,
-// also counts as ended, since the journal holds that onError, or the refusal replay
-// meets again. So an actor whose spawn failed with no onError declared, or whose
-// onError a context's ending refused, which left the step that drove it recording
-// nothing, hasn't ended: it's unstarted, and Recover tries it again. One whose
+// previous step. A spawn whose onError applied, or whose onError was refused for any
+// reason other than a context ending, also counts as ended, since the journal holds
+// that onError, or the refusal replay meets again. So an actor whose spawn failed
+// with no onError declared, or whose onError a context's ending refused, which left
+// the step that drove it recording nothing, hasn't ended: it's unstarted, and
+// Recover tries it again. One whose
 // respawn of a running actor failed is in neither set, as it was while running, until
 // a later spawn of it: the journal holds its start, so Recover respawns it again. Both
 // are nil with no actor palette.
