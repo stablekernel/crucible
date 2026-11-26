@@ -398,7 +398,6 @@ func TestRecover_RetriesAnActorWhoseLatestSpawnInAStepFailed(t *testing.T) {
 // while one of its children is active: Start spawns it, and so does Recover after a
 // step moved between the children.
 func TestRecover_SpawnsASuperstatesActor(t *testing.T) {
-	t.Skip("Start and Recover start only the active leaves' services and actors, not a compound state's; #249")
 	ctx := context.Background()
 	m := state.ForgeFor[actorCtx]("nest").
 		Actor("spawnChild").
@@ -436,6 +435,69 @@ func TestRecover_SpawnsASuperstatesActor(t *testing.T) {
 	}
 	if got := recovered.Instance().Current(); got != "done" {
 		t.Fatalf("state = %q, want done after the actor finished", got)
+	}
+}
+
+// TestRecover_DoesNotRespawnASuperstatesEndedActor proves an actor a compound state
+// declares, which ended while the compound stayed active, is recorded in the
+// checkpoint's EndedActors as the leaves' are, so Recover leaves it ended: not
+// respawned, and still ended after a step on the recovered Handle and a second
+// Recover.
+func TestRecover_DoesNotRespawnASuperstatesEndedActor(t *testing.T) {
+	ctx := context.Background()
+	// every=-1 runs live with no checkpoint, then checkpoints from each recovered Handle,
+	// so the checkpoint comes from a replay of the end.
+	for _, every := range []int{0, 1, -1} {
+		t.Run(fmt.Sprintf("every=%d", every), func(t *testing.T) {
+			m := state.ForgeFor[actorCtx]("nestEnded").
+				Actor("kid").
+				SuperState("outer").InvokeActor("kid", state.WithInvokeOnDone("kidDone")).
+				SubState("a").
+				SubState("b").
+				Initial("a").
+				EndSuperState().
+				Initial("outer").
+				Transition("a").On("kidDone").GoTo("b").
+				Transition("b").On("poke").GoTo("b").
+				Quench()
+			opts := []durable.Option[string, string, actorCtx]{durable.WithActorPalette[string, string, actorCtx](map[string]state.ActorBehavior{"kid": finishingChild()})}
+			live := opts
+			switch {
+			case every > 0:
+				opts = append(opts, durable.WithCheckpointEvery[string, string, actorCtx](every))
+				live = opts
+			case every < 0:
+				opts = append(opts, durable.WithCheckpointEvery[string, string, actorCtx](1))
+			}
+			store, id := durable.NewMemStore(), durable.InstanceID("nest-ended")
+			kidID := state.ActorID("nestEnded", "outer", 0)
+			h, err := durable.NewRunner(m, store, live...).Start(ctx, id, actorCtx{}, state.WithInitialState("outer"))
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, ok := h.ActorRef(kidID); !ok {
+				t.Fatal("Start didn't spawn the superstate's actor")
+			}
+			if found, err := h.DeliverToActor(ctx, state.ActorRef{ID: kidID}, "finish"); !found || err != nil {
+				t.Fatalf("DeliverToActor = %v, %v", found, err)
+			}
+			if got := h.Instance().Current(); got != "b" {
+				t.Fatalf("state = %q, want b after the kid ended", got)
+			}
+			for round := 1; round <= 2; round++ {
+				recovered, err := durable.Recover(ctx, m, store, id, opts...)
+				if err != nil {
+					t.Fatalf("Recover %d: %v", round, err)
+				}
+				if _, ok := recovered.ActorRef(kidID); ok {
+					t.Fatalf("Recover %d respawned the superstate's ended actor", round)
+				}
+				// A step on the recovered Handle checkpoints again, from its own view.
+				if _, err = recovered.Fire(ctx, "poke"); err != nil {
+					t.Fatalf("Fire(poke) after Recover %d: %v", round, err)
+				}
+			}
+		})
 	}
 }
 

@@ -85,6 +85,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- **`Start` and `Recover` start a compound state's services and actors.** This is a
+  behavior change. They started only the active leaves' invokes, while a `Fire` that
+  entered a compound state started its declares, so an instance that started in, or
+  recovered into, a compound state ran without that state's services and actors
+  (#249). A compound state's service that settled into one of its children is
+  recorded in the checkpoint's `EndedServices` as the leaves' are, and a compound
+  state's ended actor in `EndedActors`, so `Recover` leaves them alone, and the
+  unstarted/ended rule covers a compound state's actors as the leaves'.
 - **A declared `onError` the parent has no transition for is done, not retried.**
   This is a behavior change. A spawn that couldn't start whose declared `onError` the
   parent's current state has no transition for fires and is refused with

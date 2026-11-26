@@ -235,7 +235,6 @@ func (s *sender) Output() any { return nil }
 // region's state, which declares "v" too. The greeter must already be running there,
 // so that spawn is a no-op and its journaled hello applies once, across two Recovers.
 func TestRecover_ARetriedSpawnsMessageDoesNotRestartARunningActor(t *testing.T) {
-	t.Skip("Start and Recover start only the active leaves' services and actors, not a compound state's; #249")
 	ctx := context.Background()
 	note := func(s string) func(state.AssignCtx[actorCtx]) actorCtx {
 		return func(in state.AssignCtx[actorCtx]) actorCtx {
